@@ -6,7 +6,7 @@ import contextlib
 import math
 from dataclasses import dataclass
 
-from swauto.comutil import com_nothing, com_value, format_com_error
+from swauto.comutil import as_model_doc, com_nothing, com_value, format_com_error
 from swauto.errors import SolidWorksError
 from swauto.features import find_feature
 from swauto.params import rebuild, rename_feature
@@ -102,6 +102,7 @@ def _build_shell_on_model(model, spec: TankSpec) -> None:
 
 
 def _build_revolved_shell(model, spec: TankSpec) -> None:
+    model = as_model_doc(model)
     points = shell_profile_meters(spec)
     height = max(y for _x, y in points) if points else 1.0
 
@@ -109,13 +110,7 @@ def _build_revolved_shell(model, spec: TankSpec) -> None:
     sk = model.SketchManager
     sk.InsertSketch(True)
 
-    # SW2013: CreateCenterLine often fails; use a normal line as the axis.
-    axis = sk.CreateLine(0.0, 0.0, 0.0, 0.0, float(height), 0.0)
-    if axis is None:
-        raise SolidWorksError("Could not create the tank axis line.")
-    # Property name varies; ignore if absent.
-    with contextlib.suppress(Exception):
-        axis.ConstructionGeometry = True
+    _create_revolve_axis(sk, float(height))
 
     for (x1, y1), (x2, y2) in zip(points, points[1:], strict=False):
         if abs(x1 - x2) < 1e-15 and abs(y1 - y2) < 1e-15:
@@ -137,11 +132,34 @@ def _build_revolved_shell(model, spec: TankSpec) -> None:
     feat = _revolve_full(model)
     if feat is not None:
         rename_feature(feat, REVOLVE_NAME)
-    else:
-        # Older ModelDoc revolve APIs may not return the feature object.
-        latest = model.FeatureByPositionReverse(0)
-        if latest is not None:
-            rename_feature(latest, REVOLVE_NAME)
+        return
+    latest = model.FeatureByPositionReverse(0)
+    if latest is None:
+        raise SolidWorksError("Revolve created no feature.")
+    name = str(com_value(latest.Name) or "")
+    if name == SKETCH_NAME or name.startswith(SKETCH_NAME):
+        raise SolidWorksError("Revolve did not create a boss feature.")
+    rename_feature(latest, REVOLVE_NAME)
+
+
+def _create_revolve_axis(sk, height: float) -> None:
+    """Axis on X=0. Prefer centerline; fall back to a construction line."""
+    axis = None
+    with contextlib.suppress(Exception):
+        axis = sk.CreateCenterLine(0.0, 0.0, 0.0, 0.0, height, 0.0)
+    if axis is None:
+        axis = sk.CreateLine(0.0, 0.0, 0.0, 0.0, height, 0.0)
+    if axis is None:
+        raise SolidWorksError("Could not create the tank axis line.")
+    for obj in (axis, getattr(axis, "IGetSketchSegment", lambda: None)()):
+        if obj is None:
+            continue
+        with contextlib.suppress(Exception):
+            obj.ConstructionGeometry = True
+            return
+        with contextlib.suppress(Exception):
+            setattr(obj, "ConstructionGeometry", True)
+            return
 
 
 def _build_stacked_thin_shell(model, spec: TankSpec) -> None:
@@ -191,11 +209,22 @@ def _select_sketch_axis(model, sketch_name: str) -> None:
 
 def _revolve_full(model):
     """Create a full revolution. SolidWorks 2013 uses short ModelDoc FeatureRevolve2."""
+    model = as_model_doc(model)
     angle = 2.0 * math.pi
     errors: list[str] = []
+    sketch_before = str(com_value(model.FeatureByPositionReverse(0).Name) or "")
+
+    def _feature_if_new():
+        latest = model.FeatureByPositionReverse(0)
+        if latest is None:
+            return None
+        name = str(com_value(latest.Name) or "")
+        if not name or name == sketch_before:
+            return None
+        return latest
 
     # IModelDoc2.FeatureRevolve2(Angle, ReverseDir, Angle2, RevType, Merge) — SW2013.
-    # IModelDoc2.FeatureRevolve(Angle, ReverseDir, Angle2, RevType)
+    # These ModelDoc methods often return void/False even when the feature is created.
     model_attempts = (
         ("FeatureRevolve2", (angle, False, 0.0, 0, True)),
         ("FeatureRevolve2", (angle, False, 0.0, 0)),
@@ -204,21 +233,18 @@ def _revolve_full(model):
     for method_name, args in model_attempts:
         method = getattr(model, method_name, None)
         if method is None:
+            errors.append(f"model.{method_name}: not on this interface")
             continue
         try:
             result = method(*args)
         except Exception as exc:
             errors.append(f"model.{method_name}/{len(args)}: {format_com_error(exc)}")
             continue
-        if result is not None:
+        if result not in (None, False, 0) and not isinstance(result, bool):
             return result
-        # Some builds return None/0 even on success — treat latest feature as OK later.
-        latest = model.FeatureByPositionReverse(0)
-        if latest is not None and "Revolve" in str(com_value(latest.Name) or ""):
-            return latest
-        if result is None or result == 0:
-            # Still may have succeeded; return latest feature.
-            return latest
+        created = _feature_if_new()
+        if created is not None:
+            return created
 
     # Newer FeatureManager.FeatureRevolve2 (long form) — SolidWorks 2014+.
     fm = model.FeatureManager
@@ -244,17 +270,21 @@ def _revolve_full(model):
         True,
         True,
     )
-    for args in (modern, modern[:18]):
-        method = getattr(fm, "FeatureRevolve2", None)
-        if method is None:
-            break
-        try:
-            feat = method(*args)
-        except Exception as exc:
-            errors.append(f"FeatureManager.FeatureRevolve2/{len(args)}: {format_com_error(exc)}")
-            continue
-        if feat is not None:
-            return feat
+    method = getattr(fm, "FeatureRevolve2", None)
+    if method is not None:
+        for args in (modern, modern[:18]):
+            try:
+                feat = method(*args)
+            except Exception as exc:
+                errors.append(f"FeatureManager.FeatureRevolve2/{len(args)}: {format_com_error(exc)}")
+                continue
+            if feat is not None:
+                return feat
+            created = _feature_if_new()
+            if created is not None:
+                return created
+    else:
+        errors.append("FeatureManager.FeatureRevolve2: not available (expected on SW2013)")
 
     raise SolidWorksError("Revolve failed (" + "; ".join(errors) + ")")
 

@@ -31,6 +31,28 @@ def com_nothing():
 
 def format_com_error(exc: BaseException) -> str:
     args = getattr(exc, "args", ())
-    if args:
-        return f"{args[0]}: {args[1]}" if len(args) > 1 else str(args[0])
-    return str(exc)
+    if not args:
+        return str(exc)
+    # pywin32 com_error: (hr, msg, exc, argerr) or (hr, msg, None, None)
+    if len(args) >= 2 and isinstance(args[0], int):
+        hr, msg = args[0], args[1]
+        if hr == -2147352573 or (isinstance(msg, str) and "Member not found" in msg):
+            return (
+                f"{msg} (HRESULT {hr}). "
+                "This SolidWorks build is missing that API member — "
+                "the suite will try an older call path when available."
+            )
+        return f"{msg} (HRESULT {hr})" if msg else f"COM error {hr}"
+    return f"{args[0]}: {args[1]}" if len(args) > 1 else str(args[0])
+
+
+def as_model_doc(model):
+    """Prefer the IModelDoc2 interface (needed for FeatureRevolve2 on SW2013)."""
+    if model is None:
+        return None
+    try:
+        from win32com.client import CastTo
+
+        return CastTo(model, "ModelDoc2")
+    except Exception:
+        return model
