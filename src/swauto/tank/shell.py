@@ -10,12 +10,7 @@ from swauto.comutil import com_nothing, com_value, format_com_error
 from swauto.errors import SolidWorksError
 from swauto.features import find_feature
 from swauto.params import rebuild, rename_feature
-from swauto.parts import (
-    extrude_thin_blind,
-    new_part,
-    select_front_plane,
-    select_top_plane,
-)
+from swauto.parts import extrude_thin_blind, new_part, select_front_plane, select_top_plane
 from swauto.tank.profile import course_radii_m, shell_profile_meters
 from swauto.tank.spec import TankSpec
 from swauto.units import to_meters
@@ -70,19 +65,19 @@ def create_tank_shell(app, spec: TankSpec) -> TankResult:
     spec.validate()
     try:
         model = new_part(app)
+        _build_shell_on_model(model, spec)
     except SolidWorksError:
         raise
     except Exception as exc:
-        raise SolidWorksError(f"Create part failed: {format_com_error(exc)}") from exc
+        raise SolidWorksError(f"Tank shell failed: {format_com_error(exc)}") from exc
 
-    _build_shell_on_model(model, spec)
     title = str(com_value(model.GetTitle) or "Part")
     live = LiveTank(title=title, spec=spec, model=model)
     return TankResult(title=title, spec=spec, live=live)
 
 
 def _build_shell_on_model(model, spec: TankSpec) -> None:
-    """Prefer one revolved wall; fall back to stacked thin rings with start offsets."""
+    """Prefer one revolved wall; fall back to stacked thin rings."""
     errors: list[str] = []
     try:
         _build_revolved_shell(model, spec)
@@ -91,7 +86,7 @@ def _build_shell_on_model(model, spec: TankSpec) -> None:
             model.ViewZoomtofit2()
         return
     except Exception as exc:
-        errors.append(f"revolve: {exc}")
+        errors.append(f"revolve: {format_com_error(exc)}")
         _delete_elite_tank_features(model)
 
     try:
@@ -101,7 +96,7 @@ def _build_shell_on_model(model, spec: TankSpec) -> None:
             model.ViewZoomtofit2()
         return
     except Exception as exc:
-        errors.append(f"stacked: {exc}")
+        errors.append(f"stacked: {format_com_error(exc)}")
 
     raise SolidWorksError("Could not build tank shell.\n" + "\n".join(errors))
 
@@ -114,10 +109,11 @@ def _build_revolved_shell(model, spec: TankSpec) -> None:
     sk = model.SketchManager
     sk.InsertSketch(True)
 
-    # SW2013: CreateCenterLine often fails; a normal line marked construction works.
+    # SW2013: CreateCenterLine often fails; use a normal line as the axis.
     axis = sk.CreateLine(0.0, 0.0, 0.0, 0.0, float(height), 0.0)
     if axis is None:
         raise SolidWorksError("Could not create the tank axis line.")
+    # Property name varies; ignore if absent.
     with contextlib.suppress(Exception):
         axis.ConstructionGeometry = True
 
@@ -138,12 +134,18 @@ def _build_revolved_shell(model, spec: TankSpec) -> None:
         raise SolidWorksError("Could not select the tank profile sketch.")
     _select_sketch_axis(model, SKETCH_NAME)
 
-    feat = _revolve_full(model.FeatureManager)
-    rename_feature(feat, REVOLVE_NAME)
+    feat = _revolve_full(model)
+    if feat is not None:
+        rename_feature(feat, REVOLVE_NAME)
+    else:
+        # Older ModelDoc revolve APIs may not return the feature object.
+        latest = model.FeatureByPositionReverse(0)
+        if latest is not None:
+            rename_feature(latest, REVOLVE_NAME)
 
 
 def _build_stacked_thin_shell(model, spec: TankSpec) -> None:
-    """Stack thin-wall rings from Top Plane using start offsets (no InsertRefPlane)."""
+    """Stack thin-wall rings from Top Plane (course 1 only needs no offset)."""
     z_m = 0.0
     for index, course in enumerate(spec.active_courses(), start=1):
         outer_r, inner_r = course_radii_m(spec, course)
@@ -187,8 +189,39 @@ def _select_sketch_axis(model, sketch_name: str) -> None:
     raise SolidWorksError("Could not select the tank axis for revolve.")
 
 
-def _revolve_full(feature_manager):
+def _revolve_full(model):
+    """Create a full revolution. SolidWorks 2013 uses short ModelDoc FeatureRevolve2."""
     angle = 2.0 * math.pi
+    errors: list[str] = []
+
+    # IModelDoc2.FeatureRevolve2(Angle, ReverseDir, Angle2, RevType, Merge) — SW2013.
+    # IModelDoc2.FeatureRevolve(Angle, ReverseDir, Angle2, RevType)
+    model_attempts = (
+        ("FeatureRevolve2", (angle, False, 0.0, 0, True)),
+        ("FeatureRevolve2", (angle, False, 0.0, 0)),
+        ("FeatureRevolve", (angle, False, 0.0, 0)),
+    )
+    for method_name, args in model_attempts:
+        method = getattr(model, method_name, None)
+        if method is None:
+            continue
+        try:
+            result = method(*args)
+        except Exception as exc:
+            errors.append(f"model.{method_name}/{len(args)}: {format_com_error(exc)}")
+            continue
+        if result is not None:
+            return result
+        # Some builds return None/0 even on success — treat latest feature as OK later.
+        latest = model.FeatureByPositionReverse(0)
+        if latest is not None and "Revolve" in str(com_value(latest.Name) or ""):
+            return latest
+        if result is None or result == 0:
+            # Still may have succeeded; return latest feature.
+            return latest
+
+    # Newer FeatureManager.FeatureRevolve2 (long form) — SolidWorks 2014+.
+    fm = model.FeatureManager
     modern = (
         True,
         True,
@@ -211,18 +244,19 @@ def _revolve_full(feature_manager):
         True,
         True,
     )
-    legacy = modern[:18]
-    errors: list[str] = []
-    for args in (modern, legacy):
+    for args in (modern, modern[:18]):
+        method = getattr(fm, "FeatureRevolve2", None)
+        if method is None:
+            break
         try:
-            feat = feature_manager.FeatureRevolve2(*args)
+            feat = method(*args)
         except Exception as exc:
-            errors.append(f"{len(args)}-arg: {format_com_error(exc)}")
+            errors.append(f"FeatureManager.FeatureRevolve2/{len(args)}: {format_com_error(exc)}")
             continue
         if feat is not None:
             return feat
-        errors.append(f"{len(args)}-arg: returned nothing")
-    raise SolidWorksError("FeatureRevolve2 failed (" + "; ".join(errors) + ")")
+
+    raise SolidWorksError("Revolve failed (" + "; ".join(errors) + ")")
 
 
 def _delete_elite_tank_features(model) -> None:

@@ -7,6 +7,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from swauto.comutil import format_com_error
 from swauto.errors import SolidWorksError, SolidWorksNotRunning, SolidWorksUnavailable
 from swauto.session import connect
 from swauto.tank.shell import LiveTank, create_tank_shell
@@ -145,7 +146,7 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
         except Exception as exc:  # noqa: BLE001
             status_var.set("Tank update failed.")
             if show_errors:
-                messagebox.showerror("Tank Properties", f"Unexpected error:\n{exc}")
+                messagebox.showerror("Tank Properties", format_com_error(exc))
         else:
             status_var.set(f"Live tank → {live.title}   ({spec_now.shell_height_in():g}\" shell)")
         finally:
@@ -181,7 +182,7 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
             root.lift()
             create_btn.configure(state="normal")
             status_var.set("Create failed.")
-            messagebox.showerror("Tank Properties", f"Unexpected error:\n{exc}")
+            messagebox.showerror("Tank Properties", format_com_error(exc))
             return
 
         state["live"] = result.live
