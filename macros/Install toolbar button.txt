@@ -1,0 +1,26 @@
+Create Cylinder — run from inside SolidWorks
+============================================
+
+Do this once on the Solidworks computer (SolidWorks 2013 or newer).
+
+1. Open SolidWorks.
+2. Tools > Macro > New…
+3. Save the new macro in this macros folder as:  CreateCylinder.swp
+4. Delete any starter text in the editor. Paste everything from CreateCylinder.bas
+   (or File > Import if your SolidWorks version offers it).
+5. Tools > Macro > Save, then close the editor.
+6. Tools > Macro > Run… > pick CreateCylinder.swp > Run
+   Enter diameter and height in inches.
+
+Put it on a SolidWorks toolbar (so you never use Command Prompt):
+
+1. Tools > Customize… > Commands tab
+2. Category: Macro
+3. Drag “New Macro Button” onto a toolbar
+4. For the button:
+   - Bitmap: any icon you like
+   - Tooltip: Create Cylinder
+   - Method: browse to CreateCylinder.swp and choose main
+5. OK
+
+Then click the toolbar button anytime SolidWorks is open.

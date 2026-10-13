@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "elite-swauto"
+version = "0.1.0"
+description = "Elite SolidWorks automation. Runs on the computer where SolidWorks is open."
+requires-python = ">=3.11"
+authors = [{ name = "Tanzim Nasir" }]
+license = { text = "LicenseRef-Proprietary" }
+dependencies = ["pywin32>=308"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.12"]
+
+[project.scripts]
+swauto = "swauto.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

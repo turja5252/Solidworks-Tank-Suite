@@ -1,0 +1,17 @@
+Why Tools > Macro > New crashes
+================================
+
+That crash is SolidWorks' VBA macro editor (VBE7.DLL), not the cylinder code.
+SolidWorks 2013 on newer Windows often breaks macros / Macro > New / Macro > Record.
+
+Until IT repairs VBA on the Solidworks computer, use:
+
+  Elite SW Auto.bat   (or Elite SW Auto.pyw)
+
+with SolidWorks already open. That still drives SolidWorks through its API.
+
+Possible VBA repairs (IT / admin on Solidworks PC):
+- Install latest SolidWorks 2013 service pack available to you
+- Repair/reinstall VBA from the SolidWorks install media: Prereqs\VBA\vba71.msi
+- Turn on .NET Framework 3.5 (Windows Features)
+- Check Event Viewer > Windows Logs > Application for VBE7.DLL when it crashes
