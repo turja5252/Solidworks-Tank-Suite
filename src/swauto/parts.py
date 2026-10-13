@@ -15,6 +15,9 @@ _DEFAULT_TEMPLATE_PART = 0
 _FRONT_PLANE_NAMES = ("Front Plane", "Plane1", "Front")
 _TOP_PLANE_NAMES = ("Top Plane", "Plane2", "Top")
 
+# swStartConditions_e.swStartOffset (used by FeatureExtrusionThin2)
+_START_OFFSET = 3
+
 
 def new_part(app):
     """Create a new part from a real .prtdot path only.
@@ -120,7 +123,6 @@ def _select_plane(model, name: str) -> bool:
     except Exception:
         pass
 
-    # Some installs accept an omitted/zero Callout through the older SelectByID.
     select_by_id = getattr(model, "SelectByID", None)
     if select_by_id is not None:
         try:
@@ -129,7 +131,6 @@ def _select_plane(model, name: str) -> bool:
         except Exception:
             pass
 
-    # Last resort used by some SW2013 Python scripts.
     try:
         if extension.SelectByID2(name, "PLANE", 0.0, 0.0, 0.0, False, 0, 0, 0):
             return True
@@ -139,11 +140,7 @@ def _select_plane(model, name: str) -> bool:
 
 
 def extrude_blind(feature_manager, depth_m: float, *, prefer_legacy: bool = True):
-    """Blind boss-extrude the selected sketch.
-
-    SolidWorks 2013 uses the shorter FeatureExtrusion2 signature. Calling the
-    newer argument list first can hang on COM instead of raising, so try legacy first.
-    """
+    """Blind boss-extrude the selected sketch. Tries newer then older FeatureExtrusion2 signatures."""
     depth = float(depth_m)
     legacy = (
         True,
@@ -185,18 +182,25 @@ def extrude_blind(feature_manager, depth_m: float, *, prefer_legacy: bool = True
     raise SolidWorksError(f"Extrude failed ({detail}).")
 
 
-def extrude_thin_blind(feature_manager, depth_m: float, thickness_m: float):
+def extrude_thin_blind(
+    feature_manager,
+    depth_m: float,
+    thickness_m: float,
+    *,
+    start_offset_m: float = 0.0,
+):
     """Blind thin-wall extrude of the selected circle sketch (SolidWorks 2013-safe).
 
-    Sketches the outer circle, then walls inward by thickness_m.
-    Uses FeatureExtrusionThin2, then older FeatureExtrusionThin.
+    Optional start_offset_m raises the extrude above the sketch plane (no offset plane needed).
     """
     depth = float(depth_m)
     thk = float(thickness_m)
+    start = float(start_offset_m)
     if thk <= 0 or depth <= 0:
         raise SolidWorksError("Thin extrude needs positive depth and thickness.")
 
-    # FeatureExtrusionThin2 (includes TranslateSurface + merge + start condition).
+    t0 = _START_OFFSET if start > 1e-12 else 0
+
     thin2 = (
         True,
         False,
@@ -218,18 +222,17 @@ def extrude_thin_blind(feature_manager, depth_m: float, thickness_m: float):
         True,  # Merge
         thk,
         0.0,
-        0.0,  # Thk1, Thk2, EndThk
-        0,  # RevThinDir: one direction (inward for a circle on most installs)
+        0.0,
+        0,  # RevThinDir
         0,  # CapEnds
         False,
-        0.0,  # AddBends, BendRad
-        True,
-        True,  # UseFeatScope, UseAutoSelect
-        0,
         0.0,
-        False,  # T0, StartOffset, FlipStartOffset
+        True,
+        True,
+        t0,
+        start,
+        False,
     )
-    # Older FeatureExtrusionThin (no merge / start-condition args).
     thin1 = (
         True,
         False,
@@ -256,11 +259,13 @@ def extrude_thin_blind(feature_manager, depth_m: float, thickness_m: float):
     )
 
     errors: list[str] = []
-    attempts = (
+    attempts: list[tuple[str, tuple]] = [
         ("FeatureExtrusionThin2", thin2),
-        ("FeatureExtrusionThin2", thin2[:27]),  # some builds omit start-condition args
-        ("FeatureExtrusionThin", thin1),
-    )
+    ]
+    if start <= 1e-12:
+        attempts.append(("FeatureExtrusionThin2", thin2[:27]))
+        attempts.append(("FeatureExtrusionThin", thin1))
+
     for method_name, args in attempts:
         method = getattr(feature_manager, method_name, None)
         if method is None:
@@ -274,9 +279,24 @@ def extrude_thin_blind(feature_manager, depth_m: float, thickness_m: float):
             return feature
         errors.append(f"{method_name}/{len(args)}: returned nothing")
 
-    # Last resort: flip thin direction (outward vs inward).
+    # Try alternate start-condition enums if offset was requested.
+    if start > 1e-12:
+        for alt_t0 in (2, 1, 4):
+            alt = list(thin2)
+            alt[-3] = alt_t0
+            method = getattr(feature_manager, "FeatureExtrusionThin2", None)
+            if method is None:
+                break
+            try:
+                feature = method(*alt)
+            except Exception as exc:
+                errors.append(f"Thin2/t0={alt_t0}: {format_com_error(exc)}")
+                continue
+            if feature is not None:
+                return feature
+
     flipped = list(thin2)
-    flipped[1] = True  # Flip
+    flipped[1] = True
     method = getattr(feature_manager, "FeatureExtrusionThin2", None)
     if method is not None:
         try:

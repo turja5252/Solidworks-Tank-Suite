@@ -1,20 +1,28 @@
-"""Build / rebuild a multi-course tank shell in SolidWorks (2013-safe stacked rings)."""
+"""Build / rebuild a multi-course tank shell in SolidWorks (2013-safe)."""
 
 from __future__ import annotations
 
 import contextlib
+import math
 from dataclasses import dataclass
 
-from swauto.comutil import com_value, format_com_error
+from swauto.comutil import com_nothing, com_value, format_com_error
 from swauto.errors import SolidWorksError
 from swauto.features import find_feature
 from swauto.params import rebuild, rename_feature
-from swauto.parts import extrude_thin_blind, new_part, select_plane, select_top_plane
-from swauto.tank.profile import course_radii_m
+from swauto.parts import (
+    extrude_thin_blind,
+    new_part,
+    select_front_plane,
+    select_top_plane,
+)
+from swauto.tank.profile import course_radii_m, shell_profile_meters
 from swauto.tank.spec import TankSpec
 from swauto.units import to_meters
 
 FEATURE_PREFIX = "EliteTank"
+SKETCH_NAME = f"{FEATURE_PREFIX}Profile"
+REVOLVE_NAME = f"{FEATURE_PREFIX}Shell"
 
 
 @dataclass
@@ -74,98 +82,147 @@ def create_tank_shell(app, spec: TankSpec) -> TankResult:
 
 
 def _build_shell_on_model(model, spec: TankSpec) -> None:
-    """Stack annular course rings (outer boss + inner cut). Uses the same APIs as Live Cylinder."""
+    """Prefer one revolved wall; fall back to stacked thin rings with start offsets."""
+    errors: list[str] = []
+    try:
+        _build_revolved_shell(model, spec)
+        rebuild(model)
+        with contextlib.suppress(Exception):
+            model.ViewZoomtofit2()
+        return
+    except Exception as exc:
+        errors.append(f"revolve: {exc}")
+        _delete_elite_tank_features(model)
+
+    try:
+        _build_stacked_thin_shell(model, spec)
+        rebuild(model)
+        with contextlib.suppress(Exception):
+            model.ViewZoomtofit2()
+        return
+    except Exception as exc:
+        errors.append(f"stacked: {exc}")
+
+    raise SolidWorksError("Could not build tank shell.\n" + "\n".join(errors))
+
+
+def _build_revolved_shell(model, spec: TankSpec) -> None:
+    points = shell_profile_meters(spec)
+    height = max(y for _x, y in points) if points else 1.0
+
+    select_front_plane(model)
+    sk = model.SketchManager
+    sk.InsertSketch(True)
+
+    # SW2013: CreateCenterLine often fails; a normal line marked construction works.
+    axis = sk.CreateLine(0.0, 0.0, 0.0, 0.0, float(height), 0.0)
+    if axis is None:
+        raise SolidWorksError("Could not create the tank axis line.")
+    with contextlib.suppress(Exception):
+        axis.ConstructionGeometry = True
+
+    for (x1, y1), (x2, y2) in zip(points, points[1:], strict=False):
+        if abs(x1 - x2) < 1e-15 and abs(y1 - y2) < 1e-15:
+            continue
+        if sk.CreateLine(float(x1), float(y1), 0.0, float(x2), float(y2), 0.0) is None:
+            raise SolidWorksError("Could not create a shell profile line.")
+
+    model.ClearSelection2(True)
+    sk.InsertSketch(True)
+
+    sketch_feat = model.FeatureByPositionReverse(0)
+    if sketch_feat is None:
+        raise SolidWorksError("Could not find the tank profile sketch.")
+    rename_feature(sketch_feat, SKETCH_NAME)
+    if not sketch_feat.Select2(False, 0):
+        raise SolidWorksError("Could not select the tank profile sketch.")
+    _select_sketch_axis(model, SKETCH_NAME)
+
+    feat = _revolve_full(model.FeatureManager)
+    rename_feature(feat, REVOLVE_NAME)
+
+
+def _build_stacked_thin_shell(model, spec: TankSpec) -> None:
+    """Stack thin-wall rings from Top Plane using start offsets (no InsertRefPlane)."""
     z_m = 0.0
     for index, course in enumerate(spec.active_courses(), start=1):
         outer_r, inner_r = course_radii_m(spec, course)
         height_m = to_meters(course.height_in, "in")
-        plane_name = _plane_for_height(model, z_m, index)
-        _add_course_ring(model, index, plane_name, outer_r, inner_r, height_m)
-        z_m += height_m
-
-    rebuild(model)
-    with contextlib.suppress(Exception):
-        model.ViewZoomtofit2()
-
-
-def _plane_for_height(model, z_m: float, index: int) -> str:
-    if z_m <= 1e-12:
+        thickness_m = outer_r - inner_r
         select_top_plane(model)
-        return "Top Plane"
-
-    select_top_plane(model)
-    plane = _insert_offset_plane(model, z_m)
-    name = rename_feature(plane, f"{FEATURE_PREFIX}C{index}Plane")
-    if not plane.Select2(False, 0) and not _select_plane_name(model, name):
-        raise SolidWorksError(f"Could not select offset plane {name}")
-    return name
-
-
-def _insert_offset_plane(model, offset_m: float):
-    fm = model.FeatureManager
-    offset = float(offset_m)
-    attempts = (
-        (offset, 4, 0, 0, 0, 0),
-        (offset, 1, 0, 0, 0, 0),
-        (4, offset, 0, 0, 0, 0),
-        (1, offset, 0, 0, 0, 0),
-    )
-    errors: list[str] = []
-    for args in attempts:
-        try:
-            feat = fm.InsertRefPlane(*args)
-        except Exception as exc:
-            errors.append(f"{args}: {format_com_error(exc)}")
-            continue
-        if feat is not None:
-            return feat
-        errors.append(f"{args}: returned nothing")
-    raise SolidWorksError(
-        "Could not create an offset plane for the next shell course.\n" + "; ".join(errors[:4])
-    )
-
-
-def _select_plane_name(model, name: str) -> bool:
-    return select_plane(model, name)
-
-
-def _add_course_ring(
-    model,
-    index: int,
-    plane_name: str,
-    outer_r: float,
-    inner_r: float,
-    height_m: float,
-) -> None:
-    """One shell course: outer circle + thin-wall extrude inward (no FeatureCut)."""
-    if plane_name == "Top Plane":
-        select_top_plane(model)
-    elif not _select_plane_name(model, plane_name):
-        raise SolidWorksError(f"Could not select plane {plane_name}")
-
-    thickness_m = float(outer_r) - float(inner_r)
-    if thickness_m <= 0:
-        raise SolidWorksError(f"Course {index}: thickness must be greater than zero.")
-
-    try:
         sk = model.SketchManager
         sk.InsertSketch(True)
         if sk.CreateCircleByRadius(0.0, 0.0, 0.0, float(outer_r)) is None:
             raise SolidWorksError(f"Course {index}: outer circle failed.")
         model.ClearSelection2(True)
         sk.InsertSketch(True)
-    except SolidWorksError:
-        raise
-    except Exception as exc:
-        raise SolidWorksError(f"Course {index} sketch failed: {format_com_error(exc)}") from exc
 
-    sketch = model.FeatureByPositionReverse(0)
-    if sketch is None:
-        raise SolidWorksError(f"Course {index}: missing sketch.")
-    rename_feature(sketch, f"{FEATURE_PREFIX}C{index}Sketch")
-    sketch.Select2(False, 0)
-    boss = extrude_thin_blind(model.FeatureManager, height_m, thickness_m)
-    rename_feature(boss, f"{FEATURE_PREFIX}C{index}Shell")
+        sketch = model.FeatureByPositionReverse(0)
+        if sketch is None:
+            raise SolidWorksError(f"Course {index}: missing sketch.")
+        rename_feature(sketch, f"{FEATURE_PREFIX}C{index}Sketch")
+        sketch.Select2(False, 0)
+        boss = extrude_thin_blind(
+            model.FeatureManager,
+            height_m,
+            thickness_m,
+            start_offset_m=z_m,
+        )
+        rename_feature(boss, f"{FEATURE_PREFIX}C{index}Shell")
+        z_m += height_m
+
+
+def _select_sketch_axis(model, sketch_name: str) -> None:
+    nothing = com_nothing()
+    names = (f"Line1@{sketch_name}", "Line1", f"Line2@{sketch_name}")
+    types = ("EXTSKETCHSEGMENT", "SKETCHSEGMENT", "CENTERLINE")
+    for name in names:
+        for type_name in types:
+            for callout in (nothing, 0, None):
+                try:
+                    if model.Extension.SelectByID2(name, type_name, 0.0, 0.0, 0.0, True, 4, callout, 0):
+                        return
+                except Exception:
+                    continue
+    raise SolidWorksError("Could not select the tank axis for revolve.")
+
+
+def _revolve_full(feature_manager):
+    angle = 2.0 * math.pi
+    modern = (
+        True,
+        True,
+        False,
+        False,
+        False,
+        False,
+        True,
+        False,
+        angle,
+        0.0,
+        False,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        True,
+        True,
+        True,
+    )
+    legacy = modern[:18]
+    errors: list[str] = []
+    for args in (modern, legacy):
+        try:
+            feat = feature_manager.FeatureRevolve2(*args)
+        except Exception as exc:
+            errors.append(f"{len(args)}-arg: {format_com_error(exc)}")
+            continue
+        if feat is not None:
+            return feat
+        errors.append(f"{len(args)}-arg: returned nothing")
+    raise SolidWorksError("FeatureRevolve2 failed (" + "; ".join(errors) + ")")
 
 
 def _delete_elite_tank_features(model) -> None:
