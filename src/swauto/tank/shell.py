@@ -1,24 +1,24 @@
 """Build / rebuild a multi-course tank shell in SolidWorks (2013-safe).
 
-Approach B (preferred): each course = full revolved ring (curved), then radial
-FeatureCuts at plate seams → separate curved plate bodies.
+Individual curved plates (preferred): each plate is a limited-angle FeatureRevolve
+of the wall rectangle on Front (true cylindrical surface). Stagger = rotate that
+body about the tank vertical axis (Y) after selecting a reference Axis.
 
-Approach A (fallback): one multi-course revolve + 3D sketch seam lines.
+Fallback: one multi-course revolve + 3D seam sketch lines (Approach A).
 """
 
 from __future__ import annotations
 
 import contextlib
 import math
-from collections import defaultdict
 from dataclasses import dataclass
 
 from swauto.comutil import as_model_doc, com_nothing, com_value, format_com_error
 from swauto.errors import SolidWorksError
 from swauto.features import find_feature
 from swauto.params import rebuild, rename_feature
-from swauto.parts import cut_blind, extrude_thin_blind, new_part, select_front_plane, select_top_plane
-from swauto.tank.plates import PlateSector, layout_plates
+from swauto.parts import extrude_thin_blind, new_part, select_front_plane, select_plane, select_top_plane
+from swauto.tank.plates import layout_plates
 from swauto.tank.profile import course_radii_m, shell_profile_meters
 from swauto.tank.spec import TankSpec
 from swauto.units import to_meters
@@ -27,6 +27,7 @@ FEATURE_PREFIX = "EliteTank"
 SKETCH_NAME = f"{FEATURE_PREFIX}Profile"
 REVOLVE_NAME = f"{FEATURE_PREFIX}Shell"
 SEAMS_NAME = f"{FEATURE_PREFIX}Seams"
+AXIS_NAME = f"{FEATURE_PREFIX}Axis"
 
 
 @dataclass
@@ -91,17 +92,16 @@ def _safe_delete_elite(model) -> None:
 
 
 def _build_shell_on_model(model, spec: TankSpec) -> None:
-    """B: curved plates via ring+cut → A: revolve+seam sketch → stacked thin."""
     errors: list[str] = []
 
     try:
-        _build_cut_plate_shell(model, spec)
+        _build_individual_curved_plates(model, spec)
         rebuild(model)
         with contextlib.suppress(Exception):
             model.ViewZoomtofit2()
         return
     except Exception as exc:
-        errors.append(f"plates/cut: {format_com_error(exc)}")
+        errors.append(f"plates: {format_com_error(exc)}")
         _safe_delete_elite(model)
 
     try:
@@ -129,55 +129,74 @@ def _build_shell_on_model(model, spec: TankSpec) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Approach B — curved course rings, cut into plates at seams
+# Individual curved plates
 # ---------------------------------------------------------------------------
 
 
-def _build_cut_plate_shell(model, spec: TankSpec) -> None:
-    """Revolve each course as a curved ring, then FeatureCut radial slots at seams."""
+def _build_individual_curved_plates(model, spec: TankSpec) -> None:
+    """One limited revolve per plate (curved). Rotate about Y for stagger."""
     plates = layout_plates(spec)
     if not plates:
         raise SolidWorksError("No plates to build.")
 
-    by_course: dict[int, list[PlateSector]] = defaultdict(list)
-    for p in plates:
-        by_course[p.course_no].append(p)
+    _ensure_tank_axis(model)
+    first = True
+    rotate_failures = 0
 
-    first_body = True
-    for course_no in sorted(by_course):
-        course_plates = by_course[course_no]
-        sample = course_plates[0]
-        ring_name = f"{FEATURE_PREFIX}C{course_no}Ring"
-        _build_course_ring(
+    for plate in plates:
+        name = plate.feature_name
+        sweep = 2.0 * math.pi if plate.is_full_ring else float(plate.sweep_rad)
+        if sweep <= 1e-9:
+            raise SolidWorksError(f"{name}: zero sweep.")
+
+        _revolve_wall_plate(
             model,
-            sample,
-            merge=not first_body,
-            feature_name=ring_name,
+            ri=float(plate.inner_r_m),
+            ro=float(plate.outer_r_m),
+            y0=float(plate.z_bot_m),
+            y1=float(plate.z_bot_m) + float(plate.height_m),
+            sweep=sweep,
+            merge=not first,
+            feature_name=name,
         )
-        first_body = False
+        first = False
 
-        if len(course_plates) <= 1 or sample.is_full_ring:
-            continue
+        start = 0.0 if plate.is_full_ring else float(plate.start_rad)
+        if abs(start) > 1e-9:
+            try:
+                _rotate_about_tank_y(model, name, start)
+            except Exception:
+                rotate_failures += 1
 
-        seam_angles = sorted({p.start_rad for p in course_plates})
-        _cut_ring_at_seams(model, ring_name, sample, seam_angles)
+    if rotate_failures and rotate_failures == sum(
+        1 for p in plates if abs(p.start_rad) > 1e-9 and not p.is_full_ring
+    ):
+        raise SolidWorksError(
+            "Plates revolved but none could be rotated for stagger "
+            "(InsertMoveCopyBody about tank axis failed)."
+        )
 
 
-def _build_course_ring(model, plate: PlateSector, *, merge: bool, feature_name: str) -> None:
-    """Full 360° revolved wall band for one course (curved)."""
+def _revolve_wall_plate(
+    model,
+    *,
+    ri: float,
+    ro: float,
+    y0: float,
+    y1: float,
+    sweep: float,
+    merge: bool,
+    feature_name: str,
+) -> None:
+    """Front-plane wall rectangle → limited FeatureRevolve (cylindrical plate)."""
     model = as_model_doc(model)
-    z0 = float(plate.z_bot_m)
-    z1 = z0 + float(plate.height_m)
-    ri = float(plate.inner_r_m)
-    ro = float(plate.outer_r_m)
-
     select_front_plane(model)
     sk = model.SketchManager
     sk.InsertSketch(True)
-    _create_revolve_axis(sk, max(z1, 0.1))
-    corners = ((ri, z0), (ro, z0), (ro, z1), (ri, z1), (ri, z0))
-    for (x1, y1), (x2, y2) in zip(corners, corners[1:], strict=False):
-        if sk.CreateLine(float(x1), float(y1), 0.0, float(x2), float(y2), 0.0) is None:
+    _create_revolve_axis(sk, max(y1, 0.1))
+    corners = ((ri, y0), (ro, y0), (ro, y1), (ri, y1), (ri, y0))
+    for (x1, y_a), (x2, y_b) in zip(corners, corners[1:], strict=False):
+        if sk.CreateLine(float(x1), float(y_a), 0.0, float(x2), float(y_b), 0.0) is None:
             raise SolidWorksError(f"{feature_name}: profile line failed.")
     model.ClearSelection2(True)
     sk.InsertSketch(True)
@@ -191,7 +210,7 @@ def _build_course_ring(model, plate: PlateSector, *, merge: bool, feature_name: 
         raise SolidWorksError(f"{feature_name}: could not select sketch.")
     _select_sketch_axis(model, sk_name)
 
-    feat = _revolve_angle(model, 2.0 * math.pi, merge=merge)
+    feat = _revolve_angle(model, sweep, merge=merge)
     if feat is None:
         feat = model.FeatureByPositionReverse(0)
     if feat is None:
@@ -199,62 +218,102 @@ def _build_course_ring(model, plate: PlateSector, *, merge: bool, feature_name: 
     rename_feature(feat, feature_name)
 
 
-def _cut_ring_at_seams(
-    model, ring_name: str, plate: PlateSector, seam_angles: list[float]
-) -> None:
-    """Cut a thin radial slot at each seam (only through this course's height)."""
-    kerf = max(float(plate.outer_r_m) * 2e-4, 0.0005)  # ~0.5 mm
-    r_in = max(float(plate.inner_r_m) * 0.25, 0.001)
-    r_out = float(plate.outer_r_m) * 1.15
-    z0 = float(plate.z_bot_m)
-    height = float(plate.height_m)
-    cut_count = 0
+def _rotate_about_tank_y(model, feature_name: str, angle_rad: float) -> None:
+    """Rotate plate body about tank vertical (Y). Never about Z (that tipped rings)."""
+    feature = find_feature(model, feature_name)
+    if feature is None:
+        raise SolidWorksError(f"Missing {feature_name} for rotate.")
 
-    for i, theta in enumerate(seam_angles, start=1):
-        select_top_plane(model)
-        sk = model.SketchManager
-        sk.InsertSketch(True)
-        c, s = math.cos(theta), math.sin(theta)
-        # Perpendicular to ray for kerf width — ray only (not full diameter cross).
-        px, pz = -s * (kerf / 2.0), c * (kerf / 2.0)
-        pts = [
-            (r_in * c + px, r_in * s + pz),
-            (r_out * c + px, r_out * s + pz),
-            (r_out * c - px, r_out * s - pz),
-            (r_in * c - px, r_in * s - pz),
-            (r_in * c + px, r_in * s + pz),
-        ]
-        for (a, b), (d, e) in zip(pts, pts[1:], strict=False):
-            if sk.CreateLine(float(a), float(b), 0.0, float(d), float(e), 0.0) is None:
-                raise SolidWorksError(f"{ring_name}: seam cut sketch failed at {i}.")
-        model.ClearSelection2(True)
-        sk.InsertSketch(True)
-        sketch = model.FeatureByPositionReverse(0)
-        if sketch is None:
-            raise SolidWorksError(f"{ring_name}: missing cut sketch {i}.")
-        rename_feature(sketch, f"{ring_name}Cut{i:02d}Sk")
-        sketch.Select2(False, 0)
+    nothing = com_nothing()
+    model.ClearSelection2(True)
 
+    ok_body = False
+    with contextlib.suppress(Exception):
+        ok_body = bool(feature.Select2(False, 1))
+    if not ok_body:
+        for type_name in ("BODYFEATURE", "SOLIDBODY"):
+            try:
+                if model.Extension.SelectByID2(
+                    feature_name, type_name, 0.0, 0.0, 0.0, False, 1, nothing, 0
+                ):
+                    ok_body = True
+                    break
+            except Exception:
+                continue
+    if not ok_body:
+        raise SolidWorksError(f"Could not select {feature_name}.")
+
+    # Rotation reference = tank axis (mark 2).
+    axis_ok = False
+    for axis_name in (AXIS_NAME, "Axis1", "Axis2"):
+        for type_name in ("AXIS", "REFAXIS"):
+            try:
+                if model.Extension.SelectByID2(
+                    axis_name, type_name, 0.0, 0.0, 0.0, True, 2, nothing, 0
+                ):
+                    axis_ok = True
+                    break
+            except Exception:
+                continue
+        if axis_ok:
+            break
+
+    fm = model.FeatureManager
+    errors: list[str] = []
+    # TransXYZ=0; RotX=0; RotY=angle; RotZ=0  (Front=XY → tank up = Y)
+    for method_name in ("InsertMoveCopyBody2", "InsertMoveCopyBody"):
+        method = getattr(fm, method_name, None)
+        if method is None:
+            continue
+        attempts = (
+            (0.0, 0.0, 0.0, False, 0.0, float(angle_rad), 0.0, True),
+            (0.0, 0.0, 0.0, 0, 0.0, float(angle_rad), 0.0, True),
+            (0.0, 0.0, 0.0, False, 0.0, float(angle_rad), 0.0, True, False),
+            (0.0, 0.0, 0.0, 0, 0.0, float(angle_rad), 0.0, True, 1),
+        )
+        for args in attempts:
+            try:
+                method(*args)
+            except Exception as exc:
+                errors.append(f"{method_name}/{len(args)}: {format_com_error(exc)}")
+                continue
+            latest = model.FeatureByPositionReverse(0)
+            if latest is not None:
+                nm = str(com_value(latest.Name) or "")
+                if "Move" in nm or "Copy" in nm or "Body" in nm:
+                    with contextlib.suppress(Exception):
+                        rename_feature(latest, f"{feature_name}Rot")
+            model.ClearSelection2(True)
+            return
+
+    model.ClearSelection2(True)
+    raise SolidWorksError("Rotate about Y failed (" + "; ".join(errors) + ")")
+
+
+def _ensure_tank_axis(model) -> None:
+    """Vertical axis = Front ∩ Right (Y)."""
+    if find_feature(model, AXIS_NAME) is not None:
+        return
+    model.ClearSelection2(True)
+    nothing = com_nothing()
+    if not (select_plane(model, "Front Plane") or select_plane(model, "Front")):
+        return
+    for name in ("Right Plane", "Right", "Plane3"):
         try:
-            cut = cut_blind(
-                model.FeatureManager,
-                height,
-                start_offset_m=z0,
-            )
-        except Exception as exc:
-            # Blind-from-Top without offset may still work for course 1.
-            if z0 > 1e-9:
-                raise SolidWorksError(
-                    f"{ring_name} cut {i}: {format_com_error(exc)}"
-                ) from exc
-            cut = cut_blind(model.FeatureManager, height, start_offset_m=0.0)
-
-        rename_feature(cut, f"{ring_name}Cut{i:02d}")
-        cut_count += 1
-        model.ClearSelection2(True)
-
-    if cut_count == 0:
-        raise SolidWorksError(f"{ring_name}: no seam cuts created.")
+            if model.Extension.SelectByID2(name, "PLANE", 0.0, 0.0, 0.0, True, 0, nothing, 0):
+                break
+        except Exception:
+            continue
+    axis = None
+    with contextlib.suppress(Exception):
+        axis = model.InsertAxis2(True)
+    if axis is None:
+        with contextlib.suppress(Exception):
+            axis = model.FeatureManager.InsertAxis2(True)
+    if axis is not None:
+        with contextlib.suppress(Exception):
+            rename_feature(axis, AXIS_NAME)
+    model.ClearSelection2(True)
 
 
 def _try_build_seam_sketch(model, spec: TankSpec, errors: list[str]) -> None:
@@ -265,7 +324,6 @@ def _try_build_seam_sketch(model, spec: TankSpec, errors: list[str]) -> None:
 
 
 def _build_plate_seam_sketch(model, spec: TankSpec) -> None:
-    """Approach A: 3D sketch vertical lines on OD at each plate start."""
     plates = layout_plates(spec)
     seams = [p for p in plates if not p.is_full_ring]
     if not seams:
@@ -318,7 +376,7 @@ def _build_plate_seam_sketch(model, spec: TankSpec) -> None:
             break
 
     if drawn == 0:
-        raise SolidWorksError("No seam lines could be created in the 3D sketch.")
+        raise SolidWorksError("No seam lines could be created.")
 
     feat = model.FeatureByPositionReverse(0)
     if feat is not None:
