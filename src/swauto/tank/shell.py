@@ -157,7 +157,7 @@ def _build_plate_seam_sketch(model, spec: TankSpec) -> None:
     for plate in seams:
         # Front-plane revolve uses Y as tank vertical: X=r·cosθ, Y=height, Z=r·sinθ.
         theta = float(plate.start_rad)
-        r = float(plate.outer_r_m) * 1.0005  # sit just outside OD so the line stays visible
+        r = float(plate.outer_r_m)  # on OD surface
         y0 = float(plate.z_bot_m) - overhang
         y1 = float(plate.z_bot_m) + float(plate.height_m) + overhang
         if y0 < 0.0:
