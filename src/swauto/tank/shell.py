@@ -149,13 +149,19 @@ def _build_plate_seam_sketch(model, spec: TankSpec) -> None:
     if not opened:
         raise SolidWorksError("Could not open a 3D sketch for plate seams.")
 
+    # Past course top/bottom a hair so seams read flush on the OD (SW trims
+    # endpoints that sit exactly on a face edge; AutoLISP stretchout does the same).
+    overhang = 0.002  # 2 mm
+
     drawn = 0
     for plate in seams:
         # Front-plane revolve uses Y as tank vertical: X=r·cosθ, Y=height, Z=r·sinθ.
         theta = float(plate.start_rad)
-        r = float(plate.outer_r_m)
-        y0 = float(plate.z_bot_m)
-        y1 = y0 + float(plate.height_m)
+        r = float(plate.outer_r_m) * 1.0005  # sit just outside OD so the line stays visible
+        y0 = float(plate.z_bot_m) - overhang
+        y1 = float(plate.z_bot_m) + float(plate.height_m) + overhang
+        if y0 < 0.0:
+            y0 = 0.0
         x = r * math.cos(theta)
         z = r * math.sin(theta)
         line = None
