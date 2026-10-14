@@ -139,9 +139,18 @@ def _select_plane(model, name: str) -> bool:
     return False
 
 
-def extrude_blind(feature_manager, depth_m: float, *, prefer_legacy: bool = True):
+def extrude_blind(
+    feature_manager,
+    depth_m: float,
+    *,
+    merge: bool = True,
+    start_offset_m: float = 0.0,
+    prefer_legacy: bool = True,
+):
     """Blind boss-extrude the selected sketch. Tries newer then older FeatureExtrusion2 signatures."""
     depth = float(depth_m)
+    start = float(start_offset_m)
+    t0 = _START_OFFSET if start > 1e-12 else 0
     legacy = (
         True,
         False,
@@ -160,12 +169,18 @@ def extrude_blind(feature_manager, depth_m: float, *, prefer_legacy: bool = True
         False,
         False,
         False,
-        True,
+        bool(merge),
         True,
         True,
     )
-    modern = legacy + (0, 0.0, False)
-    order = (legacy, modern) if prefer_legacy else (modern, legacy)
+    modern = legacy + (t0, start, False)
+    # Prefer modern when a start offset is required (legacy has no Z lift).
+    if start > 1e-12:
+        order = (modern, legacy)
+    elif prefer_legacy:
+        order = (legacy, modern)
+    else:
+        order = (modern, legacy)
 
     errors: list[str] = []
     for args in order:

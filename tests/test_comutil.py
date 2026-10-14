@@ -25,8 +25,11 @@ def test_com_value_keeps_dispatch_objects_that_fail_when_called():
 
 def test_format_com_error():
     assert format_com_error(com_error(-2147352571, "Type mismatch.", None, 8)) == (
-        "-2147352571: Type mismatch."
+        "Type mismatch. (HRESULT -2147352571)"
     )
+    msg = format_com_error(com_error(-2147352573, "Member not found.", None, None))
+    assert "Member not found" in msg
+    assert "HRESULT -2147352573" in msg
 
 
 def test_com_nothing_without_pywin32(monkeypatch):

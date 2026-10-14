@@ -11,9 +11,22 @@ from swauto.comutil import format_com_error
 from swauto.errors import SolidWorksError, SolidWorksNotRunning, SolidWorksUnavailable
 from swauto.session import connect
 from swauto.tank.shell import LiveTank, create_tank_shell
-from swauto.tank.spec import MAX_COURSES, Course, TankSpec
+from swauto.tank.spec import (
+    DEFAULT_MAX_PLATE_IN,
+    MAX_COURSES,
+    MODE_EQUAL,
+    STAGGER_BASE,
+    STAGGER_CUSTOM,
+    STAGGER_HALF,
+    Course,
+    TankSpec,
+    default_stagger_for_course,
+)
 
 _DEBOUNCE_MS = 600
+
+_STAGGER_LABELS = ("Base", "Half", "Custom")
+_STAGGER_VALUES = (STAGGER_BASE, STAGGER_HALF, STAGGER_CUSTOM)
 
 
 def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
@@ -25,14 +38,13 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
     parent.columnconfigure(0, weight=1)
 
     ttk.Label(top, text="Tank Properties (Shell)", font=("", 11, "bold")).grid(
-        row=0, column=0, columnspan=6, sticky="w"
+        row=0, column=0, columnspan=8, sticky="w"
     )
     ttk.Label(
         top,
-        text="Same idea as Elite ETP / AMETank shell setup: diameter + courses → 3D shell.\n"
-        "Create once, then edit values to update the SolidWorks model.",
+        text="Discrete shell plates per course (ETP stagger). Create once, then edit to update SolidWorks.",
         justify="left",
-    ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(0, 8))
+    ).grid(row=1, column=0, columnspan=8, sticky="w", pady=(0, 8))
 
     ttk.Label(top, text="Diameter").grid(row=2, column=0, sticky="w")
     diameter_var = tk.StringVar(value=f"{spec.diameter_in:g}")
@@ -49,29 +61,52 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
         state="readonly",
     ).grid(row=2, column=4, sticky="w")
 
-    height_var = tk.StringVar(value="")
-    ttk.Label(top, textvariable=height_var).grid(row=3, column=0, columnspan=6, sticky="w", pady=(4, 8))
+    ttk.Label(top, text="Seam offset").grid(row=2, column=5, sticky="w", padx=(12, 0))
+    offset_var = tk.StringVar(value=f"{spec.seam_offset_in:g}")
+    ttk.Entry(top, textvariable=offset_var, width=8).grid(row=2, column=6, sticky="w")
+    ttk.Label(top, text="in").grid(row=2, column=7, sticky="w")
 
-    course_frame = ttk.LabelFrame(top, text="Shell courses (bottom → top)", padding=6)
-    course_frame.grid(row=4, column=0, columnspan=6, sticky="ew")
-    ttk.Label(course_frame, text="#").grid(row=0, column=0)
-    ttk.Label(course_frame, text="Height (in)").grid(row=0, column=1)
-    ttk.Label(course_frame, text="Thickness (in)").grid(row=0, column=2)
+    height_var = tk.StringVar(value="")
+    ttk.Label(top, textvariable=height_var).grid(row=3, column=0, columnspan=8, sticky="w", pady=(4, 8))
+
+    course_frame = ttk.LabelFrame(top, text="Shell courses (bottom → top) — plates + stagger", padding=6)
+    course_frame.grid(row=4, column=0, columnspan=8, sticky="ew")
+    headers = ("#", "Height", "Thk", "Max len", "Stagger", "Adjust")
+    for col, text in enumerate(headers):
+        ttk.Label(course_frame, text=text).grid(row=0, column=col, padx=2)
 
     height_vars: list[tk.StringVar] = []
     thk_vars: list[tk.StringVar] = []
+    max_vars: list[tk.StringVar] = []
+    stagger_vars: list[tk.StringVar] = []
+    adjust_vars: list[tk.StringVar] = []
     for i in range(MAX_COURSES):
         course = spec.courses[i]
-        ttk.Label(course_frame, text=str(i + 1)).grid(row=i + 1, column=0, padx=4)
+        ttk.Label(course_frame, text=str(i + 1)).grid(row=i + 1, column=0, padx=2)
         hv = tk.StringVar(value=f"{course.height_in:g}")
         tv = tk.StringVar(value=f"{course.thickness_in:g}")
-        ttk.Entry(course_frame, textvariable=hv, width=10).grid(row=i + 1, column=1, padx=4, pady=1)
-        ttk.Entry(course_frame, textvariable=tv, width=10).grid(row=i + 1, column=2, padx=4, pady=1)
+        mv = tk.StringVar(value=f"{course.max_length_in:g}")
+        sv = tk.StringVar(value=_stagger_label(course.stagger))
+        av = tk.StringVar(value=f"{course.adjust_in:g}")
+        ttk.Entry(course_frame, textvariable=hv, width=8).grid(row=i + 1, column=1, padx=2, pady=1)
+        ttk.Entry(course_frame, textvariable=tv, width=8).grid(row=i + 1, column=2, padx=2, pady=1)
+        ttk.Entry(course_frame, textvariable=mv, width=8).grid(row=i + 1, column=3, padx=2, pady=1)
+        ttk.Combobox(
+            course_frame,
+            textvariable=sv,
+            values=_STAGGER_LABELS,
+            width=8,
+            state="readonly",
+        ).grid(row=i + 1, column=4, padx=2, pady=1)
+        ttk.Entry(course_frame, textvariable=av, width=8).grid(row=i + 1, column=5, padx=2, pady=1)
         height_vars.append(hv)
         thk_vars.append(tv)
+        max_vars.append(mv)
+        stagger_vars.append(sv)
+        adjust_vars.append(av)
 
     btn_row = ttk.Frame(top)
-    btn_row.grid(row=5, column=0, columnspan=6, sticky="ew", pady=(10, 0))
+    btn_row.grid(row=5, column=0, columnspan=8, sticky="ew", pady=(10, 0))
     create_btn = ttk.Button(btn_row, text="Create tank shell in SolidWorks")
     create_btn.pack(side="left")
     ttk.Button(btn_row, text="Save…", command=lambda: _save(read_spec)).pack(side="left", padx=6)
@@ -79,32 +114,66 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
 
     def read_spec() -> TankSpec:
         courses = []
-        for hv, tv in zip(height_vars, thk_vars, strict=True):
+        for hv, tv, mv, sv, av in zip(
+            height_vars, thk_vars, max_vars, stagger_vars, adjust_vars, strict=True
+        ):
             try:
                 h = float(hv.get().strip() or 0)
                 t = float(tv.get().strip() or 0)
+                m = float(mv.get().strip() or DEFAULT_MAX_PLATE_IN)
+                a = float(av.get().strip() or 0)
             except ValueError as exc:
-                raise ValueError("Course height/thickness must be numeric.") from exc
-            courses.append(Course(h, t))
+                raise ValueError("Course height/thickness/max/adjust must be numeric.") from exc
+            courses.append(
+                Course(
+                    height_in=h,
+                    thickness_in=t,
+                    max_length_in=m if m > 0 else DEFAULT_MAX_PLATE_IN,
+                    mode=MODE_EQUAL,
+                    stagger=_stagger_value(sv.get()),
+                    adjust_in=a,
+                )
+            )
         try:
             dia = float(diameter_var.get().strip())
+            off = float(offset_var.get().strip() or 0)
         except ValueError as exc:
-            raise ValueError("Diameter must be numeric.") from exc
-        return TankSpec(diameter_in=dia, diameter_basis=basis_var.get(), courses=courses)
+            raise ValueError("Diameter / seam offset must be numeric.") from exc
+        return TankSpec(
+            diameter_in=dia,
+            diameter_basis=basis_var.get(),
+            courses=courses,
+            seam_offset_in=off,
+        )
 
     def apply_spec(loaded: TankSpec) -> None:
         diameter_var.set(f"{loaded.diameter_in:g}")
         basis_var.set(loaded.diameter_basis)
+        offset_var.set(f"{loaded.seam_offset_in:g}")
         for i in range(MAX_COURSES):
-            course = loaded.courses[i] if i < len(loaded.courses) else Course(0.0, 0.0)
+            course = (
+                loaded.courses[i]
+                if i < len(loaded.courses)
+                else Course(0.0, 0.0, stagger=default_stagger_for_course(i + 1))
+            )
             height_vars[i].set(f"{course.height_in:g}")
             thk_vars[i].set(f"{course.thickness_in:g}")
+            max_vars[i].set(f"{course.max_length_in:g}")
+            stagger_vars[i].set(_stagger_label(course.stagger))
+            adjust_vars[i].set(f"{course.adjust_in:g}")
         refresh_height()
 
     def refresh_height(*_args) -> None:
         try:
             current = read_spec()
-            height_var.set(f"Shell height: {current.shell_height_in():g} in  ({current.shell_height_in() / 12:g} ft)")
+            from swauto.tank.plates import layout_plates
+
+            plates = layout_plates(current) if current.active_courses() else []
+            n = len(plates)
+            height_var.set(
+                f"Shell height: {current.shell_height_in():g} in  "
+                f"({current.shell_height_in() / 12:g} ft)  |  Plates: {n}"
+            )
         except ValueError:
             height_var.set("Shell height: —")
 
@@ -163,7 +232,7 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
             return
 
         create_btn.configure(state="disabled")
-        status_var.set("Creating tank shell… click SolidWorks if a dialog appears.")
+        status_var.set("Creating plated shell… click SolidWorks if a dialog appears.")
         root = parent.winfo_toplevel()
         root.update_idletasks()
         root.iconify()
@@ -189,15 +258,29 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
         create_btn.configure(text="Recreate tank shell", state="normal")
         root.deiconify()
         root.lift()
-        status_var.set(f"Live tank → {result.title}   (edit courses to update)")
+        status_var.set(f"Live tank → {result.title}   (edit courses / stagger to update)")
 
     create_btn.configure(command=create)
-    diameter_var.trace_add("write", schedule_update)
-    basis_var.trace_add("write", schedule_update)
-    for hv, tv in zip(height_vars, thk_vars, strict=True):
-        hv.trace_add("write", schedule_update)
-        tv.trace_add("write", schedule_update)
+    for var in (diameter_var, basis_var, offset_var):
+        var.trace_add("write", schedule_update)
+    for row in zip(height_vars, thk_vars, max_vars, stagger_vars, adjust_vars, strict=True):
+        for var in row:
+            var.trace_add("write", schedule_update)
     refresh_height()
+
+
+def _stagger_label(value: str) -> str:
+    try:
+        return _STAGGER_LABELS[_STAGGER_VALUES.index(value)]
+    except ValueError:
+        return "Base"
+
+
+def _stagger_value(label: str) -> str:
+    try:
+        return _STAGGER_VALUES[_STAGGER_LABELS.index(label)]
+    except ValueError:
+        return STAGGER_BASE
 
 
 def _save(read_spec) -> None:
@@ -215,7 +298,6 @@ def _save(read_spec) -> None:
     if not path:
         return
     spec.save_json(path)
-    # Also write ETP-style sidecar for future AutoCAD round-trip.
     etp_path = Path(path).with_suffix(".etp.json")
     etp_path.write_text(json.dumps(spec.to_etp_dict(), indent=2), encoding="utf-8")
     messagebox.showinfo("Tank Properties", f"Saved:\n{path}\n{etp_path}")

@@ -21,14 +21,28 @@ def set_parameter_meters(model, full_name: str, meters: float) -> None:
 
 
 def rebuild(model) -> None:
-    try:
-        # EditRebuild3 exists on SolidWorks 2013 ModelDoc2.
-        if hasattr(model, "EditRebuild3"):
-            model.EditRebuild3()
-        else:
-            model.ForceRebuild3(False)
-    except Exception as exc:
-        raise SolidWorksError(f"Rebuild failed: {format_com_error(exc)}") from exc
+    """Rebuild the model. On SW2013, EditRebuild3 is sometimes a bool, not a method."""
+    errors: list[str] = []
+    for name, args in (
+        ("ForceRebuild3", (False,)),
+        ("EditRebuild3", ()),
+        ("EditRebuild2", ()),
+        ("EditRebuild", ()),
+    ):
+        member = getattr(model, name, None)
+        if member is None:
+            continue
+        if not callable(member):
+            # Late-bound property / cached HRESULT — skip.
+            continue
+        try:
+            member(*args)
+            return
+        except Exception as exc:
+            errors.append(f"{name}: {format_com_error(exc)}")
+            continue
+    detail = "; ".join(errors) if errors else "no rebuild API worked"
+    raise SolidWorksError(f"Rebuild failed: {detail}")
 
 
 def rename_feature(feature, name: str) -> str:
