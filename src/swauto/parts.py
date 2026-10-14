@@ -323,3 +323,121 @@ def extrude_thin_blind(
 
     detail = "; ".join(errors) if errors else "unknown failure"
     raise SolidWorksError(f"Thin extrude failed ({detail}).")
+
+
+def cut_blind(
+    feature_manager,
+    depth_m: float,
+    *,
+    start_offset_m: float = 0.0,
+):
+    """Blind extruded cut of the selected sketch (SW2013-safe tries)."""
+    depth = float(depth_m)
+    start = float(start_offset_m)
+    t0 = _START_OFFSET if start > 1e-12 else 0
+
+    # Through-all first when no offset (separates a full ring in one go).
+    through_all_3 = (
+        True,
+        False,
+        False,
+        1,
+        0,
+        0.01,
+        0.01,
+        False,
+        False,
+        False,
+        False,
+        0.0,
+        0.0,
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+        True,
+    )
+    blind = (
+        True,
+        False,
+        False,
+        0,
+        0,
+        depth,
+        0.0,
+        False,
+        False,
+        False,
+        False,
+        0.0,
+        0.0,
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+        True,
+    )
+    blind4 = blind + (True, False, 0, 0.0, False)  # FeatureCut4 extra
+    blind4_off = (
+        True,
+        False,
+        False,
+        0,
+        0,
+        depth,
+        0.0,
+        False,
+        False,
+        False,
+        False,
+        0.0,
+        0.0,
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+        True,
+        True,
+        False,
+        t0,
+        start,
+        False,
+    )
+
+    errors: list[str] = []
+    attempts: list[tuple[str, tuple]] = []
+    if start <= 1e-12:
+        attempts.append(("FeatureCut3", through_all_3))
+        attempts.append(("FeatureCut4", through_all_3 + (True, False, 0, 0.0, False)))
+        attempts.append(("FeatureCut3", blind))
+        attempts.append(("FeatureCut4", blind4))
+        attempts.append(("FeatureCut2", blind[:15]))
+    else:
+        attempts.append(("FeatureCut4", blind4_off))
+        attempts.append(("FeatureCut3", blind))
+        attempts.append(("FeatureCut4", blind4))
+
+    for method_name, args in attempts:
+        method = getattr(feature_manager, method_name, None)
+        if method is None:
+            continue
+        try:
+            feature = method(*args)
+        except Exception as exc:
+            errors.append(f"{method_name}/{len(args)}: {format_com_error(exc)}")
+            continue
+        if feature is not None:
+            return feature
+        errors.append(f"{method_name}/{len(args)}: returned nothing")
+
+    detail = "; ".join(errors) if errors else "unknown failure"
+    raise SolidWorksError(f"Cut failed ({detail}).")

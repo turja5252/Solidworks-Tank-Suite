@@ -42,7 +42,7 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
     )
     ttk.Label(
         top,
-        text="Curved plates per course (ring + radial split). Falls back to seam lines if split fails.",
+        text="Curved plates: revolve each course, then cut at seams. Seam lines if cuts fail.",
         justify="left",
     ).grid(row=1, column=0, columnspan=8, sticky="w", pady=(0, 8))
 

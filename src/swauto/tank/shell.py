@@ -1,7 +1,7 @@
 """Build / rebuild a multi-course tank shell in SolidWorks (2013-safe).
 
 Approach B (preferred): each course = full revolved ring (curved), then radial
-reference surfaces at plate seams + Split → individual curved plate bodies.
+FeatureCuts at plate seams → separate curved plate bodies.
 
 Approach A (fallback): one multi-course revolve + 3D sketch seam lines.
 """
@@ -17,7 +17,7 @@ from swauto.comutil import as_model_doc, com_nothing, com_value, format_com_erro
 from swauto.errors import SolidWorksError
 from swauto.features import find_feature
 from swauto.params import rebuild, rename_feature
-from swauto.parts import extrude_thin_blind, new_part, select_front_plane, select_top_plane
+from swauto.parts import cut_blind, extrude_thin_blind, new_part, select_front_plane, select_top_plane
 from swauto.tank.plates import PlateSector, layout_plates
 from swauto.tank.profile import course_radii_m, shell_profile_meters
 from swauto.tank.spec import TankSpec
@@ -91,17 +91,17 @@ def _safe_delete_elite(model) -> None:
 
 
 def _build_shell_on_model(model, spec: TankSpec) -> None:
-    """B: curved plates via ring+split → A: revolve+seam sketch → stacked thin."""
+    """B: curved plates via ring+cut → A: revolve+seam sketch → stacked thin."""
     errors: list[str] = []
 
     try:
-        _build_split_plate_shell(model, spec)
+        _build_cut_plate_shell(model, spec)
         rebuild(model)
         with contextlib.suppress(Exception):
             model.ViewZoomtofit2()
         return
     except Exception as exc:
-        errors.append(f"plates/split: {format_com_error(exc)}")
+        errors.append(f"plates/cut: {format_com_error(exc)}")
         _safe_delete_elite(model)
 
     try:
@@ -129,12 +129,12 @@ def _build_shell_on_model(model, spec: TankSpec) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Approach B — curved course rings split at plate seams
+# Approach B — curved course rings, cut into plates at seams
 # ---------------------------------------------------------------------------
 
 
-def _build_split_plate_shell(model, spec: TankSpec) -> None:
-    """One revolved ring per course (true cylinder), then radial split into plates."""
+def _build_cut_plate_shell(model, spec: TankSpec) -> None:
+    """Revolve each course as a curved ring, then FeatureCut radial slots at seams."""
     plates = layout_plates(spec)
     if not plates:
         raise SolidWorksError("No plates to build.")
@@ -157,11 +157,10 @@ def _build_split_plate_shell(model, spec: TankSpec) -> None:
         first_body = False
 
         if len(course_plates) <= 1 or sample.is_full_ring:
-            rename_feature(find_feature(model, ring_name) or model.FeatureByPositionReverse(0), ring_name)
             continue
 
         seam_angles = sorted({p.start_rad for p in course_plates})
-        _split_ring_at_seams(model, ring_name, sample, seam_angles)
+        _cut_ring_at_seams(model, ring_name, sample, seam_angles)
 
 
 def _build_course_ring(model, plate: PlateSector, *, merge: bool, feature_name: str) -> None:
@@ -200,222 +199,62 @@ def _build_course_ring(model, plate: PlateSector, *, merge: bool, feature_name: 
     rename_feature(feat, feature_name)
 
 
-def _split_ring_at_seams(
+def _cut_ring_at_seams(
     model, ring_name: str, plate: PlateSector, seam_angles: list[float]
 ) -> None:
-    """Radial extruded surfaces through the axis, then Split the course ring."""
-    cutter_names: list[str] = []
-    r = max(float(plate.outer_r_m) * 1.2, float(plate.outer_r_m) + 0.05)
-
-    for i, theta in enumerate(seam_angles, start=1):
-        cutter = _create_radial_cutter_surface(model, theta, r, plate, f"{ring_name}Cut{i:02d}")
-        if cutter:
-            cutter_names.append(cutter)
-
-    if not cutter_names:
-        raise SolidWorksError(f"{ring_name}: no radial cutters created.")
-
-    nothing = com_nothing()
-    model.ClearSelection2(True)
-
-    # Select solid body of the ring (mark 0) then cutters (append).
-    selected_body = False
-    for type_name in ("SOLIDBODY", "BODYFEATURE", "BODY"):
-        try:
-            if model.Extension.SelectByID2(ring_name, type_name, 0.0, 0.0, 0.0, False, 1, nothing, 0):
-                selected_body = True
-                break
-        except Exception:
-            continue
-    if not selected_body:
-        feat = find_feature(model, ring_name)
-        if feat is not None:
-            with contextlib.suppress(Exception):
-                selected_body = bool(feat.Select2(False, 1))
-    if not selected_body:
-        # Fall back: select any solid body
-        with contextlib.suppress(Exception):
-            bodies = model.GetBodies2(0, False)  # swSolidBody
-            if bodies:
-                body = bodies[0] if not isinstance(bodies, (list, tuple)) else bodies[0]
-                selected_body = bool(body.Select2(False, 1))
-
-    if not selected_body:
-        raise SolidWorksError(f"{ring_name}: could not select solid body to split.")
-
-    for name in cutter_names:
-        for type_name in ("SURFACEBODY", "BODYFEATURE", "SURFACE"):
-            try:
-                if model.Extension.SelectByID2(name, type_name, 0.0, 0.0, 0.0, True, 2, nothing, 0):
-                    break
-            except Exception:
-                continue
-
-    fm = model.FeatureManager
-    split = None
-    errors: list[str] = []
-    for method_name, args in (
-        ("InsertSplitBody2", (True,)),
-        ("InsertSplitBody2", (True, True)),
-        ("InsertSplitBody", (True,)),
-        ("PostSplitBody2", ()),
-    ):
-        method = getattr(fm, method_name, None)
-        if method is None:
-            continue
-        try:
-            split = method(*args)
-        except Exception as exc:
-            errors.append(f"{method_name}: {format_com_error(exc)}")
-            continue
-        if split is not None or method_name.startswith("Post"):
-            break
-
-    # Some builds need PreSplitBody then PostSplitBody
-    if split is None:
-        pre = getattr(fm, "PreSplitBody", None) or getattr(fm, "PreSplitBody2", None)
-        post = getattr(fm, "PostSplitBody", None) or getattr(fm, "PostSplitBody2", None)
-        if pre is not None and post is not None:
-            try:
-                pre()
-                split = post()
-            except Exception as exc:
-                errors.append(f"Pre/PostSplit: {format_com_error(exc)}")
-
-    if split is not None:
-        with contextlib.suppress(Exception):
-            rename_feature(split, f"{ring_name}Split")
-        return
-
-    # Last resort: thin radial cuts (kerf) — still curved plate bodies.
-    _kerf_cut_ring(model, ring_name, plate, seam_angles)
-
-
-def _create_radial_cutter_surface(
-    model, theta: float, radius: float, plate: PlateSector, name: str
-) -> str | None:
-    """Diameter line on Top plane → extruded reference surface (radial plane)."""
-    select_top_plane(model)
-    sk = model.SketchManager
-    sk.InsertSketch(True)
-    # Top sketch: x→X, y→Z. Line through origin at angle theta.
-    c = math.cos(theta)
-    s = math.sin(theta)
-    x1, z1 = -radius * c, -radius * s
-    x2, z2 = radius * c, radius * s
-    if sk.CreateLine(float(x1), float(z1), 0.0, float(x2), float(z2), 0.0) is None:
-        model.ClearSelection2(True)
-        with contextlib.suppress(Exception):
-            sk.InsertSketch(True)
-        return None
-    model.ClearSelection2(True)
-    sk.InsertSketch(True)
-
-    sketch = model.FeatureByPositionReverse(0)
-    if sketch is None:
-        return None
-    sk_name = f"{name}Sk"
-    rename_feature(sketch, sk_name)
-    sketch.Select2(False, 0)
-
-    fm = model.FeatureManager
-    # Through-all reference surface (covers full shell height).
-    surf = None
-    through_all = (
-        True, False, False, 1, 0, 0.01, 0.0,
-        False, False, False, False, 0.0, 0.0, False, False, False, False,
-    )
-    mid_h = max(float(plate.z_bot_m) + float(plate.height_m), 1.0)
-    mid_plane = (
-        True, False, False, 6, 0, mid_h, 0.0,
-        False, False, False, False, 0.0, 0.0, False, False, False, False,
-    )
-    attempts = (
-        ("FeatureExtruRefSurface2", through_all),
-        ("FeatureExtruRefSurface", through_all[:15]),
-        ("FeatureExtruRefSurface2", mid_plane),
-    )
-    for method_name, args in attempts:
-        method = getattr(fm, method_name, None)
-        if method is None:
-            continue
-        try:
-            surf = method(*args)
-        except Exception:
-            continue
-        if surf is not None:
-            break
-
-    if surf is None:
-        # Fallback: solid thin cut uses the sketch as cut profile instead
-        return None
-
-    rename_feature(surf, name)
-    return name
-
-
-def _kerf_cut_ring(model, ring_name: str, plate: PlateSector, seam_angles: list[float]) -> None:
-    """If Split API is missing: thin radial extruded cuts (small kerf) between plates."""
-    kerf = max(float(plate.outer_r_m) * 1e-4, 0.0002)  # ~0.2 mm
-    r = max(float(plate.outer_r_m) * 1.15, float(plate.outer_r_m) + 0.02)
-
-    cut4 = (
-        True, False, False, 1, 0, 0.01, 0.01,
-        False, False, False, False, 0.0, 0.0, False, False, False, False, False,
-        True, True, True, True, False, 0, 0.0, False, False,
-    )
-    cut3 = (
-        True, False, False, 1, 0, 0.01, 0.01,
-        False, False, False, False, 0.0, 0.0, False, False, False, False, False,
-        True, True, True,
-    )
-    cut2 = (
-        True, False, False, 1, 0, 0.01, 0.01,
-        False, False, False, False, 0.0, 0.0, False, False,
-    )
+    """Cut a thin radial slot at each seam (only through this course's height)."""
+    kerf = max(float(plate.outer_r_m) * 2e-4, 0.0005)  # ~0.5 mm
+    r_in = max(float(plate.inner_r_m) * 0.25, 0.001)
+    r_out = float(plate.outer_r_m) * 1.15
+    z0 = float(plate.z_bot_m)
+    height = float(plate.height_m)
+    cut_count = 0
 
     for i, theta in enumerate(seam_angles, start=1):
         select_top_plane(model)
         sk = model.SketchManager
         sk.InsertSketch(True)
         c, s = math.cos(theta), math.sin(theta)
+        # Perpendicular to ray for kerf width — ray only (not full diameter cross).
         px, pz = -s * (kerf / 2.0), c * (kerf / 2.0)
         pts = [
-            (-r * c + px, -r * s + pz),
-            (r * c + px, r * s + pz),
-            (r * c - px, r * s - pz),
-            (-r * c - px, -r * s - pz),
-            (-r * c + px, -r * s + pz),
+            (r_in * c + px, r_in * s + pz),
+            (r_out * c + px, r_out * s + pz),
+            (r_out * c - px, r_out * s - pz),
+            (r_in * c - px, r_in * s - pz),
+            (r_in * c + px, r_in * s + pz),
         ]
         for (a, b), (d, e) in zip(pts, pts[1:], strict=False):
             if sk.CreateLine(float(a), float(b), 0.0, float(d), float(e), 0.0) is None:
-                raise SolidWorksError(f"{ring_name}: kerf sketch failed.")
+                raise SolidWorksError(f"{ring_name}: seam cut sketch failed at {i}.")
         model.ClearSelection2(True)
         sk.InsertSketch(True)
         sketch = model.FeatureByPositionReverse(0)
-        rename_feature(sketch, f"{ring_name}Kerf{i:02d}Sk")
+        if sketch is None:
+            raise SolidWorksError(f"{ring_name}: missing cut sketch {i}.")
+        rename_feature(sketch, f"{ring_name}Cut{i:02d}Sk")
         sketch.Select2(False, 0)
 
-        fm = model.FeatureManager
-        cut = None
-        for method_name, args in (
-            ("FeatureCut4", cut4),
-            ("FeatureCut3", cut3),
-            ("FeatureCut2", cut3),
-            ("FeatureCut", cut2),
-        ):
-            method = getattr(fm, method_name, None)
-            if method is None:
-                continue
-            try:
-                cut = method(*args)
-            except Exception:
-                continue
-            if cut is not None:
-                break
-        if cut is not None:
-            rename_feature(cut, f"{ring_name}Kerf{i:02d}")
+        try:
+            cut = cut_blind(
+                model.FeatureManager,
+                height,
+                start_offset_m=z0,
+            )
+        except Exception as exc:
+            # Blind-from-Top without offset may still work for course 1.
+            if z0 > 1e-9:
+                raise SolidWorksError(
+                    f"{ring_name} cut {i}: {format_com_error(exc)}"
+                ) from exc
+            cut = cut_blind(model.FeatureManager, height, start_offset_m=0.0)
+
+        rename_feature(cut, f"{ring_name}Cut{i:02d}")
+        cut_count += 1
         model.ClearSelection2(True)
+
+    if cut_count == 0:
+        raise SolidWorksError(f"{ring_name}: no seam cuts created.")
 
 
 def _try_build_seam_sketch(model, spec: TankSpec, errors: list[str]) -> None:
