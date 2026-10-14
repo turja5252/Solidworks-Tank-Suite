@@ -15,8 +15,8 @@ Inspired by your Elite AutoLISP Tank Properties (ETP) workflow and by how apps l
 - Diameter + basis (outside / inside / centerline)
 - Up to 8 shell courses (height + thickness), bottom → top
 - **Per-course plate layout**: max length, Base/Half/Custom stagger, Adjust (inches) — same idea as AutoLISP Shell Plate Layout
-- **Create tank shell** → revolved multi-course wall + **3D sketch seam lines** (Approach A)
-- Change values with the part still open → shell + seams rebuild
+- **Create tank shell** → each course as a curved ring, **split into plates** at staggered seams (Approach B); falls back to seam sketch (A)
+- Change values with the part still open → shell rebuilds
 - **Save / Load** JSON (plus an ETP-style sidecar for future AutoCAD round-trip)
 
 ### Live Cylinder tab
@@ -28,8 +28,8 @@ Practice parametric create/update (diameter × height).
 | Phase | Module | Status |
 |-------|--------|--------|
 | 1 | Tank Properties + live revolved shell | **now** |
-| 1b | Plate seams on shell (Approach A stagger) | **now** |
-| 1c | Discrete plate solids (Approach B) | later |
+| 1b | Plate seams on shell (Approach A) | fallback |
+| 1c | Curved plates via ring + radial split (B) | **now** |
 | 2 | Floor / annular / chime | next |
 | 3 | Roof (cone / rafter types from ETP) | later |
 | 4 | Shell nozzles + roof nozzles (from RNC / ROOFNOZZLES) | later |

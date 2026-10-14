@@ -42,7 +42,7 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
     )
     ttk.Label(
         top,
-        text="Revolved shell + plate seam lines (Approach A). Stagger/max/adjust drive seam layout.",
+        text="Curved plates per course (ring + radial split). Falls back to seam lines if split fails.",
         justify="left",
     ).grid(row=1, column=0, columnspan=8, sticky="w", pady=(0, 8))
 
