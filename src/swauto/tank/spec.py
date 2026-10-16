@@ -26,6 +26,35 @@ def default_stagger_for_course(course_no: int) -> str:
     return STAGGER_HALF if course_no % 2 == 0 else STAGGER_BASE
 
 
+# First-course diameter, and how an upper course meets that course.
+WALL_OD = "od"
+WALL_ID = "id"
+WALL_MW = "mw"
+
+_WALL_ALIASES = {
+    "od": WALL_OD,
+    "outside": WALL_OD,
+    "outer": WALL_OD,
+    "id": WALL_ID,
+    "inside": WALL_ID,
+    "inner": WALL_ID,
+    "mw": WALL_MW,
+    "midwall": WALL_MW,
+    "mid wall": WALL_MW,
+    "centerline": WALL_MW,
+    "center": WALL_MW,
+}
+
+
+def normalize_wall(value: str, *, what: str = "Wall reference") -> str:
+    """Return ``od``, ``id``, or ``mw``. Accepts the older outside/inside/centerline words."""
+    key = " ".join(str(value or "").strip().lower().replace("_", " ").replace("-", " ").split())
+    found = _WALL_ALIASES.get(key)
+    if found is None:
+        raise ValueError(f"{what} must be ID, MW, or OD.")
+    return found
+
+
 @dataclass(frozen=True)
 class Course:
     height_in: float
@@ -43,8 +72,10 @@ class Course:
 class TankSpec:
     """Core shell inputs. Units are inches unless noted."""
 
-    diameter_in: float = 606.0  # 50'-6"
-    diameter_basis: str = "outside"  # outside | inside | centerline
+    diameter_in: float = 606.0  # 50'-6", first course only
+    diameter_basis: str = WALL_MW  # od | id | mw (outside/inside/centerline still load)
+    # Every course uses this same face against the first course: od, id, or mw.
+    stack: str = WALL_MW
     courses: list[Course] = field(default_factory=list)
     roof_type: str = "Internal Rafter Roof"
     floor_type: str = "Flat Bottom"
@@ -52,6 +83,8 @@ class TankSpec:
     seam_offset_in: float = 0.0
 
     def __post_init__(self) -> None:
+        self.diameter_basis = normalize_wall(self.diameter_basis, what="First course diameter")
+        self.stack = normalize_wall(self.stack, what="Shell stack")
         if not self.courses:
             self.courses = [
                 Course(96.0, 1.0, stagger=default_stagger_for_course(1))
@@ -78,8 +111,8 @@ class TankSpec:
     def validate(self) -> None:
         if self.diameter_in <= 0:
             raise ValueError("Diameter must be greater than zero.")
-        if self.diameter_basis not in {"outside", "inside", "centerline"}:
-            raise ValueError("Diameter basis must be outside, inside, or centerline.")
+        normalize_wall(self.diameter_basis, what="First course diameter")
+        normalize_wall(self.stack, what="Shell stack")
         active = self.active_courses()
         if not active:
             raise ValueError("Enter at least one course with height and thickness.")
@@ -103,6 +136,7 @@ class TankSpec:
             "ROOF_TYPE": self.roof_type,
             "FLOOR_TYPE": self.floor_type,
             "SHELL_STRETCH_OFFSET": f"{self.seam_offset_in:g}",
+            "SHELL_STACK": normalize_wall(self.stack, what="Shell stack"),
         }
         for i in range(MAX_COURSES):
             course = self.courses[i] if i < len(self.courses) else Course(0.0, 0.0)
@@ -117,9 +151,10 @@ class TankSpec:
 
     @classmethod
     def from_etp_dict(cls, data: dict) -> TankSpec:
-        basis = str(data.get("TANK_DIAMETER", "outside")).strip().lower()
-        if basis not in {"outside", "inside", "centerline"}:
-            basis = "outside"
+        try:
+            basis = normalize_wall(str(data.get("TANK_DIAMETER", WALL_MW)), what="First course diameter")
+        except ValueError:
+            basis = WALL_MW
         feet = float(data.get("DIAMETER_FT", 0) or 0)
         inches = float(data.get("DIAMETER_IN", 0) or 0)
         diameter = feet * 12.0 + inches
@@ -142,9 +177,15 @@ class TankSpec:
                 )
             )
         offset = float(data.get("SHELL_STRETCH_OFFSET", 0) or 0)
+        stack_raw = data.get("SHELL_STACK", data.get("SHELL_COURSE_2_STACK", WALL_MW))
+        try:
+            stack = normalize_wall(str(stack_raw), what="Shell stack")
+        except ValueError:
+            stack = WALL_MW
         return cls(
             diameter_in=diameter or 120.0,
             diameter_basis=basis,
+            stack=stack,
             courses=courses,
             roof_type=str(data.get("ROOF_TYPE", "Internal Rafter Roof")),
             floor_type=str(data.get("FLOOR_TYPE", "Flat Bottom")),
@@ -157,10 +198,15 @@ class TankSpec:
     @classmethod
     def load_json(cls, path: str | Path) -> TankSpec:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        courses = [Course(**c) for c in raw.get("courses", [])]
+        courses = []
+        for raw_course in raw.get("courses", []):
+            course_data = dict(raw_course)
+            course_data.pop("stack", None)
+            courses.append(Course(**course_data))
         return cls(
             diameter_in=float(raw.get("diameter_in", 120)),
             diameter_basis=str(raw.get("diameter_basis", "outside")),
+            stack=str(raw.get("stack", WALL_MW)),
             courses=courses,
             roof_type=str(raw.get("roof_type", "Internal Rafter Roof")),
             floor_type=str(raw.get("floor_type", "Flat Bottom")),

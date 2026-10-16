@@ -18,18 +18,24 @@ from swauto.tank.spec import (
     STAGGER_BASE,
     STAGGER_CUSTOM,
     STAGGER_HALF,
+    WALL_ID,
+    WALL_MW,
+    WALL_OD,
     Course,
     TankSpec,
     default_stagger_for_course,
+    normalize_wall,
 )
 
 _DEBOUNCE_MS = 600
 
 _STAGGER_LABELS = ("Base", "Half", "Custom")
 _STAGGER_VALUES = (STAGGER_BASE, STAGGER_HALF, STAGGER_CUSTOM)
+_WALL_LABELS = ("ID", "MW", "OD")
+_WALL_VALUES = (WALL_ID, WALL_MW, WALL_OD)
 
 
-def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
+def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | None = None) -> None:
     spec = TankSpec()
     state: dict[str, object] = {"live": None, "after_id": None, "busy": False}
 
@@ -38,39 +44,52 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
     parent.columnconfigure(0, weight=1)
 
     ttk.Label(top, text="Tank Properties (Shell)", font=("", 11, "bold")).grid(
-        row=0, column=0, columnspan=8, sticky="w"
+        row=0, column=0, columnspan=10, sticky="w"
     )
     ttk.Label(
         top,
-        text="Individual curved plates (limited revolve + stagger). Seam lines if that fails.",
+        text=(
+            "Diameter is the first course (ID, mid-wall, or OD). "
+            "Stack is one choice for every course: all IDs, all mid-walls, or all ODs line up with course 1."
+        ),
         justify="left",
-    ).grid(row=1, column=0, columnspan=8, sticky="w", pady=(0, 8))
+    ).grid(row=1, column=0, columnspan=10, sticky="w", pady=(0, 8))
 
     ttk.Label(top, text="Diameter").grid(row=2, column=0, sticky="w")
     diameter_var = tk.StringVar(value=f"{spec.diameter_in:g}")
     ttk.Entry(top, textvariable=diameter_var, width=10).grid(row=2, column=1, sticky="w")
     ttk.Label(top, text="in").grid(row=2, column=2, sticky="w")
 
-    ttk.Label(top, text="Basis").grid(row=2, column=3, sticky="w", padx=(12, 0))
-    basis_var = tk.StringVar(value=spec.diameter_basis)
+    ttk.Label(top, text="1st course").grid(row=2, column=3, sticky="w", padx=(12, 0))
+    basis_var = tk.StringVar(value=_wall_label(spec.diameter_basis))
     ttk.Combobox(
         top,
         textvariable=basis_var,
-        values=("outside", "inside", "centerline"),
-        width=12,
+        values=_WALL_LABELS,
+        width=6,
         state="readonly",
     ).grid(row=2, column=4, sticky="w")
 
-    ttk.Label(top, text="Seam offset").grid(row=2, column=5, sticky="w", padx=(12, 0))
+    ttk.Label(top, text="Stack").grid(row=2, column=5, sticky="w", padx=(12, 0))
+    stack_var = tk.StringVar(value=_wall_label(spec.stack))
+    ttk.Combobox(
+        top,
+        textvariable=stack_var,
+        values=_WALL_LABELS,
+        width=6,
+        state="readonly",
+    ).grid(row=2, column=6, sticky="w")
+
+    ttk.Label(top, text="Seam offset").grid(row=2, column=7, sticky="w", padx=(12, 0))
     offset_var = tk.StringVar(value=f"{spec.seam_offset_in:g}")
-    ttk.Entry(top, textvariable=offset_var, width=8).grid(row=2, column=6, sticky="w")
-    ttk.Label(top, text="in").grid(row=2, column=7, sticky="w")
+    ttk.Entry(top, textvariable=offset_var, width=8).grid(row=2, column=8, sticky="w")
+    ttk.Label(top, text="in").grid(row=2, column=9, sticky="w")
 
     height_var = tk.StringVar(value="")
-    ttk.Label(top, textvariable=height_var).grid(row=3, column=0, columnspan=8, sticky="w", pady=(4, 8))
+    ttk.Label(top, textvariable=height_var).grid(row=3, column=0, columnspan=10, sticky="w", pady=(4, 8))
 
     course_frame = ttk.LabelFrame(top, text="Shell courses (bottom → top) — plates + stagger", padding=6)
-    course_frame.grid(row=4, column=0, columnspan=8, sticky="ew")
+    course_frame.grid(row=4, column=0, columnspan=10, sticky="ew")
     headers = ("#", "Height", "Thk", "Max len", "Stagger", "Adjust")
     for col, text in enumerate(headers):
         ttk.Label(course_frame, text=text).grid(row=0, column=col, padx=2)
@@ -106,7 +125,7 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
         adjust_vars.append(av)
 
     btn_row = ttk.Frame(top)
-    btn_row.grid(row=5, column=0, columnspan=8, sticky="ew", pady=(10, 0))
+    btn_row.grid(row=5, column=0, columnspan=10, sticky="ew", pady=(10, 0))
     create_btn = ttk.Button(btn_row, text="Create tank shell in SolidWorks")
     create_btn.pack(side="left")
     ttk.Button(btn_row, text="Save…", command=lambda: _save(read_spec)).pack(side="left", padx=6)
@@ -141,14 +160,16 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
             raise ValueError("Diameter / seam offset must be numeric.") from exc
         return TankSpec(
             diameter_in=dia,
-            diameter_basis=basis_var.get(),
+            diameter_basis=_wall_value(basis_var.get()),
+            stack=_wall_value(stack_var.get()),
             courses=courses,
             seam_offset_in=off,
         )
 
     def apply_spec(loaded: TankSpec) -> None:
         diameter_var.set(f"{loaded.diameter_in:g}")
-        basis_var.set(loaded.diameter_basis)
+        basis_var.set(_wall_label(loaded.diameter_basis))
+        stack_var.set(_wall_label(loaded.stack))
         offset_var.set(f"{loaded.seam_offset_in:g}")
         for i in range(MAX_COURSES):
             course = (
@@ -174,6 +195,8 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
                 f"Shell height: {current.shell_height_in():g} in  "
                 f"({current.shell_height_in() / 12:g} ft)  |  Plates: {n}"
             )
+            if holder is not None:
+                holder["spec"] = current
         except ValueError:
             height_var.set("Shell height: —")
 
@@ -255,18 +278,39 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar) -> None:
             return
 
         state["live"] = result.live
+        if holder is not None:
+            holder["live"] = result.live
+            holder["spec"] = spec_now
         create_btn.configure(text="Recreate tank shell", state="normal")
         root.deiconify()
         root.lift()
-        status_var.set(f"Live tank → {result.title}   (edit courses / stagger to update)")
+        if result.note:
+            status_var.set(result.note)
+            messagebox.showwarning("Tank Properties", result.note)
+        else:
+            status_var.set(f"Live tank → {result.title}   (edit courses / stagger to update)")
 
     create_btn.configure(command=create)
-    for var in (diameter_var, basis_var, offset_var):
+    for var in (diameter_var, basis_var, stack_var, offset_var):
         var.trace_add("write", schedule_update)
     for row in zip(height_vars, thk_vars, max_vars, stagger_vars, adjust_vars, strict=True):
         for var in row:
             var.trace_add("write", schedule_update)
     refresh_height()
+
+
+def _wall_label(value: str) -> str:
+    try:
+        return _WALL_LABELS[_WALL_VALUES.index(normalize_wall(value))]
+    except ValueError:
+        return "MW"
+
+
+def _wall_value(label: str) -> str:
+    try:
+        return _WALL_VALUES[_WALL_LABELS.index(label)]
+    except ValueError:
+        return WALL_MW
 
 
 def _stagger_label(value: str) -> str:

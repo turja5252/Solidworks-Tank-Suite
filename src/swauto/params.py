@@ -48,7 +48,11 @@ def rebuild(model) -> None:
 def rename_feature(feature, name: str) -> str:
     with contextlib.suppress(Exception):
         feature.Name = name
-    return str(com_value(feature.Name) or name)
+    with contextlib.suppress(Exception):
+        current = str(com_value(feature.Name) or "")
+        if current:
+            return current
+    return name
 
 
 def first_dimension_full_name(feature) -> str | None:

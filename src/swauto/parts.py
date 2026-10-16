@@ -144,17 +144,23 @@ def extrude_blind(
     depth_m: float,
     *,
     merge: bool = True,
+    flip: bool = False,
+    reverse: bool = False,
     start_offset_m: float = 0.0,
     prefer_legacy: bool = True,
 ):
-    """Blind boss-extrude the selected sketch. Tries newer then older FeatureExtrusion2 signatures."""
+    """Blind boss-extrude the selected sketch. Tries newer then older FeatureExtrusion2 signatures.
+
+    ``reverse`` flips the extrude off the sketch plane. On the Top plane that
+    sends a floor plate downward from the shell datum.
+    """
     depth = float(depth_m)
     start = float(start_offset_m)
     t0 = _START_OFFSET if start > 1e-12 else 0
     legacy = (
         True,
-        False,
-        False,
+        bool(flip),
+        bool(reverse),
         0,
         0,
         depth,

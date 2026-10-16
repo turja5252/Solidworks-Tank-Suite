@@ -76,3 +76,22 @@ def test_etp_roundtrip_includes_stagger():
     assert back.courses[0].stagger == STAGGER_HALF
     assert back.courses[0].adjust_in == 12.0
     assert back.seam_offset_in == 5.0
+
+
+def test_plate_plane_contains_start_azimuth():
+    from swauto.tank.shell import containing_plane_angle, radius_sign_for_azimuth
+
+    assert abs(containing_plane_angle(0.0)) < 1e-9
+    assert abs(containing_plane_angle(math.pi)) < 1e-9
+    assert radius_sign_for_azimuth(0.0, 0.0) == 1.0
+    assert radius_sign_for_azimuth(0.0, math.pi) == -1.0
+
+    # pi/2 folds onto the Right plane (same plane as -pi/2). Sketch +X at -pi/2
+    # is the opposite side, so the profile is drawn on negative radius.
+    assert abs(containing_plane_angle(math.pi / 2) + math.pi / 2) < 1e-9
+    assert radius_sign_for_azimuth(-math.pi / 2, math.pi / 2) == -1.0
+
+    two_thirds = 2.0 * math.pi / 3.0
+    plane = containing_plane_angle(two_thirds)
+    assert abs(plane + math.pi / 3.0) < 1e-9
+    assert radius_sign_for_azimuth(plane, two_thirds) == -1.0

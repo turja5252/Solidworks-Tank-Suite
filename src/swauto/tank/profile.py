@@ -2,27 +2,56 @@
 
 from __future__ import annotations
 
-from swauto.tank.spec import Course, TankSpec
+from swauto.tank.spec import WALL_ID, WALL_OD, Course, TankSpec, normalize_wall
 from swauto.units import to_meters
 
 
-def course_radii_m(spec: TankSpec, course: Course) -> tuple[float, float]:
-    """Return (outer_radius_m, inner_radius_m) for one course."""
-    dia_m = to_meters(spec.diameter_in, "in")
-    thk_m = to_meters(course.thickness_in, "in")
-    half = dia_m / 2.0
-    if spec.diameter_basis == "outside":
-        outer, inner = half, half - thk_m
-    elif spec.diameter_basis == "inside":
-        inner, outer = half, half + thk_m
-    else:  # centerline — plate mid-wall on the given diameter
-        outer, inner = half + thk_m / 2.0, half - thk_m / 2.0
+def _radii_for_reference(reference_m: float, thickness_m: float, wall: str) -> tuple[float, float]:
+    """Place a wall of ``thickness_m`` on a radius that is OD, ID, or mid-wall."""
+    if wall == WALL_OD:
+        return reference_m, reference_m - thickness_m
+    if wall == WALL_ID:
+        return reference_m + thickness_m, reference_m
+    mid = reference_m
+    return mid + thickness_m / 2.0, mid - thickness_m / 2.0
+
+
+def _check_radii(outer: float, inner: float, course: Course, spec: TankSpec) -> tuple[float, float]:
     if inner <= 0 or outer <= inner:
         raise ValueError(
             f"Course thickness {course.thickness_in:g}\" is too large for "
             f"diameter {spec.diameter_in:g}\" ({spec.diameter_basis})."
         )
     return outer, inner
+
+
+def course_radii_m(spec: TankSpec, course: Course) -> tuple[float, float]:
+    """Return (outer_radius_m, inner_radius_m).
+
+    The typed diameter is the first course only: OD, ID, or mid-wall.
+    ``spec.stack`` is one choice for the whole shell. Every course lines
+    that same face up with the first course.
+    """
+    active = spec.active_courses() or [course]
+    first = active[0]
+    basis = normalize_wall(spec.diameter_basis, what="First course diameter")
+    first_outer, first_inner = _check_radii(
+        *_radii_for_reference(to_meters(spec.diameter_in, "in") / 2.0, to_meters(first.thickness_in, "in"), basis),
+        first,
+        spec,
+    )
+    if course is first:
+        return first_outer, first_inner
+
+    stack = normalize_wall(spec.stack, what="Shell stack")
+    thickness_m = to_meters(course.thickness_in, "in")
+    if stack == WALL_OD:
+        reference = first_outer
+    elif stack == WALL_ID:
+        reference = first_inner
+    else:
+        reference = 0.5 * (first_outer + first_inner)
+    return _check_radii(*_radii_for_reference(reference, thickness_m, stack), course, spec)
 
 
 def shell_profile_meters(spec: TankSpec) -> list[tuple[float, float]]:

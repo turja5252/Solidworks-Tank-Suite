@@ -11,15 +11,28 @@ from swauto.errors import SolidWorksError
 _SKETCH_ARC = 1
 
 
-def find_feature(model, name: str):
-    feat = model.FirstFeature()
+def iter_features(model):
+    """Walk the feature tree.
+
+    On SolidWorks 2013 late binding, FirstFeature and GetNextFeature are
+    properties. Calling them invokes the feature and raises Member not found.
+    """
+    try:
+        feat = com_value(model.FirstFeature)
+    except Exception:
+        return
     while feat is not None:
-        if str(com_value(feat.Name) or "") == name:
-            return feat
+        yield feat
         try:
-            feat = feat.GetNextFeature()
+            feat = com_value(feat.GetNextFeature)
         except Exception:
             break
+
+
+def find_feature(model, name: str):
+    for feat in iter_features(model):
+        if str(com_value(feat.Name) or "") == name:
+            return feat
     return None
 
 

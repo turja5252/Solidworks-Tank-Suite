@@ -27,3 +27,27 @@ def test_centerline_basis():
     spec = TankSpec(diameter_in=100, diameter_basis="centerline", courses=[Course(12, 2)])
     outer, inner = course_radii_m(spec, spec.courses[0])
     assert (outer + inner) / 2 == pytest.approx(50 * 0.0254)
+
+
+def _two_course(stack: str) -> tuple[TankSpec, tuple[float, float], tuple[float, float]]:
+    spec = TankSpec(
+        diameter_in=100,
+        diameter_basis="mw",
+        stack=stack,
+        courses=[Course(48, 1.0), Course(48, 0.5)],
+    )
+    return spec, course_radii_m(spec, spec.courses[0]), course_radii_m(spec, spec.courses[1])
+
+
+def test_shell_stack_is_one_choice_for_every_course():
+    spec, (c1_outer, c1_inner), (od_outer, od_inner) = _two_course("od")
+    assert (c1_outer + c1_inner) / 2 == pytest.approx(50 * 0.0254)
+    assert od_outer == pytest.approx(c1_outer)
+    assert od_outer - od_inner == pytest.approx(0.5 * 0.0254)
+
+    spec, (c1_outer, c1_inner), (id_outer, id_inner) = _two_course("id")
+    assert id_inner == pytest.approx(c1_inner)
+    assert course_radii_m(spec, spec.courses[0])[1] == pytest.approx(c1_inner)
+
+    _spec, (c1_outer, c1_inner), (mw_outer, mw_inner) = _two_course("mw")
+    assert (mw_outer + mw_inner) / 2 == pytest.approx((c1_outer + c1_inner) / 2)
