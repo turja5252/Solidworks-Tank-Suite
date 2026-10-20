@@ -10,7 +10,7 @@ from swauto.errors import SolidWorksError, SolidWorksNotRunning, SolidWorksUnava
 from swauto.session import connect
 from swauto.tank.floor_gui import build_floor_tab
 from swauto.tank.gui import build_tank_tab
-from swauto.stair.stringer_gui import build_stringer_tab
+from swauto.stair.stringer_gui import build_stringer_tab, build_tread_joint_tab
 from swauto.tank.roof_gui import build_roof_tab
 
 _DEBOUNCE_MS = 450
@@ -30,16 +30,19 @@ def main() -> int:
     floor_tab = ttk.Frame(notebook)
     roof_tab = ttk.Frame(notebook)
     stringer_tab = ttk.Frame(notebook)
+    joint_tab = ttk.Frame(notebook)
     cyl_tab = ttk.Frame(notebook)
     notebook.add(tank_tab, text="Tank Properties")
     notebook.add(floor_tab, text="Floor")
     notebook.add(roof_tab, text="Roof")
     notebook.add(stringer_tab, text="Stringer")
+    notebook.add(joint_tab, text="Tread Joint")
     notebook.add(cyl_tab, text="Live Cylinder")
     build_tank_tab(tank_tab, status_var, shared)
     build_floor_tab(floor_tab, status_var, shared)
     build_roof_tab(roof_tab, status_var, shared)
-    build_stringer_tab(stringer_tab, status_var)
+    build_stringer_tab(stringer_tab, status_var, shared)
+    build_tread_joint_tab(joint_tab, status_var)
     _build_cylinder_tab(cyl_tab, status_var)
 
     ttk.Label(root, textvariable=status_var, wraplength=660, justify="left").pack(

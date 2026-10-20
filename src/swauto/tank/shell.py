@@ -553,6 +553,24 @@ def _latest_feature(model):
     return None
 
 
+def _feature_added(model, before: set[str], prefer_prefix: str = ""):
+    """First feature whose name was not in ``before``.
+
+    Sheet-metal parts keep Flat-Pattern at the tree tip, so the feature just
+    inserted is not FeatureByPositionReverse(0).
+    """
+    added = []
+    for feature in iter_features(model):
+        name = _feature_name(feature)
+        if name and name not in before:
+            added.append(feature)
+    if prefer_prefix:
+        for feature in added:
+            if _feature_name(feature).startswith(prefer_prefix):
+                return feature
+    return added[0] if added else None
+
+
 def _clear_selection(model) -> None:
     with contextlib.suppress(Exception):
         model.ClearSelection2(True)
@@ -623,8 +641,9 @@ def _create_tank_axis(model):
         _clear_selection(model)
         return None
 
-    # InsertAxis2 returns True, not the feature. The axis is the newest feature.
-    before = _feature_name(_latest_feature(model))
+    # InsertAxis2 returns True, not the feature. On a sheet-metal part the
+    # flat pattern stays at the tree tip, so the new axis is found by name.
+    before = {_feature_name(feature) for feature in iter_features(model)}
     created = None
     for method in (
         lambda: model.InsertAxis2(True),
@@ -634,9 +653,8 @@ def _create_tank_axis(model):
             method()
         except Exception:
             continue
-        latest = _latest_feature(model)
-        if latest is not None and _feature_name(latest) not in ("", before):
-            created = latest
+        created = _feature_added(model, before, prefer_prefix="Axis")
+        if created is not None:
             break
     _clear_selection(model)
     if created is None:
