@@ -1,7 +1,7 @@
 """Spiral stair on the tank: shell, two climbing stringers, pan treads, bolts.
 
-The stringers are the formed 3/8 x 9 in plates swept on a helix at each
-radius, the same solids as the earlier visual model. Each tread is a five-face
+The stringers are rolled 3/8 in sheet-metal plates cut to the lisp burn
+outline, so each one flattens to that outline. Each tread is a five-face
 pan (top and four walls, no bottom) centered between the stringers with 1/16 in
 clear each side. The two 7/16 in bolts per side are located from the tread's
 front face in the side profile and cut separately through the inner stringer
@@ -21,7 +21,7 @@ from swauto.comutil import com_nothing, com_value, format_com_error
 from swauto.errors import SolidWorksError
 from swauto.features import find_feature, iter_features
 from swauto.params import rename_feature
-from swauto.parts import extrude_blind
+from swauto.parts import extrude_blind, new_part
 from swauto.stair.development import END_HOLE_RADIUS_IN, SLOT_LENGTH_IN, DevelopedStringer, develop_both
 from swauto.stair.stringer import (
     BOLT_DIA_IN,
@@ -39,6 +39,7 @@ from swauto.stair.stringer import (
 from swauto.stair.stringer_sw import (
     _create_circle,
     _delete_named,
+    _keep_bent_view,
     _names,
     _rename_new,
     _select_feature,
@@ -47,7 +48,7 @@ from swauto.tank.profile import course_radii_m
 from swauto.tank.shell import (
     _clear_selection,
     _close_sketch,
-    _ensure_tank_axis,
+    _delete_feature,
     _feature_name,
     _open_sketch,
     create_tank_shell,
@@ -56,7 +57,9 @@ from swauto.tank.spec import WALL_OD, TankSpec
 
 _INCH = 0.0254
 TREAD_CLEAR_IN = (CLEAR_IN - TREAD_PLATE_IN) / 2.0
-WIDE_EXTRA_IN = 3.0  # extra plate below the 9 in line, trimmed back after the sweep
+# swUserPreferenceToggle_e.swUserEnableFreezeBar, swMoveFreezeBarTo_e.swMoveFreezeBarToAfterFeature
+_SW_ENABLE_FREEZE_BAR = 461
+_SW_FREEZE_AFTER_FEATURE = 3
 
 
 class StairResult:
@@ -73,6 +76,17 @@ class TreadPlace:
     y0: float
     y1: float
     center: tuple[float, float, float]
+
+
+def create_stair(app, stair: StringerMock, wall_in: float, progress=None, *, shell: bool = True) -> StairResult:
+    """New part, then the stair. ``shell`` adds the tank; the stringers do not change."""
+    if shell:
+        return create_stair_on_tank(app, stair, wall_in, progress=progress)
+    stair.validate()
+    if wall_in <= 0 or wall_in >= TREAD_MARK_IN or wall_in * 2 >= TREAD_DEPTH_IN:
+        raise ValueError("Pan wall must be greater than zero and thinner than the tread.")
+    model = new_part(app)
+    return build_stair_on_model(model, stair.shell_od_in, stair, wall_in, progress=progress)
 
 
 def create_stair_on_tank(app, stair: StringerMock, wall_in: float, progress=None) -> StairResult:
@@ -129,45 +143,56 @@ def build_stair_on_model(
                     plate_width_in=stair.plate_width_in,
                 )
             )
-            axis = _ensure_tank_axis(model)
-            if axis is None:
-                raise SolidWorksError("Could not create the tank axis for the stringer end holes.")
             tank_face = shell_od + stair.gap_in
             jobs = (
                 (inner_dev, tank_face, tank_face + THICKNESS_IN, "EliteStringerIn"),
                 (outer_dev, layout.outside_radius_in - THICKNESS_IN, layout.outside_radius_in, "EliteStringerOut"),
             )
-            # Sweep both wide plates first. A swept cut right after its own
-            # protrusion returns nothing, but cuts cleanly once the plates have
-            # settled through the second sweep and a rebuild.
+            # Roll both blanks first, rebuild, then cut both to the lisp outline
+            # before any holes: a missed connecting hole must not skip the
+            # other stringer or the treads. Flat patterns stay suppressed so
+            # the stringers show bent until Flatten is clicked.
             for dev, r_in, r_out, nm in jobs:
-                _stringer_sweep(model, layout, dev, r_in, r_out, nm)
-                _progress(progress, f"{nm} swept")
+                _stringer_blank(model, dev, r_in, r_out, nm)
+                _progress(progress, f"{nm} rolled")
             _rebuild(model)
             for dev, r_in, r_out, nm in jobs:
-                _stringer_form(model, layout, dev, r_in, r_out, nm, axis, progress)
-            _rebuild(model)
+                _stringer_form(model, layout, dev, r_in, r_out, nm, progress)
+            _keep_bent_view(model)
+            for dev, r_in, r_out, nm in jobs:
+                _stringer_holes(model, dev, r_in, r_out, nm, progress)
+            freeze_note = _freeze_stringers(model)
+        else:
+            freeze_note = ""
         done = 0
         total = 0
         # One tread at a time: the pan, then its inner bolts, then its outer bolts.
+        # One rebuild per tread, before the bolts, so a cut is not lost. Not again after each bolt.
         for place in (_tread_places(layout) if do_treads else []):
             _tread(model, layout, place, wall_in)
             _progress(progress, f"tread {place.index} placed")
+            _rebuild(model)
             for side in ("In", "Out"):
                 total += 1
+                before_bolts = _names(model)
                 try:
                     hit = _bolts(model, layout, place, side, wall_in)
-                except SolidWorksError:
-                    raise
                 except Exception:
-                    _recover(model)
+                    # A missed tread bolt must not skip the rest of the pans.
+                    _discard_since(model, before_bolts)
                     hit = False
                 done += int(hit)
                 _progress(progress, f"tread {place.index} {side.lower()} bolts {'through' if hit else 'missed'}")
     except SolidWorksError:
+        with contextlib.suppress(Exception):
+            _hide_construction(model)
         raise
     except Exception as exc:
+        with contextlib.suppress(Exception):
+            _hide_construction(model)
         raise SolidWorksError(f"Stair failed: {format_com_error(exc)}") from exc
+    with contextlib.suppress(Exception):
+        _hide_construction(model)
     with contextlib.suppress(Exception):
         model.ShowNamedView2("*Isometric", 7)
         model.ViewZoomtofit2()
@@ -178,6 +203,8 @@ def build_stair_on_model(
         f"sweep {layout.sweep_deg:.2f}°, rise {layout.total_rise_in:.1f} in. "
         f"Bolt pairs through {done} of {total} stringer-to-tread joints."
     )
+    if freeze_note:
+        note = f"{note} {freeze_note}"
     return StairResult(title=str(com_value(model.GetTitle) or "Part"), model=model, note=note)
 
 
@@ -204,45 +231,118 @@ def _stringer_geometry(layout, dev: DevelopedStringer, r_in: float, r_out: float
     }
 
 
-def _stringer_sweep(model, layout, dev: DevelopedStringer, r_in: float, r_out: float, name: str) -> None:
-    """Sweep the wide plate. The finished width is cut back later (deductive)."""
-    g = _stringer_geometry(layout, dev, r_in, r_out)
-    helix = _helix(model, g["r_mid"], g["rise_per_rad"] * g["phi_end"], g["phi_end"] / (2.0 * math.pi), name)
+def _stringer_blank(model, dev: DevelopedStringer, r_in: float, r_out: float, name: str) -> None:
+    """Rolled 3/8 in sheet-metal blank: a lofted bend between two arcs on the
+    outside face, filling the lisp outline's box (bottom end to top end, foot
+    to cap). The thickness goes in from the arcs, so the plate is r_in to r_out.
+    It is sheet metal from the first feature, so the stringer flattens."""
+    radius = dev.radius_in
+    p4, _p_start, _p_end, p2, _p3, _l2, _l3, p5 = dev.outline
+    phi_a, phi_b = p4[0] / radius, p2[0] / radius
+    low = _arc_sketch(model, p5[1], r_out, phi_a, phi_b, f"{name}LowArc")
+    high = _arc_sketch(model, p2[1], r_out, phi_a, phi_b, f"{name}HighArc")
+    _clear_selection(model)
+    if not (
+        _select_feature(model, low, "SKETCH", mark=1, append=False)
+        and _select_feature(model, high, "SKETCH", mark=1, append=True)
+    ):
+        raise SolidWorksError(f"{name}: could not select the blank arcs.")
     before_bodies = _body_names(model)
-    _sweep(model, helix, r_in, r_out, g["bottom_at_zero"] - WIDE_EXTRA_IN, g["top_at_zero"], name)
+    feature = model.FeatureManager.InsertSheetMetalLoftedBend(THICKNESS_IN * _INCH, THICKNESS_IN * _INCH)
+    if feature is None:
+        raise SolidWorksError(f"{name}: the rolled blank (lofted bend) was not made.")
+    with contextlib.suppress(Exception):
+        rename_feature(feature, name)
     _name_new_body(model, before_bodies, name)
 
 
-def _stringer_form(model, layout, dev: DevelopedStringer, r_in: float, r_out: float, name: str, axis, progress=None) -> None:
-    """Trim the swept plate to the lisp burn outline and cut the end holes.
+def _arc_sketch(model, y_in: float, radius: float, phi_a: float, phi_b: float, name: str):
+    plane = _offset_from(model, _plane(model, "Top"), y_in, f"{name}Pln")
+    before = _names(model)
+    _open_sketch(model, plane)
+    a, b = _plan_xy(radius, phi_a), _plan_xy(radius, phi_b)
+    if model.SketchManager.CreateArc(0.0, 0.0, 0.0, a[0], a[1], 0.0, b[0], b[1], 0.0, -1) is None:
+        _recover(model)
+        raise SolidWorksError(f"{name}: arc failed.")
+    _close_sketch(model)
+    return _rename_new(model, before, name, "blank arc")
 
-    The plate is one piece. The 9 in edge is one helix from the lower cutback
-    to the upper cutback. Each horizontal end cut stops on that helix, which
-    is the lisp outline: top flat, vertical, return; bottom vertical, then
-    the foot. All deductive, no merge.
+
+def _stringer_form(model, layout, dev: DevelopedStringer, r_in: float, r_out: float, name: str, progress=None) -> None:
+    """Cut the lisp outline into the rolled blank. Every cut is square to the plate.
+
+    The blank already has the foot, the cap and both vertical ends. Three cuts
+    finish it: above the top slope, below the 9 in slope up to the corner under
+    the cap, and the return. The return starts on the end face the 9 in cut
+    left, read from the model, so the two cuts meet with no hair strip between.
     """
     g = _stringer_geometry(layout, dev, r_in, r_out)
-    radius, band = g["radius"], g["band"]
-    p4, p_start, p_end, p2, p3, l2_end, l3_end, p5 = g["outline"]
-
-    # l2 is where the 9 in line meets the top cutback. The trim runs to there
-    # and no further, so the boot below that line stays for the return cut.
-    trim_phi = l2_end[0] / radius
-    foot_phi = l3_end[0] / radius
-    trim_spec = (g["r_mid"], g["rise_per_rad"] * trim_phi, trim_phi / (2.0 * math.pi))
-    _cut_sweep(model, trim_spec, band, g["bottom_at_zero"] - WIDE_EXTRA_IN - 1.0, g["bottom_at_zero"], f"{name}Trim")
-    _progress(progress, f"{name} bottom edge trimmed")
-
-    # Top end: horizontal at the top tread's top, vertical cut, horizontal return.
-    _sector_cut(model, band, p_end[0] / radius, g["phi_end"] + 0.02, p_end[1], p_end[1] + 20.0, f"{name}TopFlat")
-    _sector_cut(model, band, p2[0] / radius, g["phi_end"] + 0.02, -200.0, 200.0, f"{name}TopCut")
-    _sector_cut(model, band, trim_phi, g["phi_end"] + 0.02, p3[1] - 20.0, p3[1], f"{name}TopReturn")
-    # Bottom end: vertical cut, then the foot, stopping where it meets the 9 in line.
-    _sector_cut(model, band, -0.03, p4[0] / radius, -200.0, 200.0, f"{name}BotCut")
-    _sector_cut(model, band, -0.03, foot_phi, -200.0, l3_end[1], f"{name}BotFlat")
+    radius, band, rise_per_rad = g["radius"], g["band"], g["rise_per_rad"]
+    _p4, _p_start, _p_end, p2, p3, l2_end, _l3, p5 = g["outline"]
+    far = p2[0] / radius + 0.03
+    corner = l2_end[0] / radius
+    span = p2[1] - p5[1] + 10.0
+    _cut_sweep(
+        model, (g["r_mid"], rise_per_rad * far, far / (2.0 * math.pi)), band,
+        g["top_at_zero"], g["top_at_zero"] + span, f"{name}TopEdge",
+    )
+    _progress(progress, f"{name} top edge cut")
+    _cut_sweep(
+        model, (g["r_mid"], rise_per_rad * corner, corner / (2.0 * math.pi)), band,
+        g["bottom_at_zero"] - span, g["bottom_at_zero"], f"{name}Trim",
+    )
+    _progress(progress, f"{name} 9 in edge cut")
+    start = _cut_end_angle(model, r_in, r_out, corner)
+    _sector_cut(model, band, corner if start is None else start, far, -200.0, p3[1], f"{name}TopReturn")
     _progress(progress, f"{name} ends formed")
     _rebuild(model)
-    hole_ok = _end_holes(model, axis, dev, g["r_mid"], name)
+
+
+def _cut_end_angle(model, r_in: float, r_out: float, near_phi: float):
+    """Angle of the vertical end face a helical cut left near ``near_phi``.
+
+    The helix ends about 1e-5 in short of the nominal angle. Starting the
+    return on the nominal angle leaves that strip as a loose body.
+    """
+    best = None
+    for body in _bodies(model):
+        raw = body.GetFaces()
+        faces = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+        for face in faces:
+            try:
+                surface = com_value(face.GetSurface)
+                is_plane = surface.IsPlane
+                if not (is_plane() if callable(is_plane) else is_plane):
+                    continue
+                params = [float(v) for v in com_value(surface.PlaneParams)]
+                box = [float(v) / _INCH for v in com_value(face.GetBox)]
+            except Exception:
+                continue
+            if abs(params[1]) > 1e-6:
+                continue
+            cx, cz = (box[0] + box[3]) / 2.0, (box[2] + box[5]) / 2.0
+            if not r_in - 0.5 <= math.hypot(cx, cz) <= r_out + 0.5:
+                continue
+            if abs(math.atan2(-cx, cz) - near_phi) > 0.02:
+                continue
+            phi = math.atan2(params[2], params[0])
+            while phi - near_phi > math.pi / 2.0:
+                phi -= math.pi
+            while phi - near_phi < -math.pi / 2.0:
+                phi += math.pi
+            if best is None or abs(phi - near_phi) < best[0]:
+                best = (abs(phi - near_phi), phi)
+    return None if best is None else best[1]
+
+
+def _stringer_holes(model, dev: DevelopedStringer, r_in: float, r_out: float, name: str, progress=None) -> None:
+    """Connecting holes after both stringers are formed. A miss does not abort."""
+    before = _names(model)
+    try:
+        hole_ok = _end_holes(model, dev, r_in, r_out, name)
+    except Exception:
+        _discard_since(model, before)
+        hole_ok = False
     _progress(progress, f"{name} end holes {'cut' if hole_ok else 'missed'}")
 
 
@@ -265,40 +365,6 @@ def _helix(model, radius_in: float, height_in: float, revolutions: float, name: 
     before = _names(model)
     model.InsertHelix(False, True, False, False, 1, height_in * _INCH, 0.0, float(revolutions), 0.0, 0.0)
     return _rename_new(model, before, f"{name}Helix", "helix")
-
-
-def _sweep(model, helix, r_in: float, r_out: float, y_bottom: float, y_top: float, name: str) -> None:
-    right = _plane(model, "Right")
-    before = _names(model)
-    _open_sketch(model, right)
-    # Right-plane sketch: +X is world -Z, +Y is world +Y.
-    if not _corner_rect(model, -r_out, y_bottom, -r_in, y_top):
-        _recover(model)
-        raise SolidWorksError(f"{name}: profile rectangle failed.")
-    _close_sketch(model)
-    profile = _rename_new(model, before, f"{name}Prof", "sweep profile")
-    method = model.FeatureManager.InsertProtrusionSwept3
-    attempts = (
-        (False, False, 0, False, False, 0, 0, False, 0.0, 0.0, 0, False, False, True, 0.0, True),
-        (False, False, 0, False, False, 0, 0, False, 0.0, 0.0, 0, False, False, True, 0.0, True, False),
-    )
-    errors: list[str] = []
-    for args in attempts:
-        _clear_selection(model)
-        if not profile.Select2(False, 1):
-            raise SolidWorksError(f"{name}: could not select the profile.")
-        if not _select_feature(model, helix, "REFERENCECURVES", mark=4, append=True):
-            raise SolidWorksError(f"{name}: could not select the helix.")
-        try:
-            feature = method(*args)
-        except Exception as exc:
-            errors.append(format_com_error(exc))
-            continue
-        if feature not in (None, False):
-            with contextlib.suppress(Exception):
-                rename_feature(feature, name)
-            return
-    raise SolidWorksError(f"{name}: sweep failed ({'; '.join(errors) or 'returned nothing'}).")
 
 
 # ------------------------------------------------------------ end formation
@@ -347,33 +413,67 @@ def _sector_cut(model, band, phi0: float, phi1: float, y0: float, y1: float, nam
         rename_feature(feature, name)
 
 
+def _discard_since(model, before: set[str]) -> None:
+    """Delete top-level features created after ``before``. Newest first.
+
+    Closes an open sketch first. Used when a trim attempt or an end-hole
+    attempt fails, so the bad helix, plane, and sketch do not stay behind
+    and the next attempt is not pointed at the stale one.
+    """
+    _recover(model)
+    fresh = []
+    for feature in iter_features(model):
+        current = _feature_name(feature)
+        if current and current not in before:
+            fresh.append(feature)
+    for feature in reversed(fresh):
+        _delete_feature(model, feature)
+
+
 def _cut_sweep(model, helix_spec, band: tuple[float, float], y_bottom: float, y_top: float, name: str) -> None:
-    """Helical cut: a Right-plane rectangle swept along a trim helix through the
-    plate band. The swept cut on this SolidWorks is intermittent, so each attempt
-    rebuilds and rebuilds the helix and profile fresh before trying the call.
+    """Helical cut: a Right-plane rectangle swept along a trim helix through the plate band.
+
+    CreateCornerRectangle often returns nothing even though the four lines are
+    in the sketch. ``_corner_rect`` trusts those lines, so the cut is made on
+    the first attempt. One rebuild-and-retry only if that cut feature comes
+    back empty — not six full rebuilds.
     """
     r_mid, height_in, revolutions = helix_spec
     # 19-arg InsertCutSwept4 (feature-scope booleans at the tail) removes the
-    # bottom strip along the helix on this SolidWorks.
+    # strip along the helix on this SolidWorks. Alignment on the first call is
+    # the one that has been cutting; the others are the fallback.
     methods = (
         ("InsertCutSwept4", (False, True, 0, False, False, 0, 0, False, 0, 0, 0, 0, True, True, 0, True, True, True, False)),
         ("InsertCutSwept4", (False, False, 0, False, False, 0, 0, False, 0, 0, 0, 0, True, True, 0, True, True, True, False)),
         ("InsertCutSwept3", (False, False, 0, False, False, 0, 0, False, 0.0, 0.0, 0, True, True, True, 0.0, True)),
     )
     errors: list[str] = []
-    for attempt in range(6):
-        _delete_named(model, (f"{name}Prof", f"{name}Helix", f"{name}HelixSk"))
-        _rebuild(model)
-        helix = _helix(model, r_mid, height_in, revolutions, f"{name}Helix")
-        right = _plane(model, "Right")
-        before = _names(model)
-        _open_sketch(model, right)
-        if not _corner_rect(model, -band[1], y_bottom, -band[0], y_top):
+    baseline = _names(model)
+    for attempt in range(2):
+        if attempt:
+            _discard_since(model, baseline)
+            _rebuild(model)
+        try:
+            helix = _helix(model, r_mid, height_in, revolutions, name)
+        except Exception as exc:
+            errors.append(f"attempt {attempt}: helix {format_com_error(exc)}")
             _recover(model)
-            errors.append(f"attempt {attempt}: profile failed")
             continue
-        _close_sketch(model)
-        profile = _rename_new(model, before, f"{name}Prof", "trim profile")
+        try:
+            right = _plane(model, "Right")
+            before = _names(model)
+            _open_sketch(model, right)
+            if not _corner_rect(model, -band[1], y_bottom, -band[0], y_top):
+                _recover(model)
+                errors.append(f"attempt {attempt}: profile failed")
+                continue
+            _close_sketch(model)
+            profile = _rename_new(model, before, f"{name}Prof", "trim profile")
+        except Exception as exc:
+            _recover(model)
+            errors.append(f"attempt {attempt}: profile {format_com_error(exc)}")
+            continue
+        stuck = False
         for method_name, args in methods:
             method = getattr(model.FeatureManager, method_name, None)
             if method is None:
@@ -393,8 +493,12 @@ def _cut_sweep(model, helix_spec, band: tuple[float, float], y_bottom: float, y_
                 continue
             with contextlib.suppress(Exception):
                 rename_feature(feature, name)
+            stuck = True
+            break
+        if stuck:
             return
-    raise SolidWorksError(f"{name}: bottom edge trim failed ({'; '.join(errors[-4:]) or 'no sweep-cut method'}).")
+    _discard_since(model, baseline)
+    raise SolidWorksError(f"{name}: edge trim failed ({'; '.join(errors[-4:]) or 'no sweep-cut method'}).")
 
 
 def _rebuild(model) -> None:
@@ -410,19 +514,96 @@ def _rebuild(model) -> None:
         model.ForceRebuild3(False)
 
 
+def _freeze_stringers(model) -> str:
+    """Put the freeze bar just after the stringer features.
+
+    Later treads then do not recompute the sweeps. SolidWorks 2013 has the
+    freeze bar when the license and the system option allow it. Turning the
+    option on and moving the bar in the same call often does not stick, so
+    the move is tried twice. If the license has no freeze bar, say so and
+    keep building. Graphics stay on either way.
+    """
+    last = ""
+    for feature in iter_features(model):
+        name = _feature_name(feature)
+        if name:
+            last = name
+    if not last:
+        return "Freeze bar skipped (no features to freeze)."
+    try:
+        import win32com.client
+
+        app = win32com.client.GetActiveObject("SldWorks.Application")
+    except Exception:
+        app = None
+    if app is not None:
+        try:
+            app.SetUserPreferenceToggle(_SW_ENABLE_FREEZE_BAR, True)
+        except Exception:
+            return "Freeze bar skipped (this SolidWorks has no freeze bar)."
+    method = getattr(model.FeatureManager, "EditFreeze", None)
+    if not callable(method):
+        return "Freeze bar skipped (this SolidWorks has no freeze bar)."
+
+    def location() -> str:
+        try:
+            place = com_value(model.FeatureManager.GetFreezeLocation)
+        except Exception:
+            return ""
+        if place is None:
+            return ""
+        try:
+            return str(com_value(place.Name) or "")
+        except Exception:
+            return ""
+
+    for _ in range(2):
+        try:
+            method(_SW_FREEZE_AFTER_FEATURE, last, True)
+        except Exception:
+            return "Freeze bar skipped (the freeze bar could not be moved)."
+        if location() == last:
+            return f"Freeze bar is after {last}."
+    return "Freeze bar skipped (this license did not move the freeze bar)."
+
+
+def _sketch_segment_count(model) -> int:
+    """How many segments are in the open sketch. AddToDB can add them and still return nothing."""
+    sketch = com_value(model.GetActiveSketch2)
+    if sketch is None:
+        return 0
+    try:
+        raw = com_value(sketch.GetSketchSegments)
+    except Exception:
+        return 0
+    if raw is None:
+        return 0
+    if isinstance(raw, (list, tuple)):
+        return len(raw)
+    return 1
+
+
 def _corner_rect(model, x0: float, y0: float, x1: float, y1: float) -> bool:
-    """Right-plane corner rectangle in inches. Retry through AddToDB when the
-    first call returns nothing (flaky right after a helix)."""
+    """Right-plane corner rectangle in inches.
+
+    With AddToDB on, CreateCornerRectangle often returns nothing even though the
+    four lines are in the sketch. A trim attempt was aborting on that and never
+    calling the cut. Trust the sketch contents, and fall back to four lines.
+    """
     sketch = model.SketchManager
+    with contextlib.suppress(Exception):
+        sketch.AddToDB = True
+    xm0, ym0, xm1, ym1 = x0 * _INCH, y0 * _INCH, x1 * _INCH, y1 * _INCH
     for _ in range(3):
-        result = None
         with contextlib.suppress(Exception):
-            result = sketch.CreateCornerRectangle(x0 * _INCH, y0 * _INCH, 0.0, x1 * _INCH, y1 * _INCH, 0.0)
-        if result is not None:
+            sketch.CreateCornerRectangle(xm0, ym0, 0.0, xm1, ym1, 0.0)
+        if _sketch_segment_count(model) >= 4:
             return True
+    corners = ((xm0, ym0), (xm1, ym0), (xm1, ym1), (xm0, ym1))
+    for (ax, ay), (bx, by) in zip(corners, corners[1:] + corners[:1], strict=False):
         with contextlib.suppress(Exception):
-            sketch.AddToDB = True
-    return False
+            sketch.CreateLine(ax, ay, 0.0, bx, by, 0.0)
+    return _sketch_segment_count(model) >= 4
 
 
 def _band_faces(model, band: tuple[float, float]) -> int:
@@ -439,118 +620,156 @@ def _band_faces(model, band: tuple[float, float]) -> int:
     return total
 
 
-def _end_holes(model, axis, dev: DevelopedStringer, r_mid: float, name: str) -> bool:
-    """Two holes at each end, on a plane tangent to the plate at that end.
+def _end_holes(model, dev: DevelopedStringer, r_in: float, r_out: float, name: str) -> bool:
+    """Connecting holes sketched the way tread bolts are, then the jig is deleted.
 
-    Inner stringer: 13/16 round. Outer stringer: 1-5/8 horizontal slots.
+    A tangent plane landed on the tank axis and never cut the plate. Instead,
+    a temporary plate sits against the walk-side face. The holes are sketched
+    on that face and cut both ways through the plate and the stringer. Only
+    the temporary body is deleted; the cut feature stays in the stringer.
+    Inner ends are two 13/16 rounds. Outer ends are two 1-5/8 horizontal slots.
+    A miss does not raise.
     """
-    radius = dev.radius_in
+    # Walk-side face is the development radius: outer face of the inner
+    # stringer, inner face of the outer stringer. The jig sits on the tread side.
+    face_r = dev.radius_in
+    outward = abs(face_r - r_out) <= abs(face_r - r_in)
     ok = True
     for label, pair in (("Top", dev.end_holes[:2]), ("Bot", dev.end_holes[2:])):
-        psi = sum(x for x, _y in pair) / len(pair) / radius
-        plane = _tangent_plane(model, axis, psi, r_mid, f"{name}{label}Holes")
         before = _names(model)
-        _open_sketch(model, plane)
         try:
-            sketch_obj = com_value(model.GetActiveSketch2)
-            data = [float(v) for v in com_value(com_value(sketch_obj.ModelToSketchTransform).ArrayData)]
-            for x_in, y_in in pair:
-                phi = x_in / radius
-                point = (-r_mid * math.sin(phi) * _INCH, y_in * _INCH, r_mid * math.cos(phi) * _INCH)
-                sx, sy, _sz = _to_sketch(data, point)
-                if dev.slotted:
-                    _slot(model, sx, sy, SLOT_LENGTH_IN * _INCH, END_HOLE_RADIUS_IN * _INCH)
-                elif _create_circle(model.SketchManager, sx, sy, END_HOLE_RADIUS_IN * _INCH) is None:
-                    raise SolidWorksError(f"{name}: end hole circle failed.")
+            if not _end_hole_pair(model, dev, face_r, outward, pair, f"{name}{label}Holes"):
+                ok = False
         except Exception:
-            _recover(model)
-            raise
-        _close_sketch(model)
-        sketch = _rename_new(model, before, f"{name}{label}HolesSk", "end holes sketch")
-        feature = _cut_both_ways(model, sketch, THICKNESS_IN + 0.5)
-        if feature is None:
+            _discard_since(model, before)
             ok = False
-            _delete_named(model, (f"{name}{label}HolesSk", f"{name}{label}HolesPln", f"{name}{label}HolesAng"))
-            continue
-        with contextlib.suppress(Exception):
-            rename_feature(feature, f"{name}{label}Holes")
     return ok
+
+
+def _end_hole_pair(model, dev: DevelopedStringer, face_r: float, outward: bool, pair, name: str) -> bool:
+    """One end: jig plate, sketch on its stringer face, cut, delete the jig body."""
+    radius = dev.radius_in
+    phis = [x / radius for x, _y in pair]
+    phi = sum(phis) / len(phis)
+    span = max(abs(p - phi) * radius for p in phis)
+    extra = (SLOT_LENGTH_IN / 2.0 if dev.slotted else END_HOLE_RADIUS_IN) + 0.6
+    half_along = span + extra
+    y_mid = sum(y for _x, y in pair) / len(pair)
+    half_y = 0.9
+    jig_thick = 0.5
+    if outward:
+        r0, r1 = face_r, face_r + jig_thick
+    else:
+        r0, r1 = face_r - jig_thick, face_r
+    top = _plane(model, "Top")
+    base = _offset_from(model, top, y_mid - half_y, f"{name}JigPln")
+    sketch = _sketch_on(
+        model, base, f"{name}JigSk",
+        lambda: _plan_rect(model, phi, r0, r1, half_along),
+    )
+    _extrude(model, sketch, half_y * 2.0, f"{name}Jig", merge=False)
+    _rebuild(model)
+    center = (
+        -((r0 + r1) / 2.0) * math.sin(phi),
+        y_mid,
+        ((r0 + r1) / 2.0) * math.cos(phi),
+    )
+    jig = _body_near(model, center, max_height=half_y * 2.0 + 0.4, max_dist=1.5)
+    if jig is None:
+        return False
+    face = _face_at_radius(jig, face_r)
+    if face is None or not _select_face(model, face):
+        _delete_bodies_near(model, center, max_height=half_y * 2.0 + 0.4, max_dist=1.5)
+        return False
+    before = _names(model)
+    sketch_manager = model.SketchManager
+    with contextlib.suppress(Exception):
+        sketch_manager.AddToDB = True
+    with contextlib.suppress(Exception):
+        sketch_manager.DisplayWhenAdded = False
+    sketch_manager.InsertSketch(True)
+    points: list[tuple[float, float, float]] = []
+    try:
+        sketch_obj = com_value(model.GetActiveSketch2)
+        data = [float(v) for v in com_value(com_value(sketch_obj.ModelToSketchTransform).ArrayData)]
+        for x_in, y_in in pair:
+            hole_phi = x_in / radius
+            point = (
+                -face_r * math.sin(hole_phi) * _INCH,
+                y_in * _INCH,
+                face_r * math.cos(hole_phi) * _INCH,
+            )
+            points.append((point[0] / _INCH, point[1] / _INCH, point[2] / _INCH))
+            sx, sy, sz = _to_sketch(data, point)
+            if abs(sz) > 0.05 * _INCH:
+                raise SolidWorksError(f"{name}: hole is {sz / _INCH:.3f} in off the jig face.")
+            if dev.slotted:
+                tangent = (-math.cos(hole_phi), 0.0, -math.sin(hole_phi))
+                ahead = (
+                    point[0] + tangent[0] * _INCH,
+                    point[1],
+                    point[2] + tangent[2] * _INCH,
+                )
+                ax, ay, _az = _to_sketch(data, ahead)
+                _slot_along(
+                    model, sx, sy, ax - sx, ay - sy,
+                    SLOT_LENGTH_IN * _INCH, END_HOLE_RADIUS_IN * _INCH,
+                )
+            elif _create_circle(sketch_manager, sx, sy, END_HOLE_RADIUS_IN * _INCH) is None:
+                raise SolidWorksError(f"{name}: end hole circle failed.")
+    except Exception:
+        _recover(model)
+        _discard_since(model, before)
+        _delete_bodies_near(model, center, max_height=half_y * 2.0 + 0.4, max_dist=1.5)
+        return False
+    _close_sketch(model)
+    hole_sketch = _rename_new(model, before, f"{name}Sk", "end holes sketch")
+    # Through the 1/2 in jig and the 3/8 in stringer, both directions.
+    feature = _cut_both_ways(model, hole_sketch, jig_thick + THICKNESS_IN + 0.35)
+    if feature is None:
+        _discard_since(model, before)
+        _delete_bodies_near(model, center, max_height=half_y * 2.0 + 0.4, max_dist=1.5)
+        return False
+    with contextlib.suppress(Exception):
+        rename_feature(feature, name)
+    _rebuild(model)
+    _delete_bodies_near(model, center, max_height=half_y * 2.0 + 0.4, max_dist=1.5)
+    _rebuild(model)
+    near = (SLOT_LENGTH_IN / 2.0 + 0.15) * _INCH if dev.slotted else 0.12 * _INCH
+    for point in points:
+        if _stringer_has_hole(model, face_r, point, END_HOLE_RADIUS_IN, near) is not True:
+            return False
+    return True
 
 
 def _slot(model, cx: float, cy: float, length: float, radius: float) -> None:
     """Horizontal stadium in sketch meters: two lines and two three-point end arcs."""
-    sketch = model.SketchManager
+    _slot_along(model, cx, cy, 1.0, 0.0, length, radius)
+
+
+def _slot_along(model, cx: float, cy: float, ux: float, uy: float, length: float, radius: float) -> None:
+    """Stadium in sketch meters along sketch direction (ux, uy). World-horizontal when that direction is."""
+    norm = math.hypot(ux, uy)
+    if norm < 1e-9:
+        raise SolidWorksError("Slot direction is not on the sketch face.")
+    ux, uy = ux / norm, uy / norm
+    px, py = -uy, ux
     half = max(length / 2.0 - radius, 0.0)
-    left, right = cx - half, cx + half
-    top, bottom = cy + radius, cy - radius
-    for (ax, ay), (bx, by) in (((left, top), (right, top)), ((right, bottom), (left, bottom))):
-        if sketch.CreateLine(ax, ay, 0.0, bx, by, 0.0) is None:
+    sketch = model.SketchManager
+
+    def at(along: float, side: float) -> tuple[float, float]:
+        return cx + ux * along + px * side, cy + uy * along + py * side
+
+    a, b = at(-half, radius), at(half, radius)
+    c, d = at(half, -radius), at(-half, -radius)
+    for start, end in ((a, b), (c, d)):
+        if sketch.CreateLine(start[0], start[1], 0.0, end[0], end[1], 0.0) is None:
             raise SolidWorksError("Could not draw a slot line.")
-    for (sx, sy), (ex, ey), (mx, my) in (
-        ((right, top), (right, bottom), (right + radius, cy)),
-        ((left, bottom), (left, top), (left - radius, cy)),
-    ):
-        if sketch.Create3PointArc(sx, sy, 0.0, ex, ey, 0.0, mx, my, 0.0) is None:
-            raise SolidWorksError("Could not draw a slot arc.")
-
-
-def _tangent_plane(model, axis, psi: float, distance_in: float, name: str):
-    """Vertical plane tangent to the cylinder of ``distance_in`` at angle ``psi``.
-
-    Fold the Front plane about the tank axis by ``psi`` (radians), then offset
-    it; of the two offsets keep the one on the stringer's side of the tank.
-    """
-    front = _plane(model, "Front")
-    before = _names(model)
-    _clear_selection(model)
-    if not front.Select2(False, 0):
-        raise SolidWorksError("Could not select the Front Plane.")
-    if not _select_feature(model, axis, "AXIS", mark=1, append=True):
-        raise SolidWorksError("Could not select the tank axis.")
-    model.CreatePlaneAtAngle(float(psi), False)
-    _clear_selection(model)
-    base = _rename_new(model, before, f"{name}Ang", "angle plane")
-    # The tangent point on the stringer's side of the tank. The near offset
-    # passes through it; the far offset sits about 2R away. Pick by distance,
-    # not by the reported origin sign (which can be the far side).
-    target = (-distance_in * math.sin(psi) * _INCH, 0.0, distance_in * math.cos(psi) * _INCH)
-    best = None
-    best_gap = None
-    for flip in (False, True):
-        before_off = _names(model)
-        _clear_selection(model)
-        base.Select2(False, 0)
-        try:
-            model.CreatePlaneAtOffset(distance_in * _INCH, flip)
-        except Exception:
-            continue
-        _clear_selection(model)
-        plane = None
-        for feature in iter_features(model):
-            current = _feature_name(feature)
-            if current and current not in before_off:
-                plane = feature
-                break
-        if plane is None:
-            continue
-        values = [float(v) for v in com_value(com_value(plane.GetSpecificFeature2).GetRefPlaneParams)]
-        origin, normal = values[0:3], _unit(values[6:9])
-        gap = abs(sum(normal[i] * (target[i] - origin[i]) for i in range(3))) / _INCH
-        if best is None or gap < best_gap:
-            if best is not None:
-                _delete_named(model, (_feature_name(best),))
-            best, best_gap = plane, gap
-        else:
-            _delete_named(model, (_feature_name(plane),))
-    if best is None:
-        raise SolidWorksError(f"{name}: tangent plane was not created.")
-    rename_feature(best, f"{name}Pln")
-    return find_feature(model, f"{name}Pln") or best
-
-
-def _unit(vec):
-    length = math.sqrt(sum(v * v for v in vec)) or 1.0
-    return [v / length for v in vec]
+    right, left = at(half + radius, 0.0), at(-(half + radius), 0.0)
+    if sketch.Create3PointArc(b[0], b[1], 0.0, c[0], c[1], 0.0, right[0], right[1], 0.0) is None:
+        raise SolidWorksError("Could not draw a slot arc.")
+    if sketch.Create3PointArc(d[0], d[1], 0.0, a[0], a[1], 0.0, left[0], left[1], 0.0) is None:
+        raise SolidWorksError("Could not draw a slot arc.")
 
 
 # ------------------------------------------------------------------- treads
@@ -655,6 +874,55 @@ def _plan_rect(model, phi: float, r0: float, r1: float, half_along: float) -> No
 # -------------------------------------------------------------------- bolts
 
 
+def _end_wall_face(model, place: TreadPlace, edge_r: float):
+    """The tread end face that faces the stringer, found on the body itself.
+
+    A coordinate pick misses once the stringers fill the view. The face is the
+    planar wall whose center sits on ``edge_r``.
+    """
+    body = _tread_body(model, place)
+    if body is None:
+        return None
+    best = None
+    best_gap = None
+    raw = body.GetFaces()
+    faces = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+    for face in faces:
+        try:
+            box = [float(v) / _INCH for v in com_value(face.GetBox)]
+        except Exception:
+            continue
+        cx = (box[0] + box[3]) / 2.0
+        cz = (box[2] + box[5]) / 2.0
+        gap = abs(math.hypot(cx, cz) - edge_r)
+        if gap > 0.2 or box[4] - box[1] < TREAD_MARK_IN * 0.4:
+            continue
+        if best is None or gap < best_gap:
+            best, best_gap = face, gap
+    return best
+
+
+def _select_face(model, face) -> bool:
+    with contextlib.suppress(Exception):
+        if face.Select2(False, 0):
+            return True
+    try:
+        box = [float(v) for v in com_value(face.GetBox)]
+    except Exception:
+        return False
+    nothing = com_nothing()
+    try:
+        return bool(
+            model.Extension.SelectByID2(
+                "", "FACE",
+                (box[0] + box[3]) / 2.0, (box[1] + box[4]) / 2.0, (box[2] + box[5]) / 2.0,
+                False, 0, nothing, 0,
+            )
+        )
+    except Exception:
+        return False
+
+
 def _bolts(model, layout, place: TreadPlace, side: str, wall_in: float) -> bool:
     """Two bolts on this tread's side wall, cut perpendicular to that wall.
 
@@ -664,9 +932,6 @@ def _bolts(model, layout, place: TreadPlace, side: str, wall_in: float) -> bool:
     and across the 1/16 in gap through the 3/8 in stringer.
     """
     name = f"EliteBolt{place.index:02d}{side}"
-    # Settle the model first: a cut right after the previous feature can
-    # silently remove nothing until the model is rebuilt.
-    _rebuild(model)
     inner_edge = layout.inner_face_in + TREAD_CLEAR_IN
     edge_r = inner_edge if side == "In" else inner_edge + TREAD_PLATE_IN
     half = TREAD_DEPTH_IN / 2.0
@@ -682,11 +947,10 @@ def _bolts(model, layout, place: TreadPlace, side: str, wall_in: float) -> bool:
             (edge_r * radial[1] + along * travel[1]) * _INCH,
         )
 
-    face_point = world(0.0, (place.y0 + place.y1) / 2.0)
+    face = _end_wall_face(model, place, edge_r)
     before = _names(model)
     _clear_selection(model)
-    nothing = com_nothing()
-    if not model.Extension.SelectByID2("", "FACE", face_point[0], face_point[1], face_point[2], False, 0, nothing, 0):
+    if face is None or not _select_face(model, face):
         raise SolidWorksError(f"{name}: could not select the tread side wall.")
     sketch_manager = model.SketchManager
     with contextlib.suppress(Exception):
@@ -708,28 +972,42 @@ def _bolts(model, layout, place: TreadPlace, side: str, wall_in: float) -> bool:
         raise
     _close_sketch(model)
     sketch = _rename_new(model, before, f"{name}Sk", "bolt sketch")
-    reach_in = max(wall_in, TREAD_CLEAR_IN + THICKNESS_IN) + 0.25
-    stringer_name = f"EliteStringer{side}"
-    tread_name = f"EliteTread{place.index:02d}"
-    bodies_before = _classify(model, layout, place)
-    counts_before = _counts(bodies_before)
+    # From this face: one way through the pan wall, the other across the 1/16 in
+    # gap and through the 3/8 in stringer. Same depth both ways so either face
+    # of the wall still breaks out.
+    reach_in = wall_in + TREAD_CLEAR_IN + THICKNESS_IN + 0.35
+    points = [world(along, y_bolt) for along in alongs]
     feature = _cut_both_ways(model, sketch, reach_in)
-    if feature is not None:
-        with contextlib.suppress(Exception):
-            rename_feature(feature, name)
-        bodies_after = _classify(model, layout, place)
-        counts_after = _counts(bodies_after)
-        if (
-            counts_after.get(stringer_name, 0) > counts_before.get(stringer_name, 0)
-            and counts_after.get(tread_name, 0) > counts_before.get(tread_name, 0)
-        ):
-            for key, body in bodies_after.items():
-                with contextlib.suppress(Exception):
-                    body.Name = key
-            return True
-        _delete_named(model, (name,))
-    _delete_named(model, (f"{name}Sk",))
+    if feature is None:
+        _rebuild(model)
+        feature = _cut_both_ways(model, sketch, reach_in)
+    if feature is None:
+        _delete_named(model, (f"{name}Sk",))
+        return False
+    with contextlib.suppress(Exception):
+        rename_feature(feature, name)
+    stringer_r = layout.inner_face_in if side == "In" else layout.outside_radius_in - THICKNESS_IN
+    tread = _tread_body(model, place)
+    pierced = True
+    radius_m = BOLT_DIA_IN / 2.0 * _INCH
+    near_m = 0.1 * _INCH
+    for point in points:
+        tread_hit = _has_hole_axis(tread, point, radius_m, near_m) if tread is not None else False
+        stringer_hit = _stringer_has_hole(model, stringer_r, _inches(point), BOLT_DIA_IN / 2.0, near_m)
+        if tread_hit is True and stringer_hit is True:
+            continue
+        if tread_hit is False or stringer_hit is False:
+            pierced = False
+            break
+        # Could not read surfaces: keep the cut. A face-count miss used to delete real holes.
+    if pierced:
+        return True
+    _delete_named(model, (name, f"{name}Sk"))
     return False
+
+
+def _inches(point_m: tuple[float, float, float]) -> tuple[float, float, float]:
+    return (point_m[0] / _INCH, point_m[1] / _INCH, point_m[2] / _INCH)
 
 
 def _cut_both_ways(model, sketch, depth_in: float):
@@ -841,6 +1119,201 @@ def _counts(bodies: dict[str, object]) -> dict[str, int]:
         with contextlib.suppress(Exception):
             counts[key] = int(body.GetFaceCount())
     return counts
+
+
+def _body_near(model, center: tuple[float, float, float], max_height: float, max_dist: float):
+    """Short body whose box center is near ``center`` (inches). Skips the stringers."""
+    best = None
+    best_dist = None
+    for body in _bodies(model):
+        try:
+            box = _box_in(body)
+        except Exception:
+            continue
+        if box[4] - box[1] > max_height:
+            continue
+        midpoint = ((box[0] + box[3]) / 2.0, (box[1] + box[4]) / 2.0, (box[2] + box[5]) / 2.0)
+        dist = math.dist(midpoint, center)
+        if dist <= max_dist and (best is None or dist < best_dist):
+            best, best_dist = body, dist
+    return best
+
+
+def _delete_bodies_near(model, center, max_height: float, max_dist: float) -> None:
+    """Delete temporary jig bodies. Leaves the hole cut that pierced the stringer."""
+    for _ in range(4):
+        body = _body_near(model, center, max_height, max_dist)
+        if body is None or not _delete_body(model, body):
+            return
+        _rebuild(model)
+
+
+def _delete_body(model, body) -> bool:
+    """Insert a Delete Body feature. The history, including hole cuts, stays."""
+    _clear_selection(model)
+    selected = False
+    with contextlib.suppress(Exception):
+        selected = bool(body.Select2(False, 0))
+    if not selected:
+        name = ""
+        with contextlib.suppress(Exception):
+            name = str(body.Name or "")
+        nothing = com_nothing()
+        if name:
+            with contextlib.suppress(Exception):
+                selected = bool(model.Extension.SelectByID2(name, "SOLIDBODY", 0.0, 0.0, 0.0, False, 0, nothing, 0))
+    if not selected:
+        return False
+    manager = model.FeatureManager
+    for method_name, args in (("InsertDeleteBody", ()), ("InsertDeleteBody2", (False,))):
+        method = getattr(manager, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            result = method(*args)
+        except Exception:
+            continue
+        if result not in (None, False):
+            return True
+    return False
+
+
+def _face_at_radius(body, face_r: float):
+    """Planar face of a jig whose center sits on the stringer face radius."""
+    best = None
+    best_gap = None
+    try:
+        raw = body.GetFaces()
+    except Exception:
+        return None
+    faces = list(raw) if isinstance(raw, (list, tuple)) else ([] if raw is None else [raw])
+    for face in faces:
+        try:
+            box = [float(v) / _INCH for v in com_value(face.GetBox)]
+        except Exception:
+            continue
+        gap = abs(math.hypot((box[0] + box[3]) / 2.0, (box[2] + box[5]) / 2.0) - face_r)
+        if gap > 0.25 or box[4] - box[1] < 0.4:
+            continue
+        if best is None or gap < best_gap:
+            best, best_gap = face, gap
+    return best
+
+
+def _stringer_has_hole(model, face_r: float, point_in, radius_in: float, near_m: float):
+    """True/False if a tall plate at ``face_r`` has this hole, or None if surfaces could not be read."""
+    point_m = (point_in[0] * _INCH, point_in[1] * _INCH, point_in[2] * _INCH)
+    radius_m = radius_in * _INCH
+    saw_no = False
+    saw_body = False
+    for body in _bodies(model):
+        try:
+            box = _box_in(body)
+        except Exception:
+            continue
+        if box[4] - box[1] < 12.0:
+            continue
+        radii = [math.hypot(x, z) for x in (box[0], box[3]) for z in (box[2], box[5])]
+        if not radii or min(radii) - 1.0 > face_r or max(radii) + 1.0 < face_r:
+            continue
+        saw_body = True
+        hit = _has_hole_axis(body, point_m, radius_m, near_m)
+        if hit is True:
+            return True
+        if hit is False:
+            saw_no = True
+    if not saw_body:
+        return None
+    return False if saw_no else None
+
+
+def _has_hole_axis(body, point_m, radius_m: float, near_m: float):
+    """True when a cylindrical face of this radius has its axis at the hole point."""
+    if body is None:
+        return False
+    try:
+        raw = body.GetFaces()
+    except Exception:
+        return None
+    faces = list(raw) if isinstance(raw, (list, tuple)) else ([] if raw is None else [raw])
+    if not faces:
+        return None
+    readable = 0
+    for face in faces:
+        try:
+            surface = com_value(face.GetSurface)
+            flag = surface.IsCylinder
+            flag = bool(flag() if callable(flag) else flag)
+            readable += 1
+        except Exception:
+            continue
+        if not flag:
+            continue
+        try:
+            values = [float(v) for v in com_value(surface.CylinderParams)]
+        except Exception:
+            continue
+        if len(values) < 7 or abs(values[6] - radius_m) > 0.03 * _INCH:
+            continue
+        if _axis_distance(values[0:3], values[3:6], point_m) <= near_m:
+            return True
+    return False if readable else None
+
+
+def _axis_distance(origin, direction, point) -> float:
+    axis = (direction[0], direction[1], direction[2])
+    length = math.sqrt(sum(v * v for v in axis)) or 1.0
+    rel = (point[0] - origin[0], point[1] - origin[1], point[2] - origin[2])
+    cross = (
+        rel[1] * axis[2] - rel[2] * axis[1],
+        rel[2] * axis[0] - rel[0] * axis[2],
+        rel[0] * axis[1] - rel[1] * axis[0],
+    )
+    return math.sqrt(sum(v * v for v in cross)) / length
+
+
+def _hide_construction(model) -> None:
+    """Hide helices, sketches, and planes added for the stair. Leave Front, Top, and Right."""
+    keep = {"Front Plane", "Top Plane", "Right Plane", "Front", "Top", "Right"}
+    items = []
+    for feature in iter_features(model):
+        name = _feature_name(feature)
+        if not name or name in keep:
+            continue
+        if name.endswith("Pln") or name.startswith("Plane"):
+            items.append((feature, name, "PLANE"))
+        elif name.endswith("Sk") or name.startswith("Sketch"):
+            items.append((feature, name, "SKETCH"))
+        elif "Helix" in name or name.startswith("Helix"):
+            items.append((feature, name, "REFERENCECURVES"))
+    for feature, name, kind in items:
+        _blank_construction(model, feature, name, kind)
+    with contextlib.suppress(Exception):
+        model.GraphicsRedraw2()
+
+
+def _blank_construction(model, feature, name: str, kind: str) -> None:
+    _clear_selection(model)
+    nothing = com_nothing()
+    selected = False
+    with contextlib.suppress(Exception):
+        selected = bool(model.Extension.SelectByID2(name, kind, 0.0, 0.0, 0.0, False, 0, nothing, 0))
+    if not selected and kind == "REFERENCECURVES":
+        with contextlib.suppress(Exception):
+            selected = bool(model.Extension.SelectByID2(name, "REFCURVE", 0.0, 0.0, 0.0, False, 0, nothing, 0))
+    if not selected:
+        with contextlib.suppress(Exception):
+            selected = bool(feature.Select2(False, 0))
+    if not selected:
+        return
+    if kind == "SKETCH":
+        with contextlib.suppress(Exception):
+            model.BlankSketch()
+    else:
+        with contextlib.suppress(Exception):
+            blank = model.BlankRefGeom
+            blank() if callable(blank) else com_value(blank)
+    _clear_selection(model)
 
 
 # ------------------------------------------------------------------ helpers

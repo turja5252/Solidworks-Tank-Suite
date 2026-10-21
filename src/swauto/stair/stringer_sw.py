@@ -289,7 +289,12 @@ def _rename_new(model, before: set[str], name: str, what: str):
         raise SolidWorksError(f"Missing {what}.")
     with contextlib.suppress(Exception):
         rename_feature(feature, name)
-    return find_feature(model, name) or feature
+    # find_feature returns the oldest feature with this name. A failed earlier
+    # attempt may still hold it, and handing that back selects the stale helix
+    # or sketch. Use the lookup only when this new feature actually took the name.
+    if _feature_name(feature) == name:
+        return find_feature(model, name) or feature
+    return feature
 
 
 def _cut_through(model, sketch, name: str) -> bool:

@@ -9,8 +9,14 @@ from tkinter import messagebox, ttk
 from swauto.comutil import format_com_error
 from swauto.errors import SolidWorksError, SolidWorksNotRunning, SolidWorksUnavailable
 from swauto.session import connect
-from swauto.stair.stringer import StringerMock, StringerLayout, layout_stringer
-from swauto.stair.stair_sw import create_stair_on_tank
+from swauto.stair.stringer import (
+    TREAD_DEPTH_IN,
+    TREAD_MARK_IN,
+    StringerLayout,
+    StringerMock,
+    layout_stringer,
+)
+from swauto.stair.stair_sw import create_stair
 from swauto.stair.stringer_sw import create_stringer_try
 from swauto.stair.tread_joint import TreadJointSpec, layout_tread_joint
 from swauto.stair.tread_joint_sw import create_tread_joint
@@ -31,6 +37,67 @@ def _tank_od_radius_in(shared: dict | None) -> float | None:
     except Exception:  # noqa: BLE001
         return None
     return outer_m / 0.0254
+
+
+def _fmt_num(value: float) -> str:
+    text = f"{value:.4f}".rstrip("0").rstrip(".")
+    return text if text else "0"
+
+
+def slope_deg(rise_in: float, run_in: float) -> float:
+    """Stair slope in degrees. Angle = atan(rise / run)."""
+    return math.degrees(math.atan(rise_in / run_in))
+
+
+def run_for_slope(rise_in: float, angle_deg: float) -> float:
+    """Run that keeps the rise and sets the slope to ``angle_deg``."""
+    return rise_in / math.tan(math.radians(angle_deg))
+
+
+def _progress_percent(done: int, total: int) -> int:
+    if total <= 0 or done <= 0:
+        return 0
+    if done >= total:
+        return 100
+    return (100 * done) // total
+
+
+def _stair_stage_plan(treads: int, *, shell: bool = True) -> list[tuple[frozenset[str], str]]:
+    """One equal share per progress line the stair build actually emits.
+
+    Missed holes and missed bolts are the same stage as a clean cut, so a
+    miss moves the percent forward and never back. Without the tank, the
+    shell stage is left out; the stringers are unchanged.
+    """
+    sides = (("EliteStringerIn", "inner"), ("EliteStringerOut", "outer"))
+    plan: list[tuple[frozenset[str], str]] = []
+    if shell:
+        plan.append((frozenset({"shell built"}), "shell"))
+    for key, side in sides:
+        plan.append((frozenset({f"{key} rolled"}), f"{side} stringer rolled"))
+    for key, side in sides:
+        plan.append((frozenset({f"{key} top edge cut"}), f"{side} stringer top edge"))
+        plan.append((frozenset({f"{key} 9 in edge cut"}), f"{side} stringer 9 in edge"))
+        plan.append((frozenset({f"{key} ends formed"}), f"{side} stringer cut"))
+    for key, side in sides:
+        plan.append(
+            (frozenset({f"{key} end holes cut", f"{key} end holes missed"}), f"{side} connecting holes")
+        )
+    for index in range(1, treads + 1):
+        plan.append((frozenset({f"tread {index} placed"}), f"tread {index}"))
+        for side in ("in", "out"):
+            plan.append(
+                (
+                    frozenset(
+                        {
+                            f"tread {index} {side} bolts through",
+                            f"tread {index} {side} bolts missed",
+                        }
+                    ),
+                    f"tread {index} {side} bolts",
+                )
+            )
+    return plan
 
 
 def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict | None = None) -> None:
@@ -62,14 +129,16 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         wraplength=640,
     ).grid(row=1, column=0, columnspan=8, sticky="w", pady=(0, 8))
 
-    shell_var = tk.StringVar(value=f"{spec.shell_od_in:g}")
-    gap_var = tk.StringVar(value=f"{spec.gap_in:g}")
+    diameter_var = tk.StringVar(value=_fmt_num(spec.shell_od_in * 2.0))
+    gap_var = tk.StringVar(value=_fmt_num(spec.gap_in))
     treads_var = tk.StringVar(value=str(spec.treads))
-    rise_var = tk.StringVar(value=f"{spec.rise_in:g}")
-    run_var = tk.StringVar(value=f"{spec.run_in:g}")
-    plate_var = tk.StringVar(value=f"{spec.plate_width_in:g}")
+    rise_var = tk.StringVar(value=_fmt_num(spec.rise_in))
+    run_var = tk.StringVar(value=_fmt_num(spec.run_in))
+    angle_var = tk.StringVar(value=_fmt_num(slope_deg(spec.rise_in, spec.run_in)))
+    plate_var = tk.StringVar(value=_fmt_num(spec.plate_width_in))
+    wall_var = tk.StringVar(value="0.5")
 
-    _field(top, 2, 0, "Shell OD radius", shell_var, "in")
+    _field(top, 2, 0, "Diameter", diameter_var, "in")
     _field(top, 2, 3, "Gap", gap_var, "in")
 
     def from_tank() -> None:
@@ -77,7 +146,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         if radius is None:
             messagebox.showinfo("Stringer", "Enter a tank on the Tank Properties tab first.")
             return
-        shell_var.set(f"{radius:.4f}".rstrip("0").rstrip("."))
+        diameter_var.set(_fmt_num(radius * 2.0))
 
     ttk.Button(top, text="From Tank Properties", command=from_tank).grid(
         row=2, column=6, columnspan=2, sticky="w", padx=(6, 0), pady=(4, 0)
@@ -85,66 +154,118 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     _field(top, 3, 0, "Treads", treads_var, "")
     _field(top, 3, 3, "Rise", rise_var, "in")
     _field(top, 4, 0, "Run", run_var, "in")
-    _field(top, 4, 3, "Plate width", plate_var, "in")
-    wall_var = tk.StringVar(value="0.5")
-    _field(top, 5, 0, "Pan wall", wall_var, "in")
+    _field(top, 4, 3, "Angle", angle_var, "deg")
+    _field(top, 5, 0, "Plate width", plate_var, "in")
+    _field(top, 5, 3, "Pan wall", wall_var, "in")
 
     state = {"busy": False}
     create_btn = ttk.Button(top, text="Create flatten plate in SolidWorks")
     create_btn.grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 4))
     stair_btn = ttk.Button(top, text="Create stair on tank in SolidWorks")
     stair_btn.grid(row=6, column=3, columnspan=4, sticky="w", pady=(10, 4))
+    include_shell = tk.BooleanVar(value=True)
+
+    def sync_stair_button() -> None:
+        if include_shell.get():
+            stair_btn.configure(text="Create stair on tank in SolidWorks")
+        else:
+            stair_btn.configure(text="Create stair without tank in SolidWorks")
+
+    ttk.Checkbutton(
+        top,
+        text="Include tank shell",
+        variable=include_shell,
+        command=sync_stair_button,
+    ).grid(row=7, column=0, columnspan=4, sticky="w")
     ttk.Label(
         top,
         text=(
-            "Stair on tank: shell at the OD radius above, both climbing stringers, every tread as a "
-            "pan (top and four walls, no bottom), and the two bolts per side located from each tread's "
-            "front face, cut through the inner and the outer stringer into that tread end wall."
+            "Stair: both climbing stringers, every tread as a pan (top and four walls, no bottom), "
+            "and the two bolts per side located from each tread's front face, cut through the inner "
+            "and the outer stringer into that tread end wall. Include tank shell adds the shell at "
+            "the diameter above. Uncheck it to build the same stair with no shell."
         ),
         justify="left",
         wraplength=640,
-    ).grid(row=7, column=0, columnspan=8, sticky="w", pady=(0, 4))
+    ).grid(row=8, column=0, columnspan=8, sticky="w", pady=(0, 4))
 
     summary_var = tk.StringVar(value="")
     ttk.Label(top, textvariable=summary_var, justify="left").grid(
-        row=8, column=0, columnspan=8, sticky="w", pady=(4, 4)
+        row=9, column=0, columnspan=8, sticky="w", pady=(4, 4)
     )
 
-    ttk.Label(top, text="Plan of the formed stringer").grid(row=9, column=0, columnspan=8, sticky="w")
+    ttk.Label(top, text="Plan of the formed stringer").grid(row=10, column=0, columnspan=8, sticky="w")
     plan = tk.Canvas(top, width=_PLAN, height=_PLAN, background="#f4f1ea", highlightthickness=1)
-    plan.grid(row=10, column=0, columnspan=8, sticky="w")
+    plan.grid(row=11, column=0, columnspan=8, sticky="w")
+
+    def read_wall() -> float:
+        try:
+            wall = float(wall_var.get().strip())
+        except ValueError as exc:
+            raise ValueError("Pan wall must be numeric.") from exc
+        if wall <= 0 or wall >= TREAD_MARK_IN or wall * 2 >= TREAD_DEPTH_IN:
+            raise ValueError("Pan wall must be greater than zero and thinner than the tread.")
+        return wall
 
     def read_spec() -> StringerMock:
         try:
-            return StringerMock(
-                shell_od_in=float(shell_var.get().strip()),
-                gap_in=float(gap_var.get().strip()),
-                treads=int(float(treads_var.get().strip())),
-                rise_in=float(rise_var.get().strip()),
-                run_in=float(run_var.get().strip()),
-                plate_width_in=float(plate_var.get().strip()),
-                outside_face=True,
-            )
+            diameter = float(diameter_var.get().strip())
+            gap = float(gap_var.get().strip())
+            treads_num = float(treads_var.get().strip())
+            rise = float(rise_var.get().strip())
+            run = float(run_var.get().strip())
+            angle = float(angle_var.get().strip())
+            plate = float(plate_var.get().strip())
         except ValueError as exc:
-            raise ValueError("Stringer values must be numeric.") from exc
+            raise ValueError("Stair values must be numeric.") from exc
+        if diameter <= 0:
+            raise ValueError("Diameter must be greater than zero.")
+        if abs(treads_num - round(treads_num)) > 1e-6:
+            raise ValueError("Treads must be a whole number.")
+        treads = int(round(treads_num))
+        if treads < 1:
+            raise ValueError("Treads must be at least 1.")
+        if rise <= 0 or run <= 0:
+            raise ValueError("Rise and run must be greater than zero.")
+        if angle <= 0 or angle >= 90:
+            raise ValueError("Angle must be greater than 0 and less than 90 degrees.")
+        if abs(slope_deg(rise, run) - angle) > 0.05:
+            raise ValueError("Angle has to match the rise and run.")
+        if gap < 0:
+            raise ValueError("Gap cannot be negative.")
+        if plate <= 0:
+            raise ValueError("Plate width must be greater than zero.")
+        return StringerMock(
+            shell_od_in=diameter / 2.0,
+            gap_in=gap,
+            treads=treads,
+            rise_in=rise,
+            run_in=run,
+            plate_width_in=plate,
+            outside_face=True,
+        )
 
     def refresh(*_args) -> None:
         try:
             current = read_spec()
+            read_wall()
             current.validate()
             drawn = layout_stringer(current)
         except ValueError as exc:
             summary_var.set(str(exc))
             plan.delete("all")
-            status_var.set("Stringer needs a correction.")
+            if not state["busy"]:
+                status_var.set("Stringer needs a correction.")
             return
         summary_var.set(
-            f"Outside face radius {drawn.outside_radius_in:.2f} in · "
+            f"Slope {slope_deg(current.rise_in, current.run_in):.2f}° · "
+            f"outside face radius {drawn.outside_radius_in:.2f} in · "
             f"sweep {drawn.sweep_deg:.2f}° · rise {drawn.total_rise_in:.1f} in · "
             f"pitch {drawn.pitch_deg:.2f}°"
         )
         _draw_plan(plan, drawn)
-        status_var.set("Stringer ready.")
+        if not state["busy"]:
+            status_var.set("Stringer ready.")
 
     def create() -> None:
         if state["busy"]:
@@ -185,46 +306,97 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         try:
             current = read_spec()
             current.validate()
-            wall = float(wall_var.get().strip())
+            wall = read_wall()
         except ValueError as exc:
             messagebox.showerror("Stair", str(exc) if str(exc) else "Pan wall must be numeric.")
             return
         state["busy"] = True
         stair_btn.configure(state="disabled")
         create_btn.configure(state="disabled")
-        status_var.set("Building the stair on the tank… leave SolidWorks alone until it finishes.")
+        status_var.set("0% — starting the stair")
         parent.update_idletasks()
+        with_shell = bool(include_shell.get())
+        stages = _stair_stage_plan(current.treads, shell=with_shell)
+        done = {"count": 0}
+
         def progress(text: str) -> None:
-            status_var.set(f"Stair: {text}… leave SolidWorks alone.")
+            label = text
+            for index in range(done["count"], len(stages)):
+                keys, stage_label = stages[index]
+                if text in keys:
+                    done["count"] = index + 1
+                    label = stage_label
+                    break
+            percent = _progress_percent(done["count"], len(stages))
+            status_var.set(f"{percent}% — {label}")
             parent.update_idletasks()
 
         try:
             session = connect()
-            result = create_stair_on_tank(session.app, current, wall, progress=progress)
+            result = create_stair(session.app, current, wall, progress=progress, shell=with_shell)
         except (SolidWorksNotRunning, SolidWorksUnavailable, SolidWorksError, ValueError) as exc:
             state["busy"] = False
             stair_btn.configure(state="normal")
             create_btn.configure(state="normal")
-            status_var.set("Stair build failed.")
+            status_var.set("100% — stair build failed")
             messagebox.showerror("Stair", str(exc))
             return
         except Exception as exc:  # noqa: BLE001
             state["busy"] = False
             stair_btn.configure(state="normal")
             create_btn.configure(state="normal")
-            status_var.set("Stair build failed.")
+            status_var.set("100% — stair build failed")
             messagebox.showerror("Stair", format_com_error(exc))
             return
         state["busy"] = False
         stair_btn.configure(state="normal")
         create_btn.configure(state="normal")
-        status_var.set(f"Stair → {result.title}")
+        status_var.set(f"100% — Stair → {result.title}")
         messagebox.showinfo("Stair", f"{result.title}\n\n{result.note}")
+
+    sync = {"lock": False}
+
+    def on_rise_or_run(*_args) -> None:
+        if sync["lock"]:
+            return
+        try:
+            rise = float(rise_var.get().strip())
+            run = float(run_var.get().strip())
+        except ValueError:
+            refresh()
+            return
+        if rise > 0 and run > 0:
+            sync["lock"] = True
+            try:
+                angle_var.set(_fmt_num(slope_deg(rise, run)))
+            finally:
+                sync["lock"] = False
+        refresh()
+
+    def on_angle(*_args) -> None:
+        if sync["lock"]:
+            return
+        try:
+            rise = float(rise_var.get().strip())
+            angle = float(angle_var.get().strip())
+        except ValueError:
+            refresh()
+            return
+        if rise > 0 and 0 < angle < 90:
+            sync["lock"] = True
+            try:
+                run_var.set(_fmt_num(run_for_slope(rise, angle)))
+            finally:
+                sync["lock"] = False
+        refresh()
 
     create_btn.configure(command=create)
     stair_btn.configure(command=create_stair)
-    for var in (shell_var, gap_var, treads_var, rise_var, run_var, plate_var):
+    for var in (diameter_var, gap_var, treads_var, plate_var, wall_var):
         var.trace_add("write", refresh)
+    rise_var.trace_add("write", on_rise_or_run)
+    run_var.trace_add("write", on_rise_or_run)
+    angle_var.trace_add("write", on_angle)
 
     def on_wheel(event) -> None:
         scroller.yview_scroll(int(-event.delta / 120), "units")
