@@ -15,8 +15,9 @@ from swauto.stair.brace_sw import (
     add_knee_brace,
     angle_profile,
     remove_cross_brace,
-    stair_tread_count,
+    stair_flight_tops,
 )
+from swauto.stair.development import MAX_PLATFORMS, flight_treads, stair_plan
 from swauto.stair.inner_clip_sw import add_inner_clip, clip_angle_profile
 from swauto.stair.stringer import (
     TREAD_DEPTH_IN,
@@ -26,6 +27,7 @@ from swauto.stair.stringer import (
     layout_stringer,
 )
 from swauto.stair.stair_sw import create_stair as build_stair
+from swauto.stair.stair_sw import flight_suffix
 from swauto.stair.stringer_sw import create_stringer_try
 from swauto.stair.tread_joint import TreadJointSpec, layout_tread_joint
 from swauto.stair.tread_joint_sw import create_tread_joint
@@ -88,18 +90,23 @@ def _progress_percent(done: int, total: int) -> int:
     return (100 * done) // total
 
 
-def _inner_clip(model, index: int, count: int, profile: str, shell_radius_in, progress) -> str:
-    """Inner clip at a braced tread. The top tread has no stringer above it, so it gets none."""
-    if index >= count:
-        return f"No inner clip at tread {index}: it is the top tread, and the inner stringer stops at its top."
+def _inner_clip(model, index: int, tops: set[int], profile: str, shell_radius_in, progress) -> str:
+    """Inner clip at a braced tread. The top tread of a flight has no stringer above it, so it gets none."""
+    if index in tops:
+        return f"No inner clip at tread {index}: it tops its flight, and the inner stringer stops at its top."
     return add_inner_clip(model, index, profile, shell_radius_in=shell_radius_in, progress=progress).note
 
 
+def _flight_tops(treads: int, platforms: int) -> set[int]:
+    per_flight = flight_treads(treads, platforms)
+    return {k * per_flight for k in range(1, platforms + 2)}
+
+
 def _brace_stage_plan(
-    braces, *, knees: bool = False, inner: bool = False, top: int | None = None
+    braces, *, knees: bool = False, inner: bool = False, tops: set[int] | frozenset[int] = frozenset()
 ) -> list[tuple[frozenset[str], str]]:
     """Four shares per brace (angle, each cap with its hole, leg hole), three more per knee,
-    three more per inner clip. ``top`` is the top tread, which gets no inner clip."""
+    three more per inner clip. ``tops`` are the treads that end a flight, which get no inner clip."""
     plan: list[tuple[frozenset[str], str]] = []
     for index in braces:
         key = f"EliteBrace{index:02d}"
@@ -112,7 +119,7 @@ def _brace_stage_plan(
             plan.append((frozenset({f"{knee} angle placed"}), f"knee brace {index}"))
             plan.append((frozenset({f"{knee} clip placed"}), f"knee brace {index} clip and pad"))
             plan.append((frozenset({f"{knee} holes cut", f"{knee} holes missed"}), f"knee brace {index} holes"))
-        if inner and index != top:
+        if inner and index not in tops:
             clip = f"{key}Inner"
             plan.append((frozenset({f"{clip} angle placed"}), f"inner clip {index}"))
             plan.append((frozenset({f"{clip} landing clip placed"}), f"inner clip {index} landing clip and pad"))
@@ -121,29 +128,37 @@ def _brace_stage_plan(
 
 
 def _stair_stage_plan(
-    treads: int, *, shell: bool = True, braces=(), knees: bool = False, inner: bool = False
+    treads: int, *, shell: bool = True, braces=(), knees: bool = False, inner: bool = False,
+    platforms: int = 0, top_platform: bool = False,
 ) -> list[tuple[frozenset[str], str]]:
     """One equal share per progress line the stair build actually emits.
 
     Missed holes and missed bolts are the same stage as a clean cut, so a
     miss moves the percent forward and never back. Without the tank, the
-    shell stage is left out; the stringers are unchanged.
+    shell stage is left out; the stringers are unchanged. Mid platforms add
+    a flight of stringers each, the extra pan level with each platform, the
+    platform frames, and their clips.
     """
-    sides = (("EliteStringerIn", "inner"), ("EliteStringerOut", "outer"))
+    per_flight = flight_treads(treads, platforms)
     plan: list[tuple[frozenset[str], str]] = []
     if shell:
         plan.append((frozenset({"shell built"}), "shell"))
-    for key, side in sides:
-        plan.append((frozenset({f"{key} rolled"}), f"{side} stringer rolled"))
-    for key, side in sides:
-        plan.append((frozenset({f"{key} top edge cut"}), f"{side} stringer top edge"))
-        plan.append((frozenset({f"{key} 9 in edge cut"}), f"{side} stringer 9 in edge"))
-        plan.append((frozenset({f"{key} ends formed"}), f"{side} stringer cut"))
-    for key, side in sides:
-        plan.append(
-            (frozenset({f"{key} end holes cut", f"{key} end holes missed"}), f"{side} connecting holes")
-        )
-    for index in range(1, treads + 1):
+    for flight in range(platforms + 1):
+        suffix = flight_suffix(flight)
+        where = f" (flight {flight + 1})" if platforms else ""
+        sides = ((f"EliteStringerIn{suffix}", f"inner{where}"), (f"EliteStringerOut{suffix}", f"outer{where}"))
+        for key, side in sides:
+            plan.append((frozenset({f"{key} rolled"}), f"{side} stringer rolled"))
+        for key, side in sides:
+            plan.append((frozenset({f"{key} top edge cut"}), f"{side} stringer top edge"))
+            plan.append((frozenset({f"{key} 9 in edge cut"}), f"{side} stringer 9 in edge"))
+            plan.append((frozenset({f"{key} ends formed"}), f"{side} stringer cut"))
+        for key, side in sides:
+            plan.append(
+                (frozenset({f"{key} end holes cut", f"{key} end holes missed"}), f"{side} connecting holes")
+            )
+    pans = per_flight * (platforms + 1)
+    for index in range(1, pans + 1):
         plan.append((frozenset({f"tread {index} placed"}), f"tread {index}"))
         for side in ("in", "out"):
             plan.append(
@@ -157,7 +172,16 @@ def _stair_stage_plan(
                     f"tread {index} {side} bolts",
                 )
             )
-    plan.extend(_brace_stage_plan(braces, knees=knees, inner=inner, top=treads))
+    for k in range(1, platforms + 1 + (1 if top_platform else 0)):
+        key = f"ElitePlatform{k * per_flight:02d}"
+        plan.append((frozenset({f"{key} frame placed"}), f"platform after tread {k * per_flight}"))
+        for side in ("A", "B") if k <= platforms else ("A",):
+            plan.append((frozenset({f"{key}Clip{side} angles placed"}), f"platform clips {k * per_flight}{side}"))
+            plan.append(
+                (frozenset({f"{key}Clip{side} holes cut", f"{key}Clip{side} holes missed"}),
+                 f"platform clip holes {k * per_flight}{side}")
+            )
+    plan.extend(_brace_stage_plan(braces, knees=knees, inner=inner, tops=_flight_tops(treads, platforms)))
     return plan
 
 
@@ -251,6 +275,13 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     ttk.Entry(top, textvariable=braces_var, width=10).grid(row=7, column=4, sticky="w", pady=(4, 0))
     brace_btn = ttk.Button(top, text="Add braces to open stair")
     brace_btn.grid(row=7, column=5, columnspan=3, sticky="w", padx=(6, 0), pady=(4, 0))
+    platforms_var = tk.StringVar(value="0")
+    top_platform_var = tk.BooleanVar(value=False)
+    platform_options = ttk.Frame(top)
+    platform_options.grid(row=8, column=0, columnspan=3, sticky="w")
+    ttk.Label(platform_options, text="Mid platforms").pack(side="left")
+    ttk.Entry(platform_options, textvariable=platforms_var, width=4).pack(side="left", padx=(6, 0))
+    ttk.Checkbutton(platform_options, text="Top platform", variable=top_platform_var).pack(side="left", padx=(12, 0))
     knee_var = tk.BooleanVar(value=True)
     inner_var = tk.BooleanVar(value=True)
     brace_options = ttk.Frame(top)
@@ -273,9 +304,14 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "Add braces to open stair puts them on the stair part open in SolidWorks and replaces "
             "any brace already under those treads. Knee brace to the shell adds, with each cross "
             "brace, an L3x3x3/8 at 45 deg from its leg hole down to a 1/4 clip and pad on the shell. "
-            "Inner clip to the shell adds, at each braced tread but the top one, an L4x3x3/8 on the "
-            "tank side of the inner stringer just above the tread, bolted to a 3/8 landing clip and "
-            "pad on the shell."
+            "Inner clip to the shell adds, at each braced tread but the top of a flight, an L4x3x3/8 on "
+            "the tank side of the inner stringer just above the tread, bolted to a 3/8 landing clip and "
+            "pad on the shell.\n"
+            "Mid platforms (0 to 3) split the treads into equal flights, as the lisp does: the tread "
+            "level with each platform belongs to both flights, so 7 treads with 1 platform are two "
+            "flights of 4. Each platform is a C4x5.4 frame mitered at the corners, 36 in along the walk "
+            "centerline, with L6x6x3/8 clips at every stringer end. Top platform puts the same frame "
+            "past the top tread. Brace tread numbers count every pan, the extra one at each platform too."
         ),
         justify="left",
         wraplength=640,
@@ -337,25 +373,42 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             outside_face=True,
         )
 
+    def read_platforms(treads: int) -> int:
+        text = platforms_var.get().strip() or "0"
+        try:
+            count = float(text)
+        except ValueError as exc:
+            raise ValueError("Mid platforms must be a whole number, 0 to 3.") from exc
+        if count != int(count) or not 0 <= count <= MAX_PLATFORMS:
+            raise ValueError(f"Mid platforms must be a whole number, 0 to {MAX_PLATFORMS}.")
+        flight_treads(treads, int(count))
+        return int(count)
+
     def refresh(*_args) -> None:
         try:
             current = read_spec()
             read_wall()
             current.validate()
+            platforms = read_platforms(current.treads)
             drawn = layout_stringer(current)
+            treads_at, spans = stair_plan(current, platforms, bool(top_platform_var.get()))
         except ValueError as exc:
             summary_var.set(str(exc))
             plan.delete("all")
             if not state["busy"]:
                 status_var.set("Stringer needs a correction.")
             return
+        flights = (
+            f" · {platforms + 1} flights of {flight_treads(current.treads, platforms)}, "
+            f"{len(treads_at)} pans" if platforms else ""
+        )
         summary_var.set(
             f"Slope {slope_deg(current.rise_in, current.run_in):.2f}° · "
             f"outside face radius {drawn.outside_radius_in:.2f} in · "
-            f"sweep {drawn.sweep_deg:.2f}° · rise {drawn.total_rise_in:.1f} in · "
-            f"pitch {drawn.pitch_deg:.2f}°"
+            f"sweep {math.degrees(max([treads_at[-1]] + [b for _a, b in spans])):.2f}° · "
+            f"rise {drawn.total_rise_in:.1f} in · pitch {drawn.pitch_deg:.2f}°{flights}"
         )
-        _draw_plan(plan, drawn)
+        _draw_plan(plan, drawn, treads_at, spans)
         if not state["busy"]:
             status_var.set("Stringer ready.")
 
@@ -406,17 +459,24 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             current = read_spec()
             current.validate()
             wall = read_wall()
-            braces = read_braces(current.treads)
+            platforms = read_platforms(current.treads)
+            pans = flight_treads(current.treads, platforms) * (platforms + 1)
+            braces = read_braces(pans)
         except ValueError as exc:
             messagebox.showerror("Stair", str(exc) if str(exc) else "Pan wall must be numeric.")
             return
         with_shell = bool(include_shell.get())
         knees = bool(knee_var.get())
         inner = bool(inner_var.get())
+        top_platform = bool(top_platform_var.get())
+        tops = _flight_tops(current.treads, platforms)
 
         def work(progress):
             session = connect()
-            result = build_stair(session.app, current, wall, progress=progress, shell=with_shell)
+            result = build_stair(
+                session.app, current, wall, progress=progress, shell=with_shell, platforms=platforms,
+                top_platform=top_platform,
+            )
             notes = [result.note]
             if braces:
                 profile = angle_profile(session.app)
@@ -430,13 +490,14 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
                         notes.append(knee.note)
                     if inner:
                         notes.append(
-                            _inner_clip(
-                                result.model, index, current.treads, clip_profile, current.shell_od_in, progress
-                            )
+                            _inner_clip(result.model, index, tops, clip_profile, current.shell_od_in, progress)
                         )
             return result.title, "\n\n".join(notes)
 
-        stages = _stair_stage_plan(current.treads, shell=with_shell, braces=braces, knees=knees, inner=inner)
+        stages = _stair_stage_plan(
+            current.treads, shell=with_shell, braces=braces, knees=knees, inner=inner, platforms=platforms,
+            top_platform=top_platform,
+        )
         run_job("Stair", stages, work)
 
     def add_braces() -> None:
@@ -462,7 +523,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             model = com_value(session.app.ActiveDoc)
             if model is None:
                 raise ValueError("Open the stair part in SolidWorks first.")
-            count = stair_tread_count(model)
+            count, tops = stair_flight_tops(model)
             over = [index for index in braces if index > count]
             if over:
                 raise ValueError(f"The open stair has {count} treads; there is no tread {over[0]}.")
@@ -476,7 +537,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
                     knee = add_knee_brace(model, index, profile, shell_radius_in=shell_radius, progress=progress)
                     notes.append(knee.note)
                 if inner:
-                    notes.append(_inner_clip(model, index, count, clip_profile, shell_radius, progress))
+                    notes.append(_inner_clip(model, index, tops, clip_profile, shell_radius, progress))
             return str(com_value(model.GetTitle) or "Part"), "\n\n".join(notes)
 
         run_job("Braces", _brace_stage_plan(braces, knees=knees, inner=inner), work)
@@ -580,7 +641,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     create_btn.configure(command=create)
     stair_btn.configure(command=create_stair)
     brace_btn.configure(command=add_braces)
-    for var in (diameter_var, gap_var, treads_var, plate_var, wall_var):
+    for var in (diameter_var, gap_var, treads_var, plate_var, wall_var, platforms_var, top_platform_var):
         var.trace_add("write", refresh)
     rise_var.trace_add("write", on_rise_or_run)
     run_var.trace_add("write", on_rise_or_run)
@@ -705,9 +766,12 @@ def _bind_wheel(widget, handler) -> None:
         _bind_wheel(child, handler)
 
 
-def _draw_plan(canvas: tk.Canvas, layout: StringerLayout) -> None:
+def _draw_plan(
+    canvas: tk.Canvas, layout: StringerLayout, treads_at: list[float], spans: list[tuple[float, float]]
+) -> None:
+    """Shell, stringer faces, a line per tread, and each platform's outline, over the whole stair."""
     canvas.delete("all")
-    sweep = layout.sweep_rad
+    sweep = max([treads_at[-1]] + [b for _a, b in spans]) if treads_at else layout.sweep_rad
     radii = (layout.shell_od_in, layout.inner_face_in, layout.outside_radius_in)
     points = [
         (radius * math.cos(angle), radius * math.sin(angle))
@@ -715,20 +779,25 @@ def _draw_plan(canvas: tk.Canvas, layout: StringerLayout) -> None:
         for step in range(17)
         for angle in (-0.12 + (sweep + 0.24) * step / 16,)
     ]
-    _paint(canvas, _PLAN, _PLAN, points, lambda locate: _plan_marks(canvas, layout, locate))
+    _paint(canvas, _PLAN, _PLAN, points, lambda locate: _plan_marks(canvas, layout, sweep, treads_at, spans, locate))
 
 
-def _plan_marks(canvas: tk.Canvas, layout: StringerLayout, locate) -> None:
-    canvas.create_line(*_arc(layout.shell_od_in, layout.sweep_rad, locate), fill="#8d96a0", width=2, smooth=True)
-    canvas.create_line(*_arc(layout.inner_face_in, layout.sweep_rad, locate), fill="#5c6770", width=1, smooth=True)
-    canvas.create_line(*_arc(layout.outside_radius_in, layout.sweep_rad, locate), fill="#2f6f86", width=4, smooth=True)
-    for tread in layout.treads:
-        angle = (tread.index / len(layout.treads)) * layout.sweep_rad
-        canvas.create_line(
-            *locate(layout.inner_face_in * math.cos(angle), layout.inner_face_in * math.sin(angle)),
-            *locate(layout.outside_radius_in * math.cos(angle), layout.outside_radius_in * math.sin(angle)),
-            fill="#243038",
+def _plan_marks(canvas: tk.Canvas, layout: StringerLayout, sweep: float, treads_at, spans, locate) -> None:
+    canvas.create_line(*_arc(layout.shell_od_in, sweep, locate), fill="#8d96a0", width=2, smooth=True)
+    canvas.create_line(*_arc(layout.inner_face_in, sweep, locate), fill="#5c6770", width=1, smooth=True)
+    canvas.create_line(*_arc(layout.outside_radius_in, sweep, locate), fill="#2f6f86", width=4, smooth=True)
+
+    def at(radius: float, angle: float) -> tuple[float, float]:
+        return locate(radius * math.cos(angle), radius * math.sin(angle))
+
+    for angle in treads_at:
+        canvas.create_line(*at(layout.inner_face_in, angle), *at(layout.outside_radius_in, angle), fill="#243038")
+    for side_a, side_b in spans:
+        corners = (
+            at(layout.inner_face_in, side_a), at(layout.outside_radius_in, side_a),
+            at(layout.outside_radius_in, side_b), at(layout.inner_face_in, side_b),
         )
+        canvas.create_polygon(*[v for corner in corners for v in corner], outline="#b5651d", fill="", width=2)
 
 
 def _paint(canvas: tk.Canvas, width: int, height: int, points: list[tuple[float, float]], draw) -> None:

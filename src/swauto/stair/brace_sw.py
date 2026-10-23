@@ -160,6 +160,19 @@ def stair_tread_count(model) -> int:
     return len(_stair_parts(model)[2])
 
 
+def stair_flight_tops(model) -> tuple[int, set[int]]:
+    """Tread count, and the treads that end a flight: the top one, and each one
+    level with the next (the tread on the far side of a mid platform)."""
+    treads = _stair_parts(model)[2]
+    return len(treads), flight_tops([y for y, _phi, _r in treads])
+
+
+def flight_tops(bottoms: list[float]) -> set[int]:
+    """1-based treads, lowest first by bottom height, with no stringer above them."""
+    count = len(bottoms)
+    return {i for i in range(1, count + 1) if i == count or abs(bottoms[i] - bottoms[i - 1]) < 0.01}
+
+
 def _frame(model, tread_index: int) -> _Frame:
     """Tread centerline angle and bottom, and the two stringer walk faces, read from the part."""
     r_a, r_b, treads = _stair_parts(model)
@@ -611,7 +624,8 @@ def _new_body(model, before: set[str]):
 def _set_turn(model, feature, turn: float) -> bool:
     data = com_value(feature.GetDefinition)
     data.AccessSelections(model, com_nothing())
-    data.RotationAngle = turn
+    # SolidWorks keeps 0 for a negative rotation, so pass the same turn in [0, 2 pi).
+    data.RotationAngle = turn % (2.0 * math.pi)
     if not feature.ModifyDefinition(data, model, com_nothing()):
         return False
     s._rebuild(model)

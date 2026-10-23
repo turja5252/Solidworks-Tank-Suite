@@ -24,7 +24,7 @@ import math
 import os
 from dataclasses import dataclass
 
-from swauto.comutil import com_nothing, com_value, format_com_error
+from swauto.comutil import com_value, format_com_error
 from swauto.errors import SolidWorksError
 from swauto.params import rename_feature
 from swauto.stair import stair_sw as s
@@ -41,6 +41,7 @@ from swauto.stair.brace_sw import (
     _shell,
     _sketch_at,
     _stair_parts,
+    flight_tops,
 )
 from swauto.stair.stringer import THICKNESS_IN, TREAD_DEPTH_IN, TREAD_MARK_IN
 from swauto.stair.stringer_sw import _create_circle, _names, _rename_new
@@ -140,14 +141,17 @@ def _layout(model, tread_index: int, shell_radius_in: float | None) -> _Clip:
     count = len(treads)
     if not 1 <= tread_index <= count:
         raise SolidWorksError(f"This stair has {count} treads; there is no tread {tread_index}.")
-    if tread_index == count:
+    if tread_index in flight_tops([y for y, _phi, _r in treads]):
         raise SolidWorksError(
-            f"Tread {count} is the top tread. The inner stringer stops at its top, "
+            f"Tread {tread_index} is the top of its flight. The inner stringer stops at its top, "
             "so there is no plate above it for the inner clip."
         )
     y_bottom, phi, _r = treads[tread_index - 1]
-    (y_first, phi_first, _r1), (y_last, phi_last, _r2) = treads[0], treads[-1]
-    tan_p = (y_last - y_first) / (phi_last - phi_first) / r_a
+    # One step up the same flight: a mid platform turns the stair without rising.
+    (y_low, phi_low, _r1), (y_high, phi_high, _r2) = next(
+        (a, b) for a, b in zip(treads, treads[1:]) if b[0] - a[0] > 0.01
+    )
+    tan_p = (y_high - y_low) / (phi_high - phi_low) / r_a
     pitch = math.atan(tan_p)
     # Inner stringer development at its walk face: the top edge runs through the
     # tread's trailing top corner, and the top hole is EDGE_CLEAR_IN square below it.
@@ -229,10 +233,7 @@ def _member(model, profile: str, a, b, name: str):
     if line is None:
         raise SolidWorksError(f"{name}: clip angle line was not drawn.")
     path_sketch = _rename_new(model, before, f"{name}Path", "clip angle path")
-    mid = [(a_m[i] + b_m[i]) / 2.0 for i in range(3)]
-    _clear_selection(model)
-    if not model.Extension.SelectByID2("", "EXTSKETCHSEGMENT", mid[0], mid[1], mid[2], False, 0, com_nothing(), 0):
-        raise SolidWorksError(f"{name}: could not select the clip angle line.")
+    s._select_segments(model, path_sketch, name, 1)
     bodies_before = s._body_names(model)
     try:
         feature = model.FeatureManager.InsertStructuralWeldment2(profile, 1, False, 0.0)

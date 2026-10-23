@@ -22,7 +22,14 @@ from swauto.errors import BuildStopped, SolidWorksError
 from swauto.features import find_feature, iter_features
 from swauto.params import rename_feature
 from swauto.parts import extrude_blind, new_part
-from swauto.stair.development import END_HOLE_RADIUS_IN, SLOT_LENGTH_IN, DevelopedStringer, develop_both
+from swauto.stair.development import (
+    END_HOLE_RADIUS_IN,
+    SLOT_LENGTH_IN,
+    DevelopedStringer,
+    develop_both,
+    flight_step,
+    flight_treads,
+)
 from swauto.stair.stringer import (
     BOLT_DIA_IN,
     BOLT_FROM_FRONT_IN,
@@ -78,29 +85,58 @@ class TreadPlace:
     center: tuple[float, float, float]
 
 
-def create_stair(app, stair: StringerMock, wall_in: float, progress=None, *, shell: bool = True) -> StairResult:
-    """New part, then the stair. ``shell`` adds the tank; the stringers do not change."""
+def create_stair(
+    app, stair: StringerMock, wall_in: float, progress=None, *, shell: bool = True, platforms: int = 0,
+    top_platform: bool = False,
+) -> StairResult:
+    """New part, then the stair. ``shell`` adds the tank; the stringers do not change.
+
+    ``platforms`` mid platforms split the stair into equal flights, and
+    ``top_platform`` puts the same platform past the top tread.
+    """
+    flight_treads(stair.treads, platforms)
+    profiles = _platform_profiles(app) if platforms or top_platform else None
     if shell:
-        return create_stair_on_tank(app, stair, wall_in, progress=progress)
+        return create_stair_on_tank(
+            app, stair, wall_in, progress=progress, platforms=platforms, top_platform=top_platform, profiles=profiles
+        )
     stair.validate()
     if wall_in <= 0 or wall_in >= TREAD_MARK_IN or wall_in * 2 >= TREAD_DEPTH_IN:
         raise ValueError("Pan wall must be greater than zero and thinner than the tread.")
     model = new_part(app)
-    return build_stair_on_model(model, stair.shell_od_in, stair, wall_in, progress=progress)
+    return build_stair_on_model(
+        model, stair.shell_od_in, stair, wall_in, progress=progress, platforms=platforms,
+        top_platform=top_platform, profiles=profiles,
+    )
 
 
-def create_stair_on_tank(app, stair: StringerMock, wall_in: float, progress=None) -> StairResult:
+def create_stair_on_tank(
+    app, stair: StringerMock, wall_in: float, progress=None, *, platforms: int = 0, top_platform: bool = False,
+    profiles: tuple[str, str] | None = None,
+) -> StairResult:
     """New part with the shell at the Stringer tab's OD radius, then the stair."""
     stair.validate()
     if wall_in <= 0 or wall_in >= TREAD_MARK_IN or wall_in * 2 >= TREAD_DEPTH_IN:
         raise ValueError("Pan wall must be greater than zero and thinner than the tread.")
+    if profiles is None and (platforms or top_platform):
+        profiles = _platform_profiles(app)
     tank = TankSpec(diameter_in=2.0 * stair.shell_od_in, diameter_basis=WALL_OD)
     shell = create_tank_shell(app, tank)
     model = shell.live.model
     outer_m, _inner_m = course_radii_m(tank, tank.active_courses()[0])
     shell_od = outer_m / _INCH
     _progress(progress, "shell built")
-    return build_stair_on_model(model, shell_od, stair, wall_in, progress=progress)
+    return build_stair_on_model(
+        model, shell_od, stair, wall_in, progress=progress, platforms=platforms, top_platform=top_platform,
+        profiles=profiles,
+    )
+
+
+def _platform_profiles(app) -> tuple[str, str]:
+    """C4x5.4 for the platform frames and L6x6x3/8 for the stringer clips."""
+    from swauto.stair.platform_sw import clip_profile, platform_profile
+
+    return platform_profile(app), clip_profile(app)
 
 
 def _progress(callback, text: str) -> None:
@@ -123,49 +159,49 @@ def build_stair_on_model(
     stringers: bool = True,
     do_treads: bool = True,
     progress=None,
+    platforms: int = 0,
+    top_platform: bool = False,
+    profiles: tuple[str, str] | None = None,
 ) -> StairResult:
-    """Stringers (unless already there), then tread by tread: pan, inner bolts, outer bolts."""
+    """Stringers (unless already there), then tread by tread: pan, inner bolts, outer bolts.
+
+    With ``platforms`` the stair is that many plus one equal flights, each the
+    one below turned and raised past a 36 in mid platform. Platform frames and
+    their stringer clips go in last: a higher flight's stringer cuts start
+    inside the platform below it. ``profiles`` is (C4 frame, 6x6 clip).
+    """
+    per_flight = flight_treads(stair.treads, platforms)
+    flight = StringerMock(
+        shell_od_in=shell_od,
+        gap_in=stair.gap_in,
+        treads=per_flight,
+        rise_in=stair.rise_in,
+        run_in=stair.run_in,
+        plate_width_in=stair.plate_width_in,
+    )
     layout = layout_stringer(
         StringerMock(
             shell_od_in=shell_od,
             gap_in=stair.gap_in,
-            treads=stair.treads,
+            treads=per_flight,
             rise_in=stair.rise_in,
             run_in=stair.run_in,
             plate_width_in=stair.plate_width_in,
             outside_face=True,
         )
     )
+    turn, lift = flight_step(flight)
+    offsets = [(k * turn, k * lift) for k in range(platforms + 1)]
+    places = [
+        _moved_place(place, k * per_flight + place.index, *offsets[k])
+        for k in range(platforms + 1)
+        for place in _tread_places(layout)
+    ]
+    platform_note = ""
     try:
         if stringers:
-            inner_dev, outer_dev = develop_both(
-                StringerMock(
-                    shell_od_in=shell_od,
-                    gap_in=stair.gap_in,
-                    treads=stair.treads,
-                    rise_in=stair.rise_in,
-                    run_in=stair.run_in,
-                    plate_width_in=stair.plate_width_in,
-                )
-            )
-            tank_face = shell_od + stair.gap_in
-            jobs = (
-                (inner_dev, tank_face, tank_face + THICKNESS_IN, "EliteStringerIn"),
-                (outer_dev, layout.outside_radius_in - THICKNESS_IN, layout.outside_radius_in, "EliteStringerOut"),
-            )
-            # Roll both blanks first, rebuild, then cut both to the lisp outline
-            # before any holes: a missed connecting hole must not skip the
-            # other stringer or the treads. Flat patterns stay suppressed so
-            # the stringers show bent until Flatten is clicked.
-            for dev, r_in, r_out, nm in jobs:
-                _stringer_blank(model, dev, r_in, r_out, nm)
-                _progress(progress, f"{nm} rolled")
-            _rebuild(model)
-            for dev, r_in, r_out, nm in jobs:
-                _stringer_form(model, layout, dev, r_in, r_out, nm, progress)
-            _keep_bent_view(model)
-            for dev, r_in, r_out, nm in jobs:
-                _stringer_holes(model, dev, r_in, r_out, nm, progress)
+            for k, at in enumerate(offsets):
+                build_flight_stringers(model, flight, shell_od, at=at, suffix=flight_suffix(k), progress=progress)
             freeze_note = _freeze_stringers(model)
         else:
             freeze_note = ""
@@ -173,7 +209,7 @@ def build_stair_on_model(
         total = 0
         # One tread at a time: the pan, then its inner bolts, then its outer bolts.
         # One rebuild per tread, before the bolts, so a cut is not lost. Not again after each bolt.
-        for place in (_tread_places(layout) if do_treads else []):
+        for place in (places if do_treads else []):
             _tread(model, layout, place, wall_in)
             _progress(progress, f"tread {place.index} placed")
             _rebuild(model)
@@ -188,6 +224,10 @@ def build_stair_on_model(
                     hit = False
                 done += int(hit)
                 _progress(progress, f"tread {place.index} {side.lower()} bolts {'through' if hit else 'missed'}")
+        if platforms or top_platform:
+            if profiles is None:
+                raise SolidWorksError("Platforms need the C4 and 6x6 angle weldment profiles.")
+            platform_note = _platforms(model, layout, places, per_flight, platforms, top_platform, profiles, progress)
     except (BuildStopped, SolidWorksError):
         with contextlib.suppress(Exception):
             _hide_construction(model)
@@ -203,17 +243,109 @@ def build_stair_on_model(
         model.ViewZoomtofit2()
         model.ViewDisplayShaded()
         model.GraphicsRedraw2()
+    flights = (
+        f" in {platforms + 1} flights of {per_flight} around {platforms} mid platform{'s' if platforms > 1 else ''}"
+        if platforms else ""
+    )
     note = (
-        f"Shell OD radius {shell_od:.2f} in, {stair.treads} pan treads with {wall_in:g} in walls, "
-        f"sweep {layout.sweep_deg:.2f}°, rise {layout.total_rise_in:.1f} in. "
+        f"Shell OD radius {shell_od:.2f} in, {len(places)} pan treads{flights} with {wall_in:g} in walls, "
+        f"top tread at {math.degrees(places[-1].phi):.2f}°, rise {stair.treads * stair.rise_in:.1f} in. "
         f"Bolt pairs through {done} of {total} stringer-to-tread joints."
     )
+    if platform_note:
+        note = f"{note} {platform_note}"
     if freeze_note:
         note = f"{note} {freeze_note}"
     return StairResult(title=str(com_value(model.GetTitle) or "Part"), model=model, note=note)
 
 
+def flight_suffix(flight: int) -> str:
+    """Name ending for a flight's stringers: none for the first, F2, F3... above it."""
+    return "" if flight == 0 else f"F{flight + 1}"
+
+
+def _moved_place(place: TreadPlace, index: int, turn: float, lift: float) -> TreadPlace:
+    c, sn = math.cos(turn), math.sin(turn)
+    x, y, z = place.center
+    return TreadPlace(
+        index=index, phi=place.phi + turn, y0=place.y0 + lift, y1=place.y1 + lift,
+        center=(x * c - z * sn, y + lift, x * sn + z * c),
+    )
+
+
+def _platforms(model, layout, places, per_flight: int, platforms: int, top_platform: bool, profiles, progress) -> str:
+    """C4 frame past the top tread of each flight below a mid platform (and past the
+    last one for a top platform), then the 6x6 clips where the stringers meet it."""
+    from swauto.stair.platform_sw import add_stringer_clips, place_mid_platform
+
+    frame_profile, clip_profile = profiles
+    r_a = layout.inner_face_in
+    r_b = r_a + CLEAR_IN
+    after = []
+    missed = []
+    for k in range(1, platforms + 1 + (1 if top_platform else 0)):
+        last = places[k * per_flight - 1]
+        place_mid_platform(
+            model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_b, profile=frame_profile,
+            progress=progress,
+        )
+        clips = add_stringer_clips(
+            model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_b, profile=clip_profile,
+            sides=("A", "B") if k <= platforms else ("A",), progress=progress,
+        )
+        after.append(str(last.index))
+        if "Missed" in clips.note:
+            missed.append(clips.note.split("Missed: ", 1)[1].rstrip("."))
+    note = (
+        f"C4x5.4 platform frames after tread{'s' if len(after) > 1 else ''} {', '.join(after)}, "
+        "with L6x6x3/8 clips at every stringer end that meets them."
+    )
+    return note + (f" Missed: {'; '.join(missed)}." if missed else "")
+
+
 # ---------------------------------------------------------------- stringers
+
+
+def build_flight_stringers(
+    model, stair: StringerMock, shell_od: float, *, at: tuple[float, float] = (0.0, 0.0), suffix: str = "",
+    progress=None,
+) -> None:
+    """Both stringers of one flight of ``stair.treads`` treads, turned and raised by ``at``.
+
+    Rolls both blanks, rebuilds, then cuts both to the lisp outline before
+    any holes: a missed connecting hole must not skip the other stringer or
+    the treads. Flat patterns stay suppressed so the stringers show bent
+    until Flatten is clicked. Names end in ``suffix`` for flights above the first.
+    """
+    flight = StringerMock(
+        shell_od_in=shell_od,
+        gap_in=stair.gap_in,
+        treads=stair.treads,
+        rise_in=stair.rise_in,
+        run_in=stair.run_in,
+        plate_width_in=stair.plate_width_in,
+    )
+    layout = layout_stringer(
+        StringerMock(
+            shell_od_in=shell_od, gap_in=stair.gap_in, treads=stair.treads, rise_in=stair.rise_in,
+            run_in=stair.run_in, plate_width_in=stair.plate_width_in, outside_face=True,
+        )
+    )
+    inner_dev, outer_dev = develop_both(flight)
+    tank_face = shell_od + stair.gap_in
+    jobs = (
+        (inner_dev, tank_face, tank_face + THICKNESS_IN, f"EliteStringerIn{suffix}"),
+        (outer_dev, layout.outside_radius_in - THICKNESS_IN, layout.outside_radius_in, f"EliteStringerOut{suffix}"),
+    )
+    for dev, r_in, r_out, nm in jobs:
+        _stringer_blank(model, dev, r_in, r_out, nm, at)
+        _progress(progress, f"{nm} rolled")
+    _rebuild(model)
+    for dev, r_in, r_out, nm in jobs:
+        _stringer_form(model, layout, dev, r_in, r_out, nm, progress, at)
+    _keep_bent_view(model)
+    for dev, r_in, r_out, nm in jobs:
+        _stringer_holes(model, dev, r_in, r_out, nm, progress, at)
 
 
 def _stringer_geometry(layout, dev: DevelopedStringer, r_in: float, r_out: float):
@@ -236,16 +368,19 @@ def _stringer_geometry(layout, dev: DevelopedStringer, r_in: float, r_out: float
     }
 
 
-def _stringer_blank(model, dev: DevelopedStringer, r_in: float, r_out: float, name: str) -> None:
+def _stringer_blank(
+    model, dev: DevelopedStringer, r_in: float, r_out: float, name: str, at: tuple[float, float] = (0.0, 0.0)
+) -> None:
     """Rolled 3/8 in sheet-metal blank: a lofted bend between two arcs on the
     outside face, filling the lisp outline's box (bottom end to top end, foot
     to cap). The thickness goes in from the arcs, so the plate is r_in to r_out.
-    It is sheet metal from the first feature, so the stringer flattens."""
+    It is sheet metal from the first feature, so the stringer flattens.
+    ``at`` turns and raises a higher flight: (angle, inches)."""
     radius = dev.radius_in
     p4, _p_start, _p_end, p2, _p3, _l2, _l3, p5 = dev.outline
-    phi_a, phi_b = p4[0] / radius, p2[0] / radius
-    low = _arc_sketch(model, p5[1], r_out, phi_a, phi_b, f"{name}LowArc")
-    high = _arc_sketch(model, p2[1], r_out, phi_a, phi_b, f"{name}HighArc")
+    phi_a, phi_b = at[0] + p4[0] / radius, at[0] + p2[0] / radius
+    low = _arc_sketch(model, at[1] + p5[1], r_out, phi_a, phi_b, f"{name}LowArc")
+    high = _arc_sketch(model, at[1] + p2[1], r_out, phi_a, phi_b, f"{name}HighArc")
     _clear_selection(model)
     if not (
         _select_feature(model, low, "SKETCH", mark=1, append=False)
@@ -273,32 +408,42 @@ def _arc_sketch(model, y_in: float, radius: float, phi_a: float, phi_b: float, n
     return _rename_new(model, before, name, "blank arc")
 
 
-def _stringer_form(model, layout, dev: DevelopedStringer, r_in: float, r_out: float, name: str, progress=None) -> None:
+def _stringer_form(
+    model, layout, dev: DevelopedStringer, r_in: float, r_out: float, name: str, progress=None,
+    at: tuple[float, float] = (0.0, 0.0),
+) -> None:
     """Cut the lisp outline into the rolled blank. Every cut is square to the plate.
 
     The blank already has the foot, the cap and both vertical ends. Three cuts
     finish it: above the top slope, below the 9 in slope up to the corner under
     the cap, and the return. The return starts on the end face the 9 in cut
     left, read from the model, so the two cuts meet with no hair strip between.
+    ``at`` turns and raises a higher flight; its helices start at that angle.
+    Platforms go in after every flight is cut: a higher flight's helices start
+    inside the platform before it.
     """
     g = _stringer_geometry(layout, dev, r_in, r_out)
     radius, band, rise_per_rad = g["radius"], g["band"], g["rise_per_rad"]
     _p4, _p_start, _p_end, p2, p3, l2_end, _l3, p5 = g["outline"]
+    turn, lift = at
     far = p2[0] / radius + 0.03
     corner = l2_end[0] / radius
     span = p2[1] - p5[1] + 10.0
     _cut_sweep(
         model, (g["r_mid"], rise_per_rad * far, far / (2.0 * math.pi)), band,
-        g["top_at_zero"], g["top_at_zero"] + span, f"{name}TopEdge",
+        lift + g["top_at_zero"], lift + g["top_at_zero"] + span, f"{name}TopEdge", turn,
     )
     _progress(progress, f"{name} top edge cut")
     _cut_sweep(
         model, (g["r_mid"], rise_per_rad * corner, corner / (2.0 * math.pi)), band,
-        g["bottom_at_zero"] - span, g["bottom_at_zero"], f"{name}Trim",
+        lift + g["bottom_at_zero"] - span, lift + g["bottom_at_zero"], f"{name}Trim", turn,
     )
     _progress(progress, f"{name} 9 in edge cut")
-    start = _cut_end_angle(model, r_in, r_out, corner)
-    _sector_cut(model, band, corner if start is None else start, far, -200.0, p3[1], f"{name}TopReturn")
+    start = _cut_end_angle(model, r_in, r_out, turn + corner)
+    _sector_cut(
+        model, band, turn + corner if start is None else start, turn + far, lift - 200.0, lift + p3[1],
+        f"{name}TopReturn",
+    )
     _progress(progress, f"{name} ends formed")
     _rebuild(model)
 
@@ -340,19 +485,25 @@ def _cut_end_angle(model, r_in: float, r_out: float, near_phi: float):
     return None if best is None else best[1]
 
 
-def _stringer_holes(model, dev: DevelopedStringer, r_in: float, r_out: float, name: str, progress=None) -> None:
+def _stringer_holes(
+    model, dev: DevelopedStringer, r_in: float, r_out: float, name: str, progress=None,
+    at: tuple[float, float] = (0.0, 0.0),
+) -> None:
     """Connecting holes after both stringers are formed. A miss does not abort."""
     before = _names(model)
     try:
-        hole_ok = _end_holes(model, dev, r_in, r_out, name)
+        hole_ok = _end_holes(model, dev, r_in, r_out, name, at)
     except Exception:
         _discard_since(model, before)
         hole_ok = False
     _progress(progress, f"{name} end holes {'cut' if hole_ok else 'missed'}")
 
 
-def _helix(model, radius_in: float, height_in: float, revolutions: float, name: str):
-    """Helix on the Top plane, starting at +Z and climbing toward -X."""
+def _helix(model, radius_in: float, height_in: float, revolutions: float, name: str, start_phi: float = 0.0):
+    """Helix on the Top plane, starting at angle ``start_phi`` from +Z and climbing toward -X.
+
+    InsertHelix turns its start angle the other way from the stair, so it gets -start_phi.
+    """
     top = _plane(model, "Top")
     before = _names(model)
     _open_sketch(model, top)
@@ -368,8 +519,55 @@ def _helix(model, radius_in: float, height_in: float, revolutions: float, name: 
     if not sketch.Select2(False, 0):
         raise SolidWorksError(f"{name}: could not select the helix circle.")
     before = _names(model)
-    model.InsertHelix(False, True, False, False, 1, height_in * _INCH, 0.0, float(revolutions), 0.0, 0.0)
+    model.InsertHelix(False, True, False, False, 1, height_in * _INCH, 0.0, float(revolutions), 0.0, -float(start_phi))
     return _rename_new(model, before, f"{name}Helix", "helix")
+
+
+def _axis_y(model):
+    """Reference axis on the tank axis, from the Front and Right planes. Made once per part."""
+    axis = find_feature(model, "EliteAxisY")
+    if axis is not None:
+        return axis
+    _clear_selection(model)
+    nothing = com_nothing()
+    extension = model.Extension
+    if not (
+        _plane(model, "Front").Select2(False, 0)
+        and extension.SelectByID2(_feature_name(_plane(model, "Right")), "PLANE", 0, 0, 0, True, 0, nothing, 0)
+    ):
+        raise SolidWorksError("Could not select the Front and Right planes for the tank axis.")
+    before = _names(model)
+    model.InsertAxis2(True)
+    axis = _rename_new(model, before, "EliteAxisY", "tank axis")
+    _blank_construction(model, axis, "EliteAxisY", "AXIS")
+    return axis
+
+
+def _radial_plane(model, phi: float, name: str):
+    """Plane through the tank axis at angle ``phi``: the Right plane turned about the axis.
+
+    Its sketch x runs inward along the radius and y is up, as on the Right plane.
+    """
+    axis = _axis_y(model)
+    nothing = com_nothing()
+    for angle in (phi, -phi):
+        _clear_selection(model)
+        extension = model.Extension
+        if not (
+            extension.SelectByID2(_feature_name(_plane(model, "Right")), "PLANE", 0, 0, 0, False, 0, nothing, 0)
+            and extension.SelectByID2(_feature_name(axis), "AXIS", 0, 0, 0, True, 1, nothing, 0)
+        ):
+            raise SolidWorksError(f"{name}: could not select the Right plane and the tank axis.")
+        before = _names(model)
+        plane = model.FeatureManager.InsertRefPlane(16, float(angle), 4, 0.0, 0, 0.0)
+        _clear_selection(model)
+        if plane is None:
+            continue
+        rows = [float(v) for v in com_value(com_value(com_value(plane.GetSpecificFeature2).Transform).ArrayData)]
+        if abs(rows[6] - math.cos(phi)) < 1e-6 and abs(rows[8] - math.sin(phi)) < 1e-6:
+            return _rename_new(model, before, name, "radial plane")
+        _delete_feature(model, plane)
+    raise SolidWorksError(f"{name}: the radial plane did not land at {phi:.5f} rad.")
 
 
 # ------------------------------------------------------------ end formation
@@ -435,9 +633,13 @@ def _discard_since(model, before: set[str]) -> None:
         _delete_feature(model, feature)
 
 
-def _cut_sweep(model, helix_spec, band: tuple[float, float], y_bottom: float, y_top: float, name: str) -> None:
-    """Helical cut: a Right-plane rectangle swept along a trim helix through the plate band.
+def _cut_sweep(
+    model, helix_spec, band: tuple[float, float], y_bottom: float, y_top: float, name: str, start_phi: float = 0.0
+) -> None:
+    """Helical cut: a rectangle swept along a trim helix through the plate band.
 
+    The rectangle is on the Right plane for the first flight, or on a radial
+    plane at ``start_phi`` where the helix of a higher flight starts.
     CreateCornerRectangle often returns nothing even though the four lines are
     in the sketch. ``_corner_rect`` trusts those lines, so the cut is made on
     the first attempt. One rebuild-and-retry only if that cut feature comes
@@ -459,15 +661,20 @@ def _cut_sweep(model, helix_spec, band: tuple[float, float], y_bottom: float, y_
             _discard_since(model, baseline)
             _rebuild(model)
         try:
-            helix = _helix(model, r_mid, height_in, revolutions, name)
+            helix = _helix(model, r_mid, height_in, revolutions, name, start_phi)
         except Exception as exc:
             errors.append(f"attempt {attempt}: helix {format_com_error(exc)}")
             _recover(model)
             continue
         try:
-            right = _plane(model, "Right")
+            if start_phi:
+                plane = _radial_plane(model, start_phi, f"{name}ProfPln")
+            else:
+                plane = _plane(model, "Right")
             before = _names(model)
-            _open_sketch(model, right)
+            _open_sketch(model, plane)
+            if start_phi:
+                _check_radial_sketch(model, start_phi, name)
             if not _corner_rect(model, -band[1], y_bottom, -band[0], y_top):
                 _recover(model)
                 errors.append(f"attempt {attempt}: profile failed")
@@ -504,6 +711,16 @@ def _cut_sweep(model, helix_spec, band: tuple[float, float], y_bottom: float, y_
             return
     _discard_since(model, baseline)
     raise SolidWorksError(f"{name}: edge trim failed ({'; '.join(errors[-4:]) or 'no sweep-cut method'}).")
+
+
+def _check_radial_sketch(model, phi: float, name: str) -> None:
+    """The open sketch on a radial plane must map (radius, height) to (-radius, height) like the Right plane."""
+    sketch = com_value(model.GetActiveSketch2)
+    data = [float(v) for v in com_value(com_value(sketch.ModelToSketchTransform).ArrayData)]
+    point = (-100.0 * math.sin(phi) * _INCH, 7.0 * _INCH, 100.0 * math.cos(phi) * _INCH)
+    sx, sy, sz = _to_sketch(data, point)
+    if abs(sx + 100.0 * _INCH) > 1e-6 or abs(sy - 7.0 * _INCH) > 1e-6 or abs(sz) > 1e-6:
+        raise SolidWorksError(f"{name}: the radial plane sketch is not set like the Right plane.")
 
 
 def _rebuild(model) -> None:
@@ -625,7 +842,9 @@ def _band_faces(model, band: tuple[float, float]) -> int:
     return total
 
 
-def _end_holes(model, dev: DevelopedStringer, r_in: float, r_out: float, name: str) -> bool:
+def _end_holes(
+    model, dev: DevelopedStringer, r_in: float, r_out: float, name: str, at: tuple[float, float] = (0.0, 0.0)
+) -> bool:
     """Connecting holes sketched the way tread bolts are, then the jig is deleted.
 
     A tangent plane landed on the tank axis and never cut the plate. Instead,
@@ -643,7 +862,7 @@ def _end_holes(model, dev: DevelopedStringer, r_in: float, r_out: float, name: s
     for label, pair in (("Top", dev.end_holes[:2]), ("Bot", dev.end_holes[2:])):
         before = _names(model)
         try:
-            if not _end_hole_pair(model, dev, face_r, outward, pair, f"{name}{label}Holes"):
+            if not _end_hole_pair(model, dev, face_r, outward, pair, f"{name}{label}Holes", at):
                 ok = False
         except Exception:
             _discard_since(model, before)
@@ -651,9 +870,13 @@ def _end_holes(model, dev: DevelopedStringer, r_in: float, r_out: float, name: s
     return ok
 
 
-def _end_hole_pair(model, dev: DevelopedStringer, face_r: float, outward: bool, pair, name: str) -> bool:
+def _end_hole_pair(
+    model, dev: DevelopedStringer, face_r: float, outward: bool, pair, name: str, at: tuple[float, float] = (0.0, 0.0)
+) -> bool:
     """One end: jig plate, sketch on its stringer face, cut, delete the jig body."""
     radius = dev.radius_in
+    turn, lift = at
+    pair = [(x + turn * radius, y + lift) for x, y in pair]
     phis = [x / radius for x, _y in pair]
     phi = sum(phis) / len(phis)
     span = max(abs(p - phi) * radius for p in phis)
@@ -905,6 +1128,29 @@ def _end_wall_face(model, place: TreadPlace, edge_r: float):
         if best is None or gap < best_gap:
             best, best_gap = face, gap
     return best
+
+
+def _select_segments(model, sketch, name: str, count: int | None = None) -> None:
+    """Select the lines of ``sketch`` from the sketch itself.
+
+    A pick by model coordinates depends on the view and misses when the line
+    is off screen or behind other bodies.
+    """
+    _clear_selection(model)
+    raw = com_value(com_value(sketch.GetSpecificFeature2).GetSketchSegments)
+    segments = list(raw) if isinstance(raw, (list, tuple)) else ([] if raw is None else [raw])
+    if not segments or (count is not None and len(segments) != count):
+        raise SolidWorksError(f"{name}: the sketch has {len(segments)} lines, not {count}.")
+    nothing = com_nothing()
+    for index, segment in enumerate(segments):
+        picked = False
+        with contextlib.suppress(Exception):
+            picked = bool(segment.Select4(index > 0, nothing))
+        if not picked:
+            with contextlib.suppress(Exception):
+                picked = bool(segment.Select2(index > 0, 0))
+        if not picked:
+            raise SolidWorksError(f"{name}: could not select sketch line {index + 1}.")
 
 
 def _select_face(model, face) -> bool:

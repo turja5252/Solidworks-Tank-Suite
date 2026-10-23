@@ -14,9 +14,14 @@ Burn outline (per side):
                 horizontal forward to the bottom edge
   bottom edge   parallel to the top edge, plate width perpendicular below
 
+The inner stringer's ends are 1/8 in past tread 1 and tread N. The outer
+stringer's extensions reach the radial lines through those ends (``dStart`` /
+``dEnd`` in the lisp top view), so both stringers stop on the same radial line
+and butt square against a platform frame there.
+
 Holes: two tread bolts per tread from the tread's +X (leading) edge, and two
-end holes at each end 2-1/4 below the tread bolt line. Inner end holes are
-round, outer end holes are horizontal slots.
+end holes at each end 2-1/4 below the tread bolt line, set back from that end.
+Inner end holes are round, outer end holes are horizontal slots.
 """
 
 from __future__ import annotations
@@ -42,6 +47,7 @@ from swauto.stair.stringer import (
 DROP_IN = 5.25
 END_EXT_IN = 0.125
 SLOT_LENGTH_IN = 1.625
+PLATFORM_CLEAR_IN = 36.0
 
 Point = tuple[float, float]
 
@@ -152,20 +158,32 @@ def develop_stringer(
     )
 
 
+def outer_end_ext_in(inner_face: float, outer_face: float) -> float:
+    """Outer stringer extension past the tread that puts its end on the radial line
+    through the inner stringer's end, measured on the outer development."""
+    half = TREAD_DEPTH_IN / 2.0
+    return (half + END_EXT_IN) * outer_face / inner_face - half
+
+
 def develop_both(
     stair: StringerMock,
     *,
-    outer_bottom_ext_in: float = END_EXT_IN,
-    outer_top_ext_in: float = END_EXT_IN,
+    outer_bottom_ext_in: float | None = None,
+    outer_top_ext_in: float | None = None,
 ) -> tuple[DevelopedStringer, DevelopedStringer]:
-    """Inner and outer developments for the stair. Outer extensions come from the
-    top view (``dStart`` / ``dEnd`` in the lisp); 1/8 in until that view exists."""
+    """Inner and outer developments for the stair. The outer extensions default to
+    the radial ones from ``outer_end_ext_in``."""
     stair.validate()
     inner_face = stair.shell_od_in + stair.gap_in + THICKNESS_IN
     outer_face = inner_face + CLEAR_IN
     walk_center = inner_face + CLEAR_IN / 2.0
     sweep = stair.treads * (stair.run_in / walk_center)
     rise = stair.treads * stair.rise_in
+    radial_ext = outer_end_ext_in(inner_face, outer_face)
+    if outer_bottom_ext_in is None:
+        outer_bottom_ext_in = radial_ext
+    if outer_top_ext_in is None:
+        outer_top_ext_in = radial_ext
     inner = develop_stringer(
         side="inner",
         radius_in=inner_face,
@@ -187,6 +205,71 @@ def develop_both(
         slotted=True,
     )
     return inner, outer
+
+
+MAX_PLATFORMS = 3
+
+
+def flight_treads(treads: int, platforms: int) -> int:
+    """Treads in each flight when ``platforms`` mid platforms split ``treads`` steps into equal flights.
+
+    As in SpiralStairTool.lsp, the tread level with each platform belongs to
+    both flights beside it, so every flight has (treads + platforms) /
+    (platforms + 1) treads and the stair has treads + platforms pans in all.
+    """
+    if platforms < 0 or platforms > MAX_PLATFORMS:
+        raise ValueError(f"Mid platforms must be 0 to {MAX_PLATFORMS}.")
+    if platforms == 0:
+        return treads
+    flights = platforms + 1
+    if (treads + platforms) % flights:
+        fits = [n for n in range(max(treads - flights, 2), treads + flights + 1) if (n + platforms) % flights == 0]
+        raise ValueError(
+            f"{treads} treads do not split into {flights} equal flights around {platforms} mid "
+            f"platform{'s' if platforms > 1 else ''}. Try {' or '.join(str(n) for n in fits[:2])} treads."
+        )
+    per_flight = (treads + platforms) // flights
+    if per_flight < 2:
+        raise ValueError("Each flight needs at least 2 treads.")
+    return per_flight
+
+
+def stair_plan(
+    stair: StringerMock, platforms: int = 0, top_platform: bool = False
+) -> tuple[list[float], list[tuple[float, float]]]:
+    """Plan angles: every tread centerline, and each platform's two radial sides (mid ones, then the top one)."""
+    per_flight = flight_treads(stair.treads, platforms)
+    flight = StringerMock(
+        shell_od_in=stair.shell_od_in, gap_in=stair.gap_in, treads=per_flight, rise_in=stair.rise_in,
+        run_in=stair.run_in, plate_width_in=stair.plate_width_in,
+    )
+    turn, _lift = flight_step(flight)
+    inner_face = stair.shell_od_in + stair.gap_in + THICKNESS_IN
+    walk_center = inner_face + CLEAR_IN / 2.0
+    step = stair.run_in / walk_center
+    cap = (TREAD_DEPTH_IN / 2.0 + END_EXT_IN) / inner_face
+    treads = [k * turn + i * step for k in range(platforms + 1) for i in range(1, per_flight + 1)]
+    spans = []
+    for k in range(platforms + (1 if top_platform else 0)):
+        side_a = k * turn + per_flight * step + cap
+        spans.append((side_a, side_a + PLATFORM_CLEAR_IN / walk_center))
+    return treads, spans
+
+
+def flight_step(stair: StringerMock, clear_in: float = PLATFORM_CLEAR_IN) -> tuple[float, float]:
+    """Turn (radians) and lift (inches) from one flight to the next over a mid platform.
+
+    ``stair.treads`` is the treads in one flight. The flight below stops 1/8 in
+    past its top tread, the platform runs ``clear_in`` along the walk centerline
+    from there, and the next flight starts on the far side with its first tread
+    level with the platform, as the lisp shares that tread between flights.
+    """
+    inner_face = stair.shell_od_in + stair.gap_in + THICKNESS_IN
+    walk_center = inner_face + CLEAR_IN / 2.0
+    step = stair.run_in / walk_center
+    cap = (TREAD_DEPTH_IN / 2.0 + END_EXT_IN) / inner_face
+    turn = (stair.treads - 1) * step + 2.0 * cap + clear_in / walk_center
+    return turn, (stair.treads - 1) * stair.rise_in
 
 
 def tread_rect(center: Point) -> tuple[Point, Point, Point, Point]:
