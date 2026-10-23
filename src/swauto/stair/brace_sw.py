@@ -246,10 +246,7 @@ def _angle(model, frame: _Frame, profile: str, name: str) -> None:
     if line is None:
         raise SolidWorksError(f"{name}: brace line was not drawn.")
     path_sketch = _rename_new(model, before, f"{name}Path", "brace path")
-    mid = [(a[i] + b[i]) / 2.0 for i in range(3)]
-    _clear_selection(model)
-    if not model.Extension.SelectByID2("", "EXTSKETCHSEGMENT", mid[0], mid[1], mid[2], False, 0, com_nothing(), 0):
-        raise SolidWorksError(f"{name}: could not select the brace line.")
+    s._select_segments(model, path_sketch, name, 1)
     try:
         feature = model.FeatureManager.InsertStructuralWeldment2(profile, 1, False, 0.0)
     except Exception as exc:
@@ -463,6 +460,7 @@ class _Knee:
     top: tuple[float, float]  # (r, y) of the top bolt, the cross brace leg hole
     bottom: tuple[float, float]  # (r, y) of the clip bolt
     shell_r: float  # shell OD radius
+    side: float = LEG_SIDE  # +1: the knee sits on the +t side of the contact plane, -1: the -t side
 
 
 def add_knee_brace(model, tread_index: int, profile: str, shell_radius_in: float | None = None, progress=None) -> BraceResult:
@@ -534,12 +532,12 @@ def _knee_layout(frame: _Frame, shell_r: float) -> _Knee:
     return _Knee(t_face=t_face, top=(r1, y1), bottom=(r2, y1 - (r1 - r2)), shell_r=shell_r)
 
 
-def _knee_axes(frame: _Frame):
-    """Down the brace toward the shell, square to it upward, and away from the cross brace."""
+def _knee_axes(frame: _Frame, sign: float = LEG_SIDE):
+    """Down the brace toward the shell, square to it upward, and away from the contact plane."""
     u, v = frame.radial, frame.travel
     down = (-u[0] / _ROOT2, -1.0 / _ROOT2, -u[2] / _ROOT2)
     up = (-u[0] / _ROOT2, 1.0 / _ROOT2, -u[2] / _ROOT2)
-    side = (LEG_SIDE * v[0], 0.0, LEG_SIDE * v[2])
+    side = (sign * v[0], 0.0, sign * v[2])
     return down, up, side
 
 
@@ -568,10 +566,7 @@ def _knee_angle(model, frame: _Frame, knee: _Knee, profile: str, name: str) -> N
     if line is None:
         raise SolidWorksError(f"{name}: knee brace line was not drawn.")
     path_sketch = _rename_new(model, before, f"{name}Path", "knee path")
-    mid = [(a[i] + b[i]) / 2.0 for i in range(3)]
-    _clear_selection(model)
-    if not model.Extension.SelectByID2("", "EXTSKETCHSEGMENT", mid[0], mid[1], mid[2], False, 0, com_nothing(), 0):
-        raise SolidWorksError(f"{name}: could not select the knee brace line.")
+    s._select_segments(model, path_sketch, name, 1)
     bodies_before = s._body_names(model)
     try:
         feature = model.FeatureManager.InsertStructuralWeldment2(profile, 1, False, 0.0)
@@ -579,7 +574,7 @@ def _knee_angle(model, frame: _Frame, knee: _Knee, profile: str, name: str) -> N
         raise SolidWorksError(f"{name}: structural member failed ({format_com_error(exc)}).") from exc
     if feature is None:
         raise SolidWorksError(f"{name}: structural member was not made.")
-    down, up, side = _knee_axes(frame)
+    down, up, side = _knee_axes(frame, knee.side)
 
     def end_after(turn):
         if not _set_turn(model, feature, turn):
@@ -587,23 +582,19 @@ def _knee_angle(model, frame: _Frame, knee: _Knee, profile: str, name: str) -> N
         body = _new_body(model, bodies_before)
         return [] if body is None else _end_face(body, heel, down, up, side)
 
-    chosen = None
-    for turn in (0.0, math.pi / 2.0, math.pi, 3.0 * math.pi / 2.0):
-        end = end_after(turn)
-        if _knee_fits(end, 0.25):
-            chosen = turn
-            break
-    if chosen is None:
+    # On a sloped line SolidWorks sets the L twisted about its own axis, and the twist
+    # grows the further round the tank the line is (9 deg at 12 deg round). Read how
+    # it sits and turn it by exactly that.
+    body = _new_body(model, bodies_before)
+    end = [] if body is None else _end_face(body, heel, down, up, side)
+    if not end:
+        end = end_after(0.0)
+    off = _turn_off(end)
+    if off is None:
+        raise SolidWorksError(f"{name}: could not read how the knee brace is turned.")
+    # SolidWorks' rotation angle may run either way in this frame, so try both.
+    if not _knee_fits(end, 0.01) and not any(_knee_fits(end_after(turn), 0.01) for turn in (off, -off)):
         raise SolidWorksError(f"{name}: could not turn the knee brace with its flat leg on the clip.")
-    # On a sloped line SolidWorks sets the L a little twisted about its own axis
-    # (about 1.9 deg at 45 deg here). Turn it back by what the model shows, so the
-    # flat leg lies flat on the cross brace leg instead of digging into it.
-    twist = _twist(end)
-    for turn in (chosen - twist, chosen + twist):
-        if _knee_fits(end_after(turn), 0.01):
-            break
-    else:
-        raise SolidWorksError(f"{name}: the knee brace flat leg does not lie flat on the cross brace.")
     with contextlib.suppress(Exception):
         rename_feature(feature, name)
     _clear_selection(model)
@@ -661,20 +652,23 @@ def _knee_fits(end, tol: float) -> bool:
     )
 
 
-def _twist(end) -> float:
-    """How far the L is turned about its own line, from the toe of the flat leg."""
-    toe = [(a, o) for a, o in end if a < -LEG_IN + 0.1]
-    if not toe:
-        return 0.0
-    a, o = min(toe, key=lambda p: p[1])
-    return math.atan(o / a) if abs(a) > 1e-6 else 0.0
+def _turn_off(end) -> float | None:
+    """Turn, counterclockwise in (across, out), that lays the legs along -across and +out.
+
+    The outside faces of the legs bound the end face in a 90 deg wedge from the heel.
+    """
+    far = [(a, o) for a, o in end if math.hypot(a, o) > 1.0]
+    if not far:
+        return None
+    mean = math.atan2(sum(o for _a, o in far), sum(a for a, _o in far))
+    rel = [math.remainder(math.atan2(o, a) - mean, 2.0 * math.pi) for a, o in far]
+    bisector = mean + (min(rel) + max(rel)) / 2.0
+    return math.remainder(0.75 * math.pi - bisector, 2.0 * math.pi)
 
 
 def _body_points(body) -> list[tuple[float, float, float]]:
     points = []
-    raw = body.GetFaces()
-    faces = list(raw) if isinstance(raw, (list, tuple)) else ([] if raw is None else [raw])
-    for face in faces:
+    for face in _faces(body):
         try:
             tris = list(face.GetTessTriangles(True) or [])
         except Exception:
@@ -684,11 +678,55 @@ def _body_points(body) -> list[tuple[float, float, float]]:
     return points
 
 
-def _sketch_at(model, point_in, name: str, draw):
-    """Sketch on the face at a model point (inches); ``draw(manager, to_sketch)``."""
+def _faces(body) -> list:
+    raw = body.GetFaces()
+    return list(raw) if isinstance(raw, (list, tuple)) else ([] if raw is None else [raw])
+
+
+def _face_at(bodies, point_in, normal):
+    """Planar face whose plane goes through ``point_in`` square to ``normal`` and whose box holds the point."""
+    point = [v * _INCH for v in point_in]
+    tol = 0.01 * _INCH
+
+    def holds(box):
+        return all(box[i] - tol <= point[i] <= box[i + 3] + tol for i in range(3))
+
+    for body in bodies:
+        with contextlib.suppress(Exception):
+            if not holds([float(v) for v in com_value(body.GetBodyBox)]):
+                continue
+        for face in _faces(body):
+            try:
+                surface = com_value(face.GetSurface)
+                flag = surface.IsPlane
+                if not (flag() if callable(flag) else flag):
+                    continue
+                params = [float(v) for v in com_value(surface.PlaneParams)]
+                box = [float(v) for v in com_value(face.GetBox)]
+            except Exception:
+                continue
+            n, root = params[0:3], params[3:6]
+            if abs(sum(n[i] * normal[i] for i in range(3))) < 0.9999:
+                continue
+            if abs(sum((point[i] - root[i]) * n[i] for i in range(3))) > tol:
+                continue
+            if holds(box):
+                return face
+    return None
+
+
+def _sketch_at(model, point_in, name: str, draw, normal=None):
+    """Sketch on the face at a model point (inches); ``draw(manager, to_sketch)``.
+
+    With ``normal`` the face is found from the bodies; without it, it is picked through the view.
+    """
     point_m = [v * _INCH for v in point_in]
     _clear_selection(model)
-    if not model.Extension.SelectByID2("", "FACE", point_m[0], point_m[1], point_m[2], False, 0, com_nothing(), 0):
+    if normal is not None:
+        face = _face_at(s._bodies(model), point_in, normal)
+        if face is None or not s._select_face(model, face):
+            raise SolidWorksError(f"{name}: could not find the face to sketch on.")
+    elif not model.Extension.SelectByID2("", "FACE", point_m[0], point_m[1], point_m[2], False, 0, com_nothing(), 0):
         raise SolidWorksError(f"{name}: could not pick the face to sketch on.")
     before = _names(model)
     manager = model.SketchManager
@@ -735,7 +773,7 @@ def _extrude_to(model, sketch, depth_in: float, center_in, max_height: float, na
 def _knee_clip_and_pad(model, frame: _Frame, knee: _Knee, name: str) -> None:
     """Clip in line with the cross brace down leg, then the shell pad behind it."""
     r2, y2 = knee.bottom
-    t_mid = knee.t_face - LEG_SIDE * CLIP_THK_IN / 2.0
+    t_mid = knee.t_face - knee.side * CLIP_THK_IN / 2.0
     root = knee.shell_r + PAD_THK_IN
     half = CLIP_HEIGHT_IN / 2.0
     clip = ((root, y2 - half), (root + CLIP_OUT_IN, y2 - half), (root + CLIP_OUT_IN, y2 + half), (root, y2 + half))
@@ -747,7 +785,7 @@ def _knee_clip_and_pad(model, frame: _Frame, knee: _Knee, name: str) -> None:
                 raise SolidWorksError(f"{name}: clip edge failed.")
 
     # The knee's flat leg at the clip bolt is the clip's outside face.
-    clip_sketch = _sketch_at(model, frame.world(r2, knee.t_face, y2), f"{name}ClipSk", draw_clip)
+    clip_sketch = _sketch_at(model, frame.world(r2, knee.t_face, y2), f"{name}ClipSk", draw_clip, frame.travel)
     _extrude_to(
         model, clip_sketch, CLIP_THK_IN, frame.world(root + CLIP_OUT_IN / 2.0, t_mid, y2),
         CLIP_HEIGHT_IN + 0.1, f"{name}Clip",
@@ -757,7 +795,7 @@ def _knee_clip_and_pad(model, frame: _Frame, knee: _Knee, name: str) -> None:
         _draw_pad(manager, lambda t, y: to_sketch(frame.world(root, t, y)), t_mid, y2, PAD_TALL_IN, name)
 
     # The clip's end at the shell is the pad's outside face.
-    pad_sketch = _sketch_at(model, frame.world(root, t_mid, y2), f"{name}PadSk", draw_pad)
+    pad_sketch = _sketch_at(model, frame.world(root, t_mid, y2), f"{name}PadSk", draw_pad, frame.radial)
     _extrude_to(
         model, pad_sketch, PAD_THK_IN, frame.world(knee.shell_r + PAD_THK_IN / 2.0, t_mid, y2),
         PAD_TALL_IN + 0.1, f"{name}Pad",
@@ -783,7 +821,7 @@ def _draw_pad(manager, at, t_mid: float, y_mid: float, tall: float, name: str) -
 
 def _knee_holes(model, frame: _Frame, knee: _Knee, name: str) -> bool:
     """13/16 at both knee bolts: through the knee, the cross brace leg, and the clip."""
-    t_in = knee.t_face + LEG_SIDE * LEG_THK_IN
+    t_in = knee.t_face + knee.side * LEG_THK_IN
     centers = [frame.world(r, t_in, y) for r, y in (knee.top, knee.bottom)]
 
     def draw(manager, to_sketch):
@@ -793,7 +831,7 @@ def _knee_holes(model, frame: _Frame, knee: _Knee, name: str) -> bool:
                 raise SolidWorksError(f"{name}: hole circle failed.")
 
     try:
-        sketch = _sketch_at(model, centers[0], f"{name}HolesSk", draw)
+        sketch = _sketch_at(model, centers[0], f"{name}HolesSk", draw, frame.travel)
     except SolidWorksError:
         return False
     feature = s._cut_both_ways(model, sketch, 2.0 * LEG_THK_IN + CLIP_THK_IN + 0.25)
@@ -813,7 +851,7 @@ def _knee_holes(model, frame: _Frame, knee: _Knee, name: str) -> bool:
 
 def _shell_line(model, frame: _Frame, knee: _Knee, y_from: float, y_to: float, name: str) -> None:
     """Construction line on the shell OD, from the pad up to the shell bottom."""
-    t_mid = knee.t_face - LEG_SIDE * CLIP_THK_IN / 2.0
+    t_mid = knee.t_face - knee.side * CLIP_THK_IN / 2.0
     a = [v * _INCH for v in frame.world(knee.shell_r, t_mid, y_from)]
     b = [v * _INCH for v in frame.world(knee.shell_r, t_mid, y_to)]
     sketch = model.SketchManager

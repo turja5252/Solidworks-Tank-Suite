@@ -112,7 +112,7 @@ def create_stair(
 
 def create_stair_on_tank(
     app, stair: StringerMock, wall_in: float, progress=None, *, platforms: int = 0, top_platform: bool = False,
-    profiles: tuple[str, str] | None = None,
+    profiles: tuple[str, str, str] | None = None,
 ) -> StairResult:
     """New part with the shell at the Stringer tab's OD radius, then the stair."""
     stair.validate()
@@ -132,11 +132,12 @@ def create_stair_on_tank(
     )
 
 
-def _platform_profiles(app) -> tuple[str, str]:
-    """C4x5.4 for the platform frames and L6x6x3/8 for the stringer clips."""
+def _platform_profiles(app) -> tuple[str, str, str]:
+    """C4x5.4 for the platform frames, L6x6x3/8 for the stringer clips, L3x3x3/8 for the knee braces."""
+    from swauto.stair.brace_sw import angle_profile
     from swauto.stair.platform_sw import clip_profile, platform_profile
 
-    return platform_profile(app), clip_profile(app)
+    return platform_profile(app), clip_profile(app), angle_profile(app)
 
 
 def _progress(callback, text: str) -> None:
@@ -161,14 +162,14 @@ def build_stair_on_model(
     progress=None,
     platforms: int = 0,
     top_platform: bool = False,
-    profiles: tuple[str, str] | None = None,
+    profiles: tuple[str, str, str] | None = None,
 ) -> StairResult:
     """Stringers (unless already there), then tread by tread: pan, inner bolts, outer bolts.
 
     With ``platforms`` the stair is that many plus one equal flights, each the
     one below turned and raised past a 36 in mid platform. Platform frames and
     their stringer clips go in last: a higher flight's stringer cuts start
-    inside the platform below it. ``profiles`` is (C4 frame, 6x6 clip).
+    inside the platform below it. ``profiles`` is (C4 frame, 6x6 clip, 3x3 knee).
     """
     per_flight = flight_treads(stair.treads, platforms)
     flight = StringerMock(
@@ -226,7 +227,7 @@ def build_stair_on_model(
                 _progress(progress, f"tread {place.index} {side.lower()} bolts {'through' if hit else 'missed'}")
         if platforms or top_platform:
             if profiles is None:
-                raise SolidWorksError("Platforms need the C4 and 6x6 angle weldment profiles.")
+                raise SolidWorksError("Platforms need the C4, 6x6 angle and 3x3 angle weldment profiles.")
             platform_note = _platforms(
                 model, layout, places, per_flight, platforms, top_platform, profiles, shell_od, progress
             )
@@ -279,11 +280,17 @@ def _platforms(
     model, layout, places, per_flight: int, platforms: int, top_platform: bool, profiles, shell_od: float, progress
 ) -> str:
     """C4 frame past the top tread of each flight below a mid platform (and past the
-    last one for a top platform), the 6x6 clips where the stringers meet it, and the
-    shell clips at both ends of its inner channel."""
-    from swauto.stair.platform_sw import add_platform_shell_clips, add_stringer_clips, place_mid_platform
+    last one for a top platform), the 6x6 clips where the stringers meet it, the
+    shell clips at both ends of its inner channel, and the knee braces under both
+    ends of its outer channel."""
+    from swauto.stair.platform_sw import (
+        add_platform_knee_braces,
+        add_platform_shell_clips,
+        add_stringer_clips,
+        place_mid_platform,
+    )
 
-    frame_profile, clip_profile = profiles
+    frame_profile, clip_profile, knee_profile = profiles
     r_a = layout.inner_face_in
     r_b = r_a + CLEAR_IN
     after = []
@@ -308,13 +315,22 @@ def _platforms(
         except SolidWorksError as exc:
             # The stair is whole without them; say why in the note.
             missed.append(str(exc))
+        try:
+            knees = add_platform_knee_braces(
+                model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_b, shell_r=shell_od,
+                profile=knee_profile, progress=progress,
+            )
+            if "missed" in knees.note:
+                missed.append(f"knee brace holes after tread {last.index}")
+        except SolidWorksError as exc:
+            missed.append(str(exc))
         after.append(str(last.index))
         if "Missed" in clips.note:
             missed.append(clips.note.split("Missed: ", 1)[1].rstrip("."))
     note = (
         f"C4x5.4 platform frames after tread{'s' if len(after) > 1 else ''} {', '.join(after)}, "
-        "with L6x6x3/8 clips at every stringer end that meets them and shell clips at both ends "
-        "of each inner channel."
+        "with L6x6x3/8 clips at every stringer end that meets them, shell clips at both ends "
+        "of each inner channel, and L3x3x3/8 knee braces to the shell under both ends of each outer channel."
     )
     return note + (f" Missed: {'; '.join(missed)}." if missed else "")
 

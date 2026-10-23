@@ -19,6 +19,14 @@ line 2-3/4 in below the channel top, so the clip is flush with the channel
 bottom. The web has 13/16 rounds at the inner stringer and 1-5/8 slots along
 the channel at the outer stringer; the clips have rounds only.
 
+Two knee braces carry the outer channel, one at each end of the platform
+(Stair Platform Streatchout.lsp, Platform_Sideview.lsp): a 3/8 plate 4 in wide
+and 5 in tall hangs under the outer channel 1/4 in in from the platform end,
+from 1/4 in to 4-1/4 in in from the outside. The stair's L3x3x3/8 knee brace
+bolts to it at its middle, 3-1/2 in below the channel, and runs down at 45 deg
+on the platform side of the plate to the same 1/4 x 7 x 4 clip and 6 x 4 pad
+on the shell, its bolt 5.766 in out from the shell. Each knee is radial.
+
 The inner channel is tied to the shell at both ends (Stair Platform Top
 View.lsp, Platform_Sideview.lsp): a 3/8 x 4 in tab welded square to the web
 1/4 in in from the channel end, 3-1/2 in out toward the shell, bolted to a 3/8
@@ -40,10 +48,17 @@ from swauto.errors import SolidWorksError
 from swauto.params import rename_feature
 from swauto.stair import stair_sw as s
 from swauto.stair.brace_sw import (
+    CLIP_BOLT_OUT_IN,
     BraceResult,
     _body_points,
     _draw_pad,
     _extrude_to,
+    _face_at,
+    _Frame,
+    _Knee,
+    _knee_angle,
+    _knee_clip_and_pad,
+    _knee_holes,
     _progress,
     _set_turn,
     _stair_parts,
@@ -76,6 +91,12 @@ SHELL_PAD_THK_IN = 0.25
 SHELL_PAD_TALL_IN = 6.0
 SHELL_BOLT_OUT_IN = 2.125  # from the channel web
 SHELL_BOLT_SPACE_IN = 2.0
+HANGER_THK_IN = 0.375
+HANGER_WIDE_IN = 4.0
+HANGER_TALL_IN = 5.0
+HANGER_FROM_END_IN = 0.25
+HANGER_IN_FROM_OUTSIDE_IN = 0.25
+HANGER_BOLT_DOWN_IN = 3.5  # below the channel bottom
 
 
 @dataclass(frozen=True)
@@ -269,36 +290,6 @@ def add_stringer_clips(
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
 
 
-def _faces(body) -> list:
-    raw = body.GetFaces()
-    return list(raw) if isinstance(raw, (list, tuple)) else ([] if raw is None else [raw])
-
-
-def _face_at(bodies, point_in, normal):
-    """Planar face whose plane goes through ``point_in`` square to ``normal`` and whose box holds the point."""
-    point = [v * _INCH for v in point_in]
-    tol = 0.01 * _INCH
-    for body in bodies:
-        for face in _faces(body):
-            try:
-                surface = com_value(face.GetSurface)
-                flag = surface.IsPlane
-                if not (flag() if callable(flag) else flag):
-                    continue
-                params = [float(v) for v in com_value(surface.PlaneParams)]
-                box = [float(v) for v in com_value(face.GetBox)]
-            except Exception:
-                continue
-            n, root = params[0:3], params[3:6]
-            if abs(sum(n[i] * normal[i] for i in range(3))) < 0.9999:
-                continue
-            if abs(sum((point[i] - root[i]) * n[i] for i in range(3))) > tol:
-                continue
-            if all(box[i] - tol <= point[i] <= box[i + 3] + tol for i in range(3)):
-                return face
-    return None
-
-
 def _sketch_on_face(model, face, name: str, draw):
     """Sketch on ``face``; ``draw(manager, to_sketch)`` with model points in inches."""
     _clear_selection(model)
@@ -480,6 +471,75 @@ def _clip_stringer_leg_holes(
     if not _cut(model, face, name, draw, CLIP_THK_IN + 0.001):
         return False
     return all(_hole_in(model, p) for p in points)
+
+
+# --------------------------------------------------------------- knee braces
+
+
+def add_platform_knee_braces(
+    model, tread_index: int, *, phi: float, tread_top: float, r_a: float, r_b: float, shell_r: float,
+    profile: str, progress=None,
+) -> BraceResult:
+    """Hanger plate under the outer channel and a 45 deg knee brace to the shell, at both platform ends.
+
+    ``profile`` is the L3x3x0.375 file (``brace_sw.angle_profile``). The part does not need a shell.
+    """
+    lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b)
+    half = (lines.phi_b - lines.phi_a) / 2.0
+    mid = lines.phi_a + half
+    outer_chord = lines.r_out * math.cos(half)  # the outer channel's back, from the axis along the bisector
+    r_mid_plate = lines.r_out - HANGER_IN_FROM_OUTSIDE_IN - HANGER_WIDE_IN / 2.0
+    set_in = HANGER_FROM_END_IN + HANGER_THK_IN
+    name = f"ElitePlatform{tread_index:02d}Knee"
+    missed = []
+    for label, knee_phi, side in (
+        ("A", lines.phi_a + set_in / r_mid_plate, 1.0),
+        ("B", lines.phi_b - set_in / r_mid_plate, -1.0),
+    ):
+        tag = f"{name}{label}"
+        frame = _Frame(phi=knee_phi, y_top=lines.top, r_a=r_a, r_b=r_b)
+        back = outer_chord / math.cos(knee_phi - mid)  # outer channel back on this radial line
+        _hanger(model, frame, back, lines.top, side, f"{tag}Hanger")
+        r1 = back - HANGER_IN_FROM_OUTSIDE_IN - HANGER_WIDE_IN / 2.0
+        y1 = lines.top - CHANNEL_IN - HANGER_BOLT_DOWN_IN
+        r2 = shell_r + CLIP_BOLT_OUT_IN
+        if r2 >= r1 - 1.0:
+            raise SolidWorksError("The platform knee brace has no room between the platform and the shell.")
+        knee = _Knee(t_face=0.0, top=(r1, y1), bottom=(r2, y1 - (r1 - r2)), shell_r=shell_r, side=side)
+        _knee_angle(model, frame, knee, profile, tag)
+        _knee_clip_and_pad(model, frame, knee, tag)
+        if not _knee_holes(model, frame, knee, tag):
+            missed.append(label)
+        _progress(progress, f"{tag} placed")
+    with contextlib.suppress(Exception):
+        s._hide_construction(model)
+    note = (
+        f"Platform after tread {tread_index}: a 3/8 x {HANGER_WIDE_IN:g} x {HANGER_TALL_IN:g} hanger under the "
+        "outer channel at each end with an L3x3x3/8 knee brace at 45 deg down to a clip and pad on the shell."
+        + (f" Holes missed at end(s) {', '.join(missed)}." if missed else "")
+    )
+    return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
+
+
+def _hanger(model, frame: _Frame, back: float, top: float, side: float, name: str) -> None:
+    """3/8 plate under the outer channel, on the platform-end side of the knee's contact plane."""
+    r0 = back - HANGER_IN_FROM_OUTSIDE_IN - HANGER_WIDE_IN
+    r1 = back - HANGER_IN_FROM_OUTSIDE_IN
+    y1 = top - CHANNEL_IN
+    y0 = y1 - HANGER_TALL_IN
+    plane = s._radial_plane(model, frame.phi, f"{name}Pln")
+
+    def draw(manager, to_sketch):
+        pts = [to_sketch(frame.world(r, 0.0, y)) for r, y in ((r0, y0), (r1, y0), (r1, y1), (r0, y1))]
+        for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+            if manager.CreateLine(ax, ay, 0.0, bx, by, 0.0) is None:
+                raise SolidWorksError(f"{name}: hanger edge failed.")
+
+    sketch = _sketch_on_face(model, plane, name, draw)
+    _extrude_to(
+        model, sketch, HANGER_THK_IN, frame.world((r0 + r1) / 2.0, -side * HANGER_THK_IN / 2.0, (y0 + y1) / 2.0),
+        HANGER_TALL_IN + 0.1, name,
+    )
 
 
 # --------------------------------------------------------------- shell clips
