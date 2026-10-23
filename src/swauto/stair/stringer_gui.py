@@ -130,7 +130,7 @@ def _brace_stage_plan(
 
 def _stair_stage_plan(
     treads: int, *, shell: bool = True, braces=(), knees: bool = False, inner: bool = False,
-    platforms: int = 0, top_platform: bool = False, posts=(),
+    platforms: int = 0, top_platform: bool = False, posts=(), top_rail: bool = False,
 ) -> list[tuple[frozenset[str], str]]:
     """One equal share per progress line the stair build actually emits.
 
@@ -197,6 +197,14 @@ def _stair_stage_plan(
             plan.append(
                 (frozenset({f"{key} holes cut", f"{key} holes missed"}), f"platform post holes {k * per_flight}{end}")
             )
+    landings = platforms + (1 if top_platform else 0)
+    for k in range(platforms + 1) if top_rail and posts else ():
+        plan.append((frozenset({f"EliteRailF{k + 1} placed"}), f"top rail flight {k + 1}"))
+        if k < landings:
+            key = f"ElitePlatform{(k + 1) * per_flight:02d}Rail"
+            for end in ("A", "B") if k < platforms else ("A",):
+                plan.append((frozenset({f"{key}{end} placed"}), f"top rail landing {(k + 1) * per_flight}{end}"))
+            plan.append((frozenset({f"{key} placed"}), f"platform top rail {(k + 1) * per_flight}"))
     plan.extend(_brace_stage_plan(braces, knees=knees, inner=inner, tops=_flight_tops(treads, platforms)))
     return plan
 
@@ -309,6 +317,8 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     ttk.Entry(post_options, textvariable=post_in_out_var, width=5).pack(side="left", padx=(6, 0))
     ttk.Label(post_options, text="inner").pack(side="left", padx=(8, 0))
     ttk.Entry(post_options, textvariable=post_in_inner_var, width=5).pack(side="left", padx=(6, 0))
+    top_rail_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(post_options, text="Top rail", variable=top_rail_var).pack(side="left", padx=(12, 0))
     knee_var = tk.BooleanVar(value=True)
     inner_var = tk.BooleanVar(value=True)
     brace_options = ttk.Frame(top)
@@ -347,7 +357,9 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "42 in top rail, bolted through the stringer with two 13/16 holes. With posts, each platform "
             "also gets one near each end of its outer channel, bolted through the web, its heel the "
             "outer distance in from the platform end. The inner distance is for the inner rail, which "
-            "is not built yet."
+            "is not built yet. Top rail runs an L2x2x1/4 42 in up over the outer posts, rolled to a helix on "
+            "each flight, mitered to a level piece where it reaches a platform, and bolted to the platform "
+            "post through a short vertical end piece; each platform has its own rail between its posts."
         ),
         justify="left",
         wraplength=640,
@@ -510,6 +522,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             posts = read_post_treads(posts_var.get(), per_flight)
             post_in = read_post_in(post_in_out_var, "outer")
             read_post_in(post_in_inner_var, "inner")
+            top_rail = bool(top_rail_var.get()) and bool(posts)
         except ValueError as exc:
             messagebox.showerror("Stair", str(exc) if str(exc) else "Pan wall must be numeric.")
             return
@@ -523,7 +536,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             session = connect()
             result = build_stair(
                 session.app, current, wall, progress=progress, shell=with_shell, platforms=platforms,
-                top_platform=top_platform, posts=posts, platform_post_in=post_in,
+                top_platform=top_platform, posts=posts, platform_post_in=post_in, top_rail=top_rail,
             )
             notes = [result.note]
             if braces:
@@ -544,7 +557,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
 
         stages = _stair_stage_plan(
             current.treads, shell=with_shell, braces=braces, knees=knees, inner=inner, platforms=platforms,
-            top_platform=top_platform, posts=posts,
+            top_platform=top_platform, posts=posts, top_rail=top_rail,
         )
         run_job("Stair", stages, work)
 

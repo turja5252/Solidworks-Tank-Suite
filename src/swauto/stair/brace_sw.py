@@ -638,17 +638,17 @@ def _end_face(body, heel, down, up, side) -> list[tuple[float, float]]:
     return [(dot(p, up), dot(p, side)) for p, a in zip(points, along) if a - first < 0.02]
 
 
-def _knee_fits(end, tol: float) -> bool:
-    """Flat leg 3 in down the face from the heel, other leg 3 in out away from the cross brace."""
+def _knee_fits(end, tol: float, leg: float = LEG_IN) -> bool:
+    """Flat leg ``leg`` in down the face from the heel, other leg ``leg`` in out away from the cross brace."""
     if not end:
         return False
     across = [a for a, _o in end]
     out = [o for _a, o in end]
     return (
-        min(across) > -LEG_IN - tol and max(across) < tol
-        and min(out) > -tol and max(out) < LEG_IN + tol
-        and max(across) - min(across) > LEG_IN - tol - 0.01
-        and max(out) - min(out) > LEG_IN - tol - 0.01
+        min(across) > -leg - tol and max(across) < tol
+        and min(out) > -tol and max(out) < leg + tol
+        and max(across) - min(across) > leg - tol - 0.01
+        and max(out) - min(out) > leg - tol - 0.01
     )
 
 
