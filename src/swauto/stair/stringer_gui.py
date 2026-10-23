@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from swauto.comutil import format_com_error
-from swauto.errors import SolidWorksError, SolidWorksNotRunning, SolidWorksUnavailable
+from swauto.comutil import com_value, format_com_error
+from swauto.errors import BuildStopped, SolidWorksError, SolidWorksNotRunning, SolidWorksUnavailable
 from swauto.session import connect
+from swauto.stair.brace_sw import (
+    add_cross_brace,
+    add_knee_brace,
+    angle_profile,
+    remove_cross_brace,
+    stair_tread_count,
+)
+from swauto.stair.inner_clip_sw import add_inner_clip, clip_angle_profile
 from swauto.stair.stringer import (
     TREAD_DEPTH_IN,
     TREAD_MARK_IN,
@@ -16,7 +25,7 @@ from swauto.stair.stringer import (
     StringerMock,
     layout_stringer,
 )
-from swauto.stair.stair_sw import create_stair
+from swauto.stair.stair_sw import create_stair as build_stair
 from swauto.stair.stringer_sw import create_stringer_try
 from swauto.stair.tread_joint import TreadJointSpec, layout_tread_joint
 from swauto.stair.tread_joint_sw import create_tread_joint
@@ -54,6 +63,23 @@ def run_for_slope(rise_in: float, angle_deg: float) -> float:
     return rise_in / math.tan(math.radians(angle_deg))
 
 
+def parse_brace_treads(text: str) -> tuple[int, ...]:
+    """Tread numbers for cross braces, like "2, 5". Tread 1 is the lowest. Blank is none."""
+    picks: set[int] = set()
+    for part in text.replace(";", ",").replace(" ", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            number = float(part)
+        except ValueError as exc:
+            raise ValueError(f"Brace treads are tread numbers like 2, 5 (not {part!r}).") from exc
+        if number != int(number) or number < 1:
+            raise ValueError("Brace treads are whole tread numbers, 1 or more.")
+        picks.add(int(number))
+    return tuple(sorted(picks))
+
+
 def _progress_percent(done: int, total: int) -> int:
     if total <= 0 or done <= 0:
         return 0
@@ -62,7 +88,41 @@ def _progress_percent(done: int, total: int) -> int:
     return (100 * done) // total
 
 
-def _stair_stage_plan(treads: int, *, shell: bool = True) -> list[tuple[frozenset[str], str]]:
+def _inner_clip(model, index: int, count: int, profile: str, shell_radius_in, progress) -> str:
+    """Inner clip at a braced tread. The top tread has no stringer above it, so it gets none."""
+    if index >= count:
+        return f"No inner clip at tread {index}: it is the top tread, and the inner stringer stops at its top."
+    return add_inner_clip(model, index, profile, shell_radius_in=shell_radius_in, progress=progress).note
+
+
+def _brace_stage_plan(
+    braces, *, knees: bool = False, inner: bool = False, top: int | None = None
+) -> list[tuple[frozenset[str], str]]:
+    """Four shares per brace (angle, each cap with its hole, leg hole), three more per knee,
+    three more per inner clip. ``top`` is the top tread, which gets no inner clip."""
+    plan: list[tuple[frozenset[str], str]] = []
+    for index in braces:
+        key = f"EliteBrace{index:02d}"
+        plan.append((frozenset({f"{key} angle placed"}), f"brace {index} angle"))
+        plan.append((frozenset({f"{key} in cap placed"}), f"brace {index} inner cap"))
+        plan.append((frozenset({f"{key} out cap placed"}), f"brace {index} outer cap"))
+        plan.append((frozenset({f"{key} leg hole cut", f"{key} leg hole missed"}), f"brace {index} leg hole"))
+        if knees:
+            knee = f"{key}Knee"
+            plan.append((frozenset({f"{knee} angle placed"}), f"knee brace {index}"))
+            plan.append((frozenset({f"{knee} clip placed"}), f"knee brace {index} clip and pad"))
+            plan.append((frozenset({f"{knee} holes cut", f"{knee} holes missed"}), f"knee brace {index} holes"))
+        if inner and index != top:
+            clip = f"{key}Inner"
+            plan.append((frozenset({f"{clip} angle placed"}), f"inner clip {index}"))
+            plan.append((frozenset({f"{clip} landing clip placed"}), f"inner clip {index} landing clip and pad"))
+            plan.append((frozenset({f"{clip} holes cut", f"{clip} holes missed"}), f"inner clip {index} holes"))
+    return plan
+
+
+def _stair_stage_plan(
+    treads: int, *, shell: bool = True, braces=(), knees: bool = False, inner: bool = False
+) -> list[tuple[frozenset[str], str]]:
     """One equal share per progress line the stair build actually emits.
 
     Missed holes and missed bolts are the same stage as a clean cut, so a
@@ -97,6 +157,7 @@ def _stair_stage_plan(treads: int, *, shell: bool = True) -> list[tuple[frozense
                     f"tread {index} {side} bolts",
                 )
             )
+    plan.extend(_brace_stage_plan(braces, knees=knees, inner=inner, top=treads))
     return plan
 
 
@@ -158,11 +219,19 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     _field(top, 5, 0, "Plate width", plate_var, "in")
     _field(top, 5, 3, "Pan wall", wall_var, "in")
 
-    state = {"busy": False}
+    state = {"busy": False, "stop": False}
     create_btn = ttk.Button(top, text="Create flatten plate in SolidWorks")
     create_btn.grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 4))
     stair_btn = ttk.Button(top, text="Create stair on tank in SolidWorks")
     stair_btn.grid(row=6, column=3, columnspan=4, sticky="w", pady=(10, 4))
+
+    def request_stop() -> None:
+        if state["busy"]:
+            state["stop"] = True
+            stop_btn.configure(state="disabled")
+
+    stop_btn = ttk.Button(top, text="Stop", state="disabled", command=request_stop)
+    stop_btn.grid(row=6, column=7, sticky="w", pady=(10, 4))
     include_shell = tk.BooleanVar(value=True)
 
     def sync_stair_button() -> None:
@@ -176,27 +245,50 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         text="Include tank shell",
         variable=include_shell,
         command=sync_stair_button,
-    ).grid(row=7, column=0, columnspan=4, sticky="w")
+    ).grid(row=7, column=0, columnspan=3, sticky="w")
+    braces_var = tk.StringVar(value="")
+    ttk.Label(top, text="Braces under treads").grid(row=7, column=3, sticky="w", pady=(4, 0))
+    ttk.Entry(top, textvariable=braces_var, width=10).grid(row=7, column=4, sticky="w", pady=(4, 0))
+    brace_btn = ttk.Button(top, text="Add braces to open stair")
+    brace_btn.grid(row=7, column=5, columnspan=3, sticky="w", padx=(6, 0), pady=(4, 0))
+    knee_var = tk.BooleanVar(value=True)
+    inner_var = tk.BooleanVar(value=True)
+    brace_options = ttk.Frame(top)
+    brace_options.grid(row=8, column=3, columnspan=5, sticky="w")
+    ttk.Checkbutton(brace_options, text="Knee brace to the shell", variable=knee_var).pack(side="left")
+    ttk.Checkbutton(brace_options, text="Inner clip to the shell", variable=inner_var).pack(
+        side="left", padx=(12, 0)
+    )
     ttk.Label(
         top,
         text=(
             "Stair: both climbing stringers, every tread as a pan (top and four walls, no bottom), "
             "and the two bolts per side located from each tread's front face, cut through the inner "
             "and the outer stringer into that tread end wall. Include tank shell adds the shell at "
-            "the diameter above. Uncheck it to build the same stair with no shell."
+            "the diameter above. Uncheck it to build the same stair with no shell. Stop ends the "
+            "build after the step it is on and leaves the part as far as it got.\n"
+            "Cross braces: type the tread numbers, like 2 or 2, 5 (tread 1 is the lowest). Each is "
+            "an L3x3x3/8 from the weldment library under that tread with nested end caps and 13/16 "
+            "holes through the stringers. The stair button adds them at the end of a new stair. "
+            "Add braces to open stair puts them on the stair part open in SolidWorks and replaces "
+            "any brace already under those treads. Knee brace to the shell adds, with each cross "
+            "brace, an L3x3x3/8 at 45 deg from its leg hole down to a 1/4 clip and pad on the shell. "
+            "Inner clip to the shell adds, at each braced tread but the top one, an L4x3x3/8 on the "
+            "tank side of the inner stringer just above the tread, bolted to a 3/8 landing clip and "
+            "pad on the shell."
         ),
         justify="left",
         wraplength=640,
-    ).grid(row=8, column=0, columnspan=8, sticky="w", pady=(0, 4))
+    ).grid(row=9, column=0, columnspan=8, sticky="w", pady=(0, 4))
 
     summary_var = tk.StringVar(value="")
     ttk.Label(top, textvariable=summary_var, justify="left").grid(
-        row=9, column=0, columnspan=8, sticky="w", pady=(4, 4)
+        row=10, column=0, columnspan=8, sticky="w", pady=(4, 4)
     )
 
-    ttk.Label(top, text="Plan of the formed stringer").grid(row=10, column=0, columnspan=8, sticky="w")
+    ttk.Label(top, text="Plan of the formed stringer").grid(row=11, column=0, columnspan=8, sticky="w")
     plan = tk.Canvas(top, width=_PLAN, height=_PLAN, background="#f4f1ea", highlightthickness=1)
-    plan.grid(row=11, column=0, columnspan=8, sticky="w")
+    plan.grid(row=12, column=0, columnspan=8, sticky="w")
 
     def read_wall() -> float:
         try:
@@ -300,6 +392,13 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         status_var.set(f"Stringer → {result.title}")
         messagebox.showinfo("Stringer", f"{result.title}\n\n{result.note}")
 
+    def read_braces(count: int) -> tuple[int, ...]:
+        braces = parse_brace_treads(braces_var.get())
+        over = [index for index in braces if index > count]
+        if over:
+            raise ValueError(f"The stair has {count} treads; there is no tread {over[0]} for a brace.")
+        return braces
+
     def create_stair() -> None:
         if state["busy"]:
             return
@@ -307,17 +406,95 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             current = read_spec()
             current.validate()
             wall = read_wall()
+            braces = read_braces(current.treads)
         except ValueError as exc:
             messagebox.showerror("Stair", str(exc) if str(exc) else "Pan wall must be numeric.")
             return
-        state["busy"] = True
-        stair_btn.configure(state="disabled")
-        create_btn.configure(state="disabled")
-        status_var.set("0% — starting the stair")
-        parent.update_idletasks()
         with_shell = bool(include_shell.get())
-        stages = _stair_stage_plan(current.treads, shell=with_shell)
+        knees = bool(knee_var.get())
+        inner = bool(inner_var.get())
+
+        def work(progress):
+            session = connect()
+            result = build_stair(session.app, current, wall, progress=progress, shell=with_shell)
+            notes = [result.note]
+            if braces:
+                profile = angle_profile(session.app)
+                clip_profile = clip_angle_profile(session.app) if inner else ""
+                for index in braces:
+                    notes.append(add_cross_brace(result.model, index, profile, progress=progress).note)
+                    if knees:
+                        knee = add_knee_brace(
+                            result.model, index, profile, shell_radius_in=current.shell_od_in, progress=progress
+                        )
+                        notes.append(knee.note)
+                    if inner:
+                        notes.append(
+                            _inner_clip(
+                                result.model, index, current.treads, clip_profile, current.shell_od_in, progress
+                            )
+                        )
+            return result.title, "\n\n".join(notes)
+
+        stages = _stair_stage_plan(current.treads, shell=with_shell, braces=braces, knees=knees, inner=inner)
+        run_job("Stair", stages, work)
+
+    def add_braces() -> None:
+        if state["busy"]:
+            return
+        try:
+            braces = parse_brace_treads(braces_var.get())
+        except ValueError as exc:
+            messagebox.showerror("Braces", str(exc))
+            return
+        if not braces:
+            messagebox.showinfo("Braces", "Type the tread numbers first, like 2 or 2, 5. Tread 1 is the lowest.")
+            return
+        knees = bool(knee_var.get())
+        inner = bool(inner_var.get())
+        try:
+            shell_radius = float(diameter_var.get().strip()) / 2.0
+        except ValueError:
+            shell_radius = None
+
+        def work(progress):
+            session = connect()
+            model = com_value(session.app.ActiveDoc)
+            if model is None:
+                raise ValueError("Open the stair part in SolidWorks first.")
+            count = stair_tread_count(model)
+            over = [index for index in braces if index > count]
+            if over:
+                raise ValueError(f"The open stair has {count} treads; there is no tread {over[0]}.")
+            profile = angle_profile(session.app)
+            clip_profile = clip_angle_profile(session.app) if inner else ""
+            notes = []
+            for index in braces:
+                remove_cross_brace(model, index)
+                notes.append(add_cross_brace(model, index, profile, progress=progress).note)
+                if knees:
+                    knee = add_knee_brace(model, index, profile, shell_radius_in=shell_radius, progress=progress)
+                    notes.append(knee.note)
+                if inner:
+                    notes.append(_inner_clip(model, index, count, clip_profile, shell_radius, progress))
+            return str(com_value(model.GetTitle) or "Part"), "\n\n".join(notes)
+
+        run_job("Braces", _brace_stage_plan(braces, knees=knees, inner=inner), work)
+
+    def run_job(title: str, stages, work) -> None:
+        """Run a SolidWorks job with the percent on the status line and Stop live."""
+        start = f"0% — starting the {title.lower()}"
+        state["busy"] = True
+        state["stop"] = False
+        for button in (create_btn, stair_btn, brace_btn):
+            button.configure(state="disabled")
+        stop_btn.configure(state="normal")
+        status_var.set(start)
+        # While SolidWorks works, only Stop takes clicks, so no second build can start.
+        stop_btn.grab_set()
+        parent.update_idletasks()
         done = {"count": 0}
+        last = {"status": start}
 
         def progress(text: str) -> None:
             label = text
@@ -328,31 +505,41 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
                     label = stage_label
                     break
             percent = _progress_percent(done["count"], len(stages))
-            status_var.set(f"{percent}% — {label}")
-            parent.update_idletasks()
+            last["status"] = f"{percent}% — {label}"
+            status_var.set(last["status"])
+            # A Stop click waits here until the step SolidWorks is on finishes.
+            parent.update()
+            if state["stop"]:
+                raise BuildStopped(last["status"])
+
+        def finish(status: str) -> None:
+            with contextlib.suppress(tk.TclError):
+                stop_btn.grab_release()
+            state["busy"] = False
+            stop_btn.configure(state="disabled")
+            for button in (create_btn, stair_btn, brace_btn):
+                button.configure(state="normal")
+            status_var.set(status)
 
         try:
-            session = connect()
-            result = create_stair(session.app, current, wall, progress=progress, shell=with_shell)
+            heading, note = work(progress)
+        except BuildStopped:
+            finish(f"Stopped at {last['status']}")
+            messagebox.showinfo(
+                title,
+                "Stopped. The part stays in SolidWorks as far as it got. Close it without saving.",
+            )
+            return
         except (SolidWorksNotRunning, SolidWorksUnavailable, SolidWorksError, ValueError) as exc:
-            state["busy"] = False
-            stair_btn.configure(state="normal")
-            create_btn.configure(state="normal")
-            status_var.set("100% — stair build failed")
-            messagebox.showerror("Stair", str(exc))
+            finish(f"100% — {title.lower()} failed")
+            messagebox.showerror(title, str(exc))
             return
         except Exception as exc:  # noqa: BLE001
-            state["busy"] = False
-            stair_btn.configure(state="normal")
-            create_btn.configure(state="normal")
-            status_var.set("100% — stair build failed")
-            messagebox.showerror("Stair", format_com_error(exc))
+            finish(f"100% — {title.lower()} failed")
+            messagebox.showerror(title, format_com_error(exc))
             return
-        state["busy"] = False
-        stair_btn.configure(state="normal")
-        create_btn.configure(state="normal")
-        status_var.set(f"100% — Stair → {result.title}")
-        messagebox.showinfo("Stair", f"{result.title}\n\n{result.note}")
+        finish(f"100% — {title} → {heading}")
+        messagebox.showinfo(title, f"{heading}\n\n{note}")
 
     sync = {"lock": False}
 
@@ -392,6 +579,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
 
     create_btn.configure(command=create)
     stair_btn.configure(command=create_stair)
+    brace_btn.configure(command=add_braces)
     for var in (diameter_var, gap_var, treads_var, plate_var, wall_var):
         var.trace_add("write", refresh)
     rise_var.trace_add("write", on_rise_or_run)

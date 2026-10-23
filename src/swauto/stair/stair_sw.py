@@ -18,7 +18,7 @@ import math
 from dataclasses import dataclass
 
 from swauto.comutil import com_nothing, com_value, format_com_error
-from swauto.errors import SolidWorksError
+from swauto.errors import BuildStopped, SolidWorksError
 from swauto.features import find_feature, iter_features
 from swauto.params import rename_feature
 from swauto.parts import extrude_blind, new_part
@@ -104,9 +104,14 @@ def create_stair_on_tank(app, stair: StringerMock, wall_in: float, progress=None
 
 
 def _progress(callback, text: str) -> None:
-    if callback is not None:
-        with contextlib.suppress(Exception):
-            callback(text)
+    if callback is None:
+        return
+    try:
+        callback(text)
+    except BuildStopped:
+        raise
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def build_stair_on_model(
@@ -183,7 +188,7 @@ def build_stair_on_model(
                     hit = False
                 done += int(hit)
                 _progress(progress, f"tread {place.index} {side.lower()} bolts {'through' if hit else 'missed'}")
-    except SolidWorksError:
+    except (BuildStopped, SolidWorksError):
         with contextlib.suppress(Exception):
             _hide_construction(model)
         raise

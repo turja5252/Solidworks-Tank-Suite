@@ -8,3 +8,7 @@ class SolidWorksNotRunning(SolidWorksError):
 
 class SolidWorksUnavailable(SolidWorksError):
     """This computer cannot talk to SolidWorks."""
+
+
+class BuildStopped(Exception):
+    """Stop was pressed. The build ends after the step it is on."""
