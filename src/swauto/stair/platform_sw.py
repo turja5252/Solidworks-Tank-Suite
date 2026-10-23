@@ -18,6 +18,14 @@ two 13/16 holes 2-3/16 and 4-11/16 in from the heel, on the stringer end hole
 line 2-3/4 in below the channel top, so the clip is flush with the channel
 bottom. The web has 13/16 rounds at the inner stringer and 1-5/8 slots along
 the channel at the outer stringer; the clips have rounds only.
+
+The inner channel is tied to the shell at both ends (Stair Platform Top
+View.lsp, Platform_Sideview.lsp): a 3/8 x 4 in tab welded square to the web
+1/4 in in from the channel end, 3-1/2 in out toward the shell, bolted to a 3/8
+shell clip as tall as the channel on the tab's face toward the platform middle.
+The shell clip runs from a 1/4 pad on the shell (4 in wide, 6 in tall, 2 in
+radius ends) to 3/4 in short of the channel. Two 13/16 holes 2 in apart, one
+above the other about the channel's mid-height, 2-1/8 in out from the web.
 """
 
 from __future__ import annotations
@@ -31,7 +39,15 @@ from swauto.comutil import com_value, format_com_error
 from swauto.errors import SolidWorksError
 from swauto.params import rename_feature
 from swauto.stair import stair_sw as s
-from swauto.stair.brace_sw import BraceResult, _body_points, _progress, _set_turn, _stair_parts
+from swauto.stair.brace_sw import (
+    BraceResult,
+    _body_points,
+    _draw_pad,
+    _extrude_to,
+    _progress,
+    _set_turn,
+    _stair_parts,
+)
 from swauto.stair.development import END_EXT_IN, PLATFORM_CLEAR_IN
 from swauto.stair.inner_clip_sw import _angle_between, _hand, _leg_axes, _member
 from swauto.stair.stringer import THICKNESS_IN, TREAD_DEPTH_IN, TREAD_MARK_IN
@@ -51,6 +67,15 @@ CLIP_GAUGES_IN = (2.1875, 4.6875)  # from the heel on both legs: the stringer en
 HOLE_DOWN_IN = 2.75  # below the channel top: the stringer end hole line
 HOLE_DIA_IN = 0.8125
 SLOT_IN = 1.625
+TAB_THK_IN = 0.375
+TAB_OUT_IN = 3.5  # from the channel web toward the shell
+TAB_FROM_END_IN = 0.25
+SHELL_CLIP_THK_IN = 0.375
+SHELL_CLIP_SHORT_IN = 0.75  # its end short of the channel web
+SHELL_PAD_THK_IN = 0.25
+SHELL_PAD_TALL_IN = 6.0
+SHELL_BOLT_OUT_IN = 2.125  # from the channel web
+SHELL_BOLT_SPACE_IN = 2.0
 
 
 @dataclass(frozen=True)
@@ -453,5 +478,175 @@ def _clip_stringer_leg_holes(
                 raise SolidWorksError(f"{name}: hole circle failed.")
 
     if not _cut(model, face, name, draw, CLIP_THK_IN + 0.001):
+        return False
+    return all(_hole_in(model, p) for p in points)
+
+
+# --------------------------------------------------------------- shell clips
+
+
+@dataclass(frozen=True)
+class _ChannelEnd:
+    """One end of the inner channel's back line C, in plan inches."""
+
+    origin: tuple[float, float]  # the corner, (x, z)
+    along: tuple[float, float]  # along C toward the other end
+    inward: tuple[float, float]  # square to C, toward the tank axis
+    top: float
+
+    def world(self, c: float, h: float, y: float) -> tuple[float, float, float]:
+        """c along the channel from this end, h out from the web toward the shell."""
+        return (
+            self.origin[0] + c * self.along[0] + h * self.inward[0],
+            y,
+            self.origin[1] + c * self.along[1] + h * self.inward[1],
+        )
+
+
+def _channel_ends(lines: _Lines) -> list[_ChannelEnd]:
+    a = (-lines.r_in * math.sin(lines.phi_a), lines.r_in * math.cos(lines.phi_a))
+    b = (-lines.r_in * math.sin(lines.phi_b), lines.r_in * math.cos(lines.phi_b))
+    length = math.hypot(b[0] - a[0], b[1] - a[1])
+    along = ((b[0] - a[0]) / length, (b[1] - a[1]) / length)
+    inward = (-along[1], along[0])
+    if inward[0] * -a[0] + inward[1] * -a[1] < 0:
+        inward = (-inward[0], -inward[1])
+    return [
+        _ChannelEnd(a, along, inward, lines.top),
+        _ChannelEnd(b, (-along[0], -along[1]), inward, lines.top),
+    ]
+
+
+def add_platform_shell_clips(
+    model, tread_index: int, *, phi: float, tread_top: float, r_a: float, r_b: float, shell_r: float, progress=None,
+) -> BraceResult:
+    """Tab, shell clip, and pad at both ends of the inner channel of the platform after tread ``tread_index``.
+
+    ``shell_r`` is the shell OD radius; the part does not need a shell.
+    """
+    lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b)
+    if lines.r_in - shell_r < TAB_OUT_IN + SHELL_PAD_THK_IN + 0.5:
+        raise SolidWorksError(f"The {lines.r_in - shell_r:.2f} in gap leaves no room for the platform's shell clips.")
+    name = f"ElitePlatform{tread_index:02d}Shell"
+    missed = []
+    for end, label in zip(_channel_ends(lines), ("A", "B")):
+        tag = f"{name}{label}"
+        _shell_tab(model, end, f"{tag}Tab")
+        _shell_clip_and_pad(model, end, shell_r, tag)
+        if not _shell_holes(model, end, f"{tag}Holes"):
+            missed.append(label)
+        _progress(progress, f"{tag} clip placed")
+    with contextlib.suppress(Exception):
+        s._hide_construction(model)
+    note = (
+        f"Platform after tread {tread_index}: 3/8 x 4 in tabs welded to the inner channel at both ends, "
+        f"bolted to 3/8 shell clips on 1/4 x 4 x 6 pads, two 13/16 holes 2 in apart."
+        + (f" Holes missed at end(s) {', '.join(missed)}." if missed else "")
+    )
+    return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
+
+
+def _shell_tab(model, end: _ChannelEnd, name: str) -> None:
+    """3/8 tab welded square to the web back, 1/4 in in from the channel end, out toward the shell."""
+    c0, c1 = TAB_FROM_END_IN, TAB_FROM_END_IN + TAB_THK_IN
+    y0, y1 = end.top - CHANNEL_IN, end.top
+    frame = [b for b in s._bodies(model) if str(b.Name).startswith("ElitePlatform")]
+    web = _face_at(frame, end.world((c0 + c1) / 2.0, 0.0, end.top - CHANNEL_IN / 2.0), (end.inward[0], 0.0, end.inward[1]))
+
+    def draw(manager, to_sketch):
+        pts = [to_sketch(end.world(c, 0.0, y)) for c, y in ((c0, y0), (c1, y0), (c1, y1), (c0, y1))]
+        for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+            if manager.CreateLine(ax, ay, 0.0, bx, by, 0.0) is None:
+                raise SolidWorksError(f"{name}: tab edge failed.")
+
+    sketch = _sketch_on_face(model, web, name, draw)
+    _extrude_to(
+        model, sketch, TAB_OUT_IN, end.world((c0 + c1) / 2.0, TAB_OUT_IN / 2.0, end.top - CHANNEL_IN / 2.0),
+        CHANNEL_IN + 0.1, name,
+    )
+
+
+def _pad_point(end: _ChannelEnd, shell_r: float) -> tuple[float, float]:
+    """Where the tab's face toward the platform middle, carried out to the shell, meets the shell OD."""
+    c = TAB_FROM_END_IN + TAB_THK_IN
+    px, pz = end.world(c, 0.0, 0.0)[0], end.world(c, 0.0, 0.0)[2]
+    b = px * end.inward[0] + pz * end.inward[1]
+    k = px * px + pz * pz - shell_r * shell_r
+    s_near = -b - math.sqrt(b * b - k)
+    return px + s_near * end.inward[0], pz + s_near * end.inward[1]
+
+
+def _shell_clip_and_pad(model, end: _ChannelEnd, shell_r: float, tag: str) -> None:
+    """Shell clip on the tab's face toward the platform middle, then the pad flat on the shell behind it."""
+    c_face = TAB_FROM_END_IN + TAB_THK_IN
+    qx, qz = _pad_point(end, shell_r)
+    phi_q = math.atan2(-qx, qz)
+    normal = (-math.sin(phi_q), math.cos(phi_q))
+    # Out along the tab's line from the web to the pad's outside face.
+    px, pz = end.world(c_face, 0.0, 0.0)[0], end.world(c_face, 0.0, 0.0)[2]
+    face_x, face_z = qx + SHELL_PAD_THK_IN * normal[0], qz + SHELL_PAD_THK_IN * normal[1]
+    reach = ((face_x - px) * normal[0] + (face_z - pz) * normal[1]) / (end.inward[0] * normal[0] + end.inward[1] * normal[1])
+    h0, h1 = SHELL_CLIP_SHORT_IN, reach
+    y0, y1 = end.top - CHANNEL_IN, end.top
+    tabs = [b for b in s._bodies(model) if str(b.Name).startswith(f"{tag}Tab")]
+    tab_face = _face_at(tabs, end.world(c_face, TAB_OUT_IN / 2.0, end.top - CHANNEL_IN / 2.0), (end.along[0], 0.0, end.along[1]))
+
+    def draw_clip(manager, to_sketch):
+        pts = [to_sketch(end.world(c_face, h, y)) for h, y in ((h0, y0), (h1, y0), (h1, y1), (h0, y1))]
+        for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+            if manager.CreateLine(ax, ay, 0.0, bx, by, 0.0) is None:
+                raise SolidWorksError(f"{tag}: shell clip edge failed.")
+
+    clip_sketch = _sketch_on_face(model, tab_face, f"{tag}ShellClip", draw_clip)
+    _extrude_to(
+        model, clip_sketch, SHELL_CLIP_THK_IN,
+        end.world(c_face + SHELL_CLIP_THK_IN / 2.0, (h0 + h1) / 2.0, end.top - CHANNEL_IN / 2.0),
+        CHANNEL_IN + 0.1, f"{tag}ShellClip",
+    )
+
+    # The pad sits flat on the shell where the tab's line meets it, centered on that line.
+    plane = _tangent_plane(model, phi_q, shell_r, f"{tag}Pad")
+    y_mid = end.top - CHANNEL_IN / 2.0
+
+    def draw_pad(manager, to_sketch):
+        _draw_pad(manager, lambda t, y: to_sketch(_world(phi_q, shell_r, t, y)), 0.0, y_mid, SHELL_PAD_TALL_IN, tag)
+
+    pad_sketch = _sketch_on_face(model, plane, f"{tag}Pad", draw_pad)
+    _extrude_to(
+        model, pad_sketch, SHELL_PAD_THK_IN, _world(phi_q, shell_r + SHELL_PAD_THK_IN / 2.0, 0.0, y_mid),
+        SHELL_PAD_TALL_IN + 0.1, f"{tag}Pad",
+    )
+
+
+def _tangent_plane(model, phi: float, radius: float, name: str):
+    """Plane touching the cylinder of ``radius`` at angle ``phi``: the radial plane a quarter turn on,
+    moved out ``radius``. The offset side is read back and flipped if SolidWorks went the other way."""
+    axis_plane = s._radial_plane(model, phi + math.pi / 2.0, f"{name}AxisPln")
+    out = (-math.sin(phi), math.cos(phi))
+    for distance in (radius, -radius):
+        plane = s._offset_from(model, axis_plane, distance, f"{name}Pln")
+        rows = [float(v) for v in com_value(com_value(com_value(plane.GetSpecificFeature2).Transform).ArrayData)]
+        if abs((rows[9] * out[0] + rows[11] * out[1]) / _INCH - radius) < 0.01:
+            return plane
+        s._delete_named(model, (s._feature_name(plane),))
+    raise SolidWorksError(f"{name}: the pad plane did not land on the shell.")
+
+
+def _shell_holes(model, end: _ChannelEnd, name: str) -> bool:
+    """Two 13/16 rounds through the tab and the shell clip, from the face they share."""
+    c_face = TAB_FROM_END_IN + TAB_THK_IN
+    y_mid = end.top - CHANNEL_IN / 2.0
+    points = [end.world(c_face, SHELL_BOLT_OUT_IN, y_mid + dy) for dy in (SHELL_BOLT_SPACE_IN / 2.0, -SHELL_BOLT_SPACE_IN / 2.0)]
+    tabs = [b for b in s._bodies(model) if str(b.Name).startswith(name.replace("Holes", "Tab"))]
+    face = _face_at(tabs, end.world(c_face, TAB_OUT_IN - 0.25, y_mid), (end.along[0], 0.0, end.along[1]))
+    radius = HOLE_DIA_IN / 2.0 * _INCH
+
+    def draw(manager, to_sketch):
+        for point in points:
+            sx, sy = to_sketch(point)
+            if _create_circle(manager, sx, sy, radius) is None:
+                raise SolidWorksError(f"{name}: hole circle failed.")
+
+    if not _cut(model, face, name, draw, TAB_THK_IN + SHELL_CLIP_THK_IN + 0.05):
         return False
     return all(_hole_in(model, p) for p in points)

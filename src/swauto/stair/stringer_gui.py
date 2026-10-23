@@ -181,6 +181,8 @@ def _stair_stage_plan(
                 (frozenset({f"{key}Clip{side} holes cut", f"{key}Clip{side} holes missed"}),
                  f"platform clip holes {k * per_flight}{side}")
             )
+        for end in ("A", "B"):
+            plan.append((frozenset({f"{key}Shell{end} clip placed"}), f"platform shell clip {k * per_flight}{end}"))
     plan.extend(_brace_stage_plan(braces, knees=knees, inner=inner, tops=_flight_tops(treads, platforms)))
     return plan
 
@@ -310,8 +312,9 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "Mid platforms (0 to 3) split the treads into equal flights, as the lisp does: the tread "
             "level with each platform belongs to both flights, so 7 treads with 1 platform are two "
             "flights of 4. Each platform is a C4x5.4 frame mitered at the corners, 36 in along the walk "
-            "centerline, with L6x6x3/8 clips at every stringer end. Top platform puts the same frame "
-            "past the top tread. Brace tread numbers count every pan, the extra one at each platform too."
+            "centerline, with L6x6x3/8 clips at every stringer end and a 3/8 tab, shell clip and pad "
+            "tying each end of its inner channel to the shell. Top platform puts the same frame past "
+            "the top tread. Brace tread numbers count every pan, the extra one at each platform too."
         ),
         justify="left",
         wraplength=640,

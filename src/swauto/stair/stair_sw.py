@@ -227,7 +227,9 @@ def build_stair_on_model(
         if platforms or top_platform:
             if profiles is None:
                 raise SolidWorksError("Platforms need the C4 and 6x6 angle weldment profiles.")
-            platform_note = _platforms(model, layout, places, per_flight, platforms, top_platform, profiles, progress)
+            platform_note = _platforms(
+                model, layout, places, per_flight, platforms, top_platform, profiles, shell_od, progress
+            )
     except (BuildStopped, SolidWorksError):
         with contextlib.suppress(Exception):
             _hide_construction(model)
@@ -273,10 +275,13 @@ def _moved_place(place: TreadPlace, index: int, turn: float, lift: float) -> Tre
     )
 
 
-def _platforms(model, layout, places, per_flight: int, platforms: int, top_platform: bool, profiles, progress) -> str:
+def _platforms(
+    model, layout, places, per_flight: int, platforms: int, top_platform: bool, profiles, shell_od: float, progress
+) -> str:
     """C4 frame past the top tread of each flight below a mid platform (and past the
-    last one for a top platform), then the 6x6 clips where the stringers meet it."""
-    from swauto.stair.platform_sw import add_stringer_clips, place_mid_platform
+    last one for a top platform), the 6x6 clips where the stringers meet it, and the
+    shell clips at both ends of its inner channel."""
+    from swauto.stair.platform_sw import add_platform_shell_clips, add_stringer_clips, place_mid_platform
 
     frame_profile, clip_profile = profiles
     r_a = layout.inner_face_in
@@ -293,12 +298,23 @@ def _platforms(model, layout, places, per_flight: int, platforms: int, top_platf
             model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_b, profile=clip_profile,
             sides=("A", "B") if k <= platforms else ("A",), progress=progress,
         )
+        try:
+            shell = add_platform_shell_clips(
+                model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_b, shell_r=shell_od,
+                progress=progress,
+            )
+            if "missed" in shell.note:
+                missed.append(f"shell clip holes after tread {last.index}")
+        except SolidWorksError as exc:
+            # The stair is whole without them; say why in the note.
+            missed.append(str(exc))
         after.append(str(last.index))
         if "Missed" in clips.note:
             missed.append(clips.note.split("Missed: ", 1)[1].rstrip("."))
     note = (
         f"C4x5.4 platform frames after tread{'s' if len(after) > 1 else ''} {', '.join(after)}, "
-        "with L6x6x3/8 clips at every stringer end that meets them."
+        "with L6x6x3/8 clips at every stringer end that meets them and shell clips at both ends "
+        "of each inner channel."
     )
     return note + (f" Missed: {'; '.join(missed)}." if missed else "")
 
