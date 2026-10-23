@@ -302,6 +302,8 @@ def _sketch_on_face(model, face, name: str, draw):
     manager.InsertSketch(True)
     try:
         sketch = com_value(model.GetActiveSketch2)
+        if sketch is None:
+            raise SolidWorksError(f"{name}: no sketch opened on the face.")
         data = [float(v) for v in com_value(com_value(sketch.ModelToSketchTransform).ArrayData)]
 
         def to_sketch(p_in):
@@ -379,7 +381,18 @@ def _hole_in(model, point_in) -> bool:
 def _clip(model, line_phi: float, heel_r: float, inward: float, away: float, top: float, profile: str, name: str):
     """L6x6 on a vertical line at the heel, turned until one leg runs along the stringer
     away from the channel and the other along the web toward the walk centerline."""
-    ends = [_world(line_phi, heel_r, 0.0, y) for y in (top - CHANNEL_IN, top - CHANNEL_IN + CLIP_TALL_IN)]
+    ys = (top - CHANNEL_IN, top - CHANNEL_IN + CLIP_TALL_IN)
+    return _upright_angle(model, line_phi, heel_r, inward, away, ys, CLIP_LEG_IN, profile, name)
+
+
+def _upright_angle(
+    model, line_phi: float, heel_r: float, inward: float, away: float, ys: tuple[float, float], leg_in: float,
+    profile: str, name: str, heel_t: float = 0.0,
+):
+    """Equal-leg angle on a vertical line at the heel from ``ys[0]`` up to ``ys[1]``, turned
+    until one leg runs ``away`` along the travel and the other ``inward`` along the radial.
+    The heel is ``heel_t`` along the travel from the radial line at ``line_phi``."""
+    ends = [_world(line_phi, heel_r, heel_t, y) for y in ys]
     heel = ends[0]
     along = (away * _travel(line_phi)[0], away * _travel(line_phi)[2])
     across = (inward * _radial(line_phi)[0], inward * _radial(line_phi)[2])
@@ -396,18 +409,20 @@ def _clip(model, line_phi: float, heel_r: float, inward: float, away: float, top
     if body is None:
         s._rebuild(model)
         body = body_now()
-    placed = _clip_fits(body, line_phi, heel_r, inward, away)
+    placed = _upright_fits(body, line_phi, heel_r, inward, away, leg_in, heel_t)
     axes = None if body is None or placed else _leg_axes(body, heel)
     if axes is not None:
         first, second = axes
         target = along if _hand(first, second) * _hand(along, across) > 0 else across
         turn = _angle_between(first, target)
         for rotation in (turn, -turn):
-            if _set_turn(model, feature, rotation) and _clip_fits(body_now(), line_phi, heel_r, inward, away):
+            if _set_turn(model, feature, rotation) and _upright_fits(
+                body_now(), line_phi, heel_r, inward, away, leg_in, heel_t
+            ):
                 placed = True
                 break
     if not placed:
-        raise SolidWorksError(f"{name}: could not turn the 6x6 clip into the stringer corner.")
+        raise SolidWorksError(f"{name}: could not turn the angle into place.")
     with contextlib.suppress(Exception):
         rename_feature(feature, name)
     _clear_selection(model)
@@ -418,17 +433,20 @@ def _clip(model, line_phi: float, heel_r: float, inward: float, away: float, top
     return body_now()
 
 
-def _clip_fits(body, line_phi: float, heel_r: float, inward: float, away: float, tol: float = 0.03) -> bool:
+def _upright_fits(
+    body, line_phi: float, heel_r: float, inward: float, away: float, leg_in: float, heel_t: float = 0.0,
+    tol: float = 0.03,
+) -> bool:
     if body is None:
         return False
     points = _body_points(body)
     if not points:
         return False
     rs = [inward * (p[0] * _radial(line_phi)[0] + p[2] * _radial(line_phi)[2] - heel_r) for p in points]
-    ts = [away * (p[0] * _travel(line_phi)[0] + p[2] * _travel(line_phi)[2]) for p in points]
+    ts = [away * (p[0] * _travel(line_phi)[0] + p[2] * _travel(line_phi)[2] - heel_t) for p in points]
     return (
-        min(rs) > -tol and max(rs) < CLIP_LEG_IN + tol and max(rs) - min(rs) > CLIP_LEG_IN - tol - 0.01
-        and min(ts) > -tol and max(ts) < CLIP_LEG_IN + tol and max(ts) - min(ts) > CLIP_LEG_IN - tol - 0.01
+        min(rs) > -tol and max(rs) < leg_in + tol and max(rs) - min(rs) > leg_in - tol - 0.01
+        and min(ts) > -tol and max(ts) < leg_in + tol and max(ts) - min(ts) > leg_in - tol - 0.01
     )
 
 

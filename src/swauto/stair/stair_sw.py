@@ -87,18 +87,22 @@ class TreadPlace:
 
 def create_stair(
     app, stair: StringerMock, wall_in: float, progress=None, *, shell: bool = True, platforms: int = 0,
-    top_platform: bool = False,
+    top_platform: bool = False, posts: tuple[int, ...] = (), platform_post_in: float | None = None,
 ) -> StairResult:
     """New part, then the stair. ``shell`` adds the tank; the stringers do not change.
 
     ``platforms`` mid platforms split the stair into equal flights, and
-    ``top_platform`` puts the same platform past the top tread.
+    ``top_platform`` puts the same platform past the top tread. ``posts`` are
+    the treads in each flight that get a handrail post on the outer stringer;
+    ``platform_post_in`` sets the platform posts in from the platform ends.
     """
     flight_treads(stair.treads, platforms)
     profiles = _platform_profiles(app) if platforms or top_platform else None
+    post_file = _post_profile(app) if posts else None
     if shell:
         return create_stair_on_tank(
-            app, stair, wall_in, progress=progress, platforms=platforms, top_platform=top_platform, profiles=profiles
+            app, stair, wall_in, progress=progress, platforms=platforms, top_platform=top_platform, profiles=profiles,
+            posts=posts, post_profile=post_file, platform_post_in=platform_post_in,
         )
     stair.validate()
     if wall_in <= 0 or wall_in >= TREAD_MARK_IN or wall_in * 2 >= TREAD_DEPTH_IN:
@@ -106,13 +110,15 @@ def create_stair(
     model = new_part(app)
     return build_stair_on_model(
         model, stair.shell_od_in, stair, wall_in, progress=progress, platforms=platforms,
-        top_platform=top_platform, profiles=profiles,
+        top_platform=top_platform, profiles=profiles, posts=posts, post_profile=post_file,
+        platform_post_in=platform_post_in,
     )
 
 
 def create_stair_on_tank(
     app, stair: StringerMock, wall_in: float, progress=None, *, platforms: int = 0, top_platform: bool = False,
-    profiles: tuple[str, str, str] | None = None,
+    profiles: tuple[str, str, str] | None = None, posts: tuple[int, ...] = (), post_profile: str | None = None,
+    platform_post_in: float | None = None,
 ) -> StairResult:
     """New part with the shell at the Stringer tab's OD radius, then the stair."""
     stair.validate()
@@ -120,6 +126,8 @@ def create_stair_on_tank(
         raise ValueError("Pan wall must be greater than zero and thinner than the tread.")
     if profiles is None and (platforms or top_platform):
         profiles = _platform_profiles(app)
+    if post_profile is None and posts:
+        post_profile = _post_profile(app)
     tank = TankSpec(diameter_in=2.0 * stair.shell_od_in, diameter_basis=WALL_OD)
     shell = create_tank_shell(app, tank)
     model = shell.live.model
@@ -128,7 +136,7 @@ def create_stair_on_tank(
     _progress(progress, "shell built")
     return build_stair_on_model(
         model, shell_od, stair, wall_in, progress=progress, platforms=platforms, top_platform=top_platform,
-        profiles=profiles,
+        profiles=profiles, posts=posts, post_profile=post_profile, platform_post_in=platform_post_in,
     )
 
 
@@ -138,6 +146,13 @@ def _platform_profiles(app) -> tuple[str, str, str]:
     from swauto.stair.platform_sw import clip_profile, platform_profile
 
     return platform_profile(app), clip_profile(app), angle_profile(app)
+
+
+def _post_profile(app) -> str:
+    """L2x2x1/4 for the handrail posts."""
+    from swauto.stair.post_sw import post_profile
+
+    return post_profile(app)
 
 
 def _progress(callback, text: str) -> None:
@@ -163,6 +178,9 @@ def build_stair_on_model(
     platforms: int = 0,
     top_platform: bool = False,
     profiles: tuple[str, str, str] | None = None,
+    posts: tuple[int, ...] = (),
+    post_profile: str | None = None,
+    platform_post_in: float | None = None,
 ) -> StairResult:
     """Stringers (unless already there), then tread by tread: pan, inner bolts, outer bolts.
 
@@ -170,6 +188,7 @@ def build_stair_on_model(
     one below turned and raised past a 36 in mid platform. Platform frames and
     their stringer clips go in last: a higher flight's stringer cuts start
     inside the platform below it. ``profiles`` is (C4 frame, 6x6 clip, 3x3 knee).
+    Handrail posts at the ``posts`` treads of every flight follow, on ``post_profile``.
     """
     per_flight = flight_treads(stair.treads, platforms)
     flight = StringerMock(
@@ -199,6 +218,7 @@ def build_stair_on_model(
         for place in _tread_places(layout)
     ]
     platform_note = ""
+    post_note = ""
     try:
         if stringers:
             for k, at in enumerate(offsets):
@@ -231,6 +251,13 @@ def build_stair_on_model(
             platform_note = _platforms(
                 model, layout, places, per_flight, platforms, top_platform, profiles, shell_od, progress
             )
+        if posts:
+            if post_profile is None:
+                raise SolidWorksError("Handrail posts need the L2x2 angle weldment profile.")
+            post_note = _handrail_posts(
+                model, layout, places, per_flight, posts, post_profile, platforms, top_platform,
+                platform_post_in, progress,
+            )
     except (BuildStopped, SolidWorksError):
         with contextlib.suppress(Exception):
             _hide_construction(model)
@@ -257,6 +284,8 @@ def build_stair_on_model(
     )
     if platform_note:
         note = f"{note} {platform_note}"
+    if post_note:
+        note = f"{note} {post_note}"
     if freeze_note:
         note = f"{note} {freeze_note}"
     return StairResult(title=str(com_value(model.GetTitle) or "Part"), model=model, note=note)
@@ -333,6 +362,43 @@ def _platforms(
         "of each inner channel, and L3x3x3/8 knee braces to the shell under both ends of each outer channel."
     )
     return note + (f" Missed: {'; '.join(missed)}." if missed else "")
+
+
+def _handrail_posts(
+    model, layout, places, per_flight: int, posts: tuple[int, ...], profile: str, platforms: int,
+    top_platform: bool, post_in: float | None, progress,
+) -> str:
+    """Handrail posts at the same treads of every flight on the outer stringer, and near
+    both ends of each platform's outer channel, ``post_in`` in from the ends."""
+    from swauto.stair.post_sw import PLATFORM_POST_IN, add_handrail_posts, add_platform_posts, post_layout
+
+    if post_in is None:
+        post_in = PLATFORM_POST_IN
+    r_a = layout.inner_face_in
+    r_b = r_a + CLEAR_IN
+    note = add_handrail_posts(
+        model, post_layout(places, per_flight, posts, r_b), r_b=r_b, profile=profile, progress=progress
+    ).note
+    after = []
+    missed = []
+    for k in range(1, platforms + 1 + (1 if top_platform else 0)):
+        last = places[k * per_flight - 1]
+        try:
+            placed = add_platform_posts(
+                model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_b, profile=profile,
+                post_in=post_in, progress=progress,
+            )
+            after.append(str(last.index))
+            if "missed" in placed.note:
+                missed.append(f"post holes at the platform after tread {last.index}")
+        except SolidWorksError as exc:
+            missed.append(str(exc))
+    if after:
+        note += (
+            f" Posts bolted {post_in:g} in in from both ends of the outer channel of the "
+            f"platform{'s' if len(after) > 1 else ''} after tread{'s' if len(after) > 1 else ''} {', '.join(after)}."
+        )
+    return note + (f" Platform posts missed: {'; '.join(missed)}." if missed else "")
 
 
 # ---------------------------------------------------------------- stringers

@@ -19,6 +19,7 @@ from swauto.stair.brace_sw import (
 )
 from swauto.stair.development import MAX_PLATFORMS, flight_treads, stair_plan
 from swauto.stair.inner_clip_sw import add_inner_clip, clip_angle_profile
+from swauto.stair.post_sw import PLATFORM_POST_IN, read_post_treads
 from swauto.stair.stringer import (
     TREAD_DEPTH_IN,
     TREAD_MARK_IN,
@@ -129,7 +130,7 @@ def _brace_stage_plan(
 
 def _stair_stage_plan(
     treads: int, *, shell: bool = True, braces=(), knees: bool = False, inner: bool = False,
-    platforms: int = 0, top_platform: bool = False,
+    platforms: int = 0, top_platform: bool = False, posts=(),
 ) -> list[tuple[frozenset[str], str]]:
     """One equal share per progress line the stair build actually emits.
 
@@ -137,7 +138,7 @@ def _stair_stage_plan(
     miss moves the percent forward and never back. Without the tank, the
     shell stage is left out; the stringers are unchanged. Mid platforms add
     a flight of stringers each, the extra pan level with each platform, the
-    platform frames, and their clips.
+    platform frames, and their clips. ``posts`` are tread numbers in a flight.
     """
     per_flight = flight_treads(treads, platforms)
     plan: list[tuple[frozenset[str], str]] = []
@@ -185,6 +186,17 @@ def _stair_stage_plan(
             plan.append((frozenset({f"{key}Shell{end} clip placed"}), f"platform shell clip {k * per_flight}{end}"))
         for end in ("A", "B"):
             plan.append((frozenset({f"{key}Knee{end} placed"}), f"platform knee brace {k * per_flight}{end}"))
+    for index in (k * per_flight + pick for k in range(platforms + 1) for pick in posts):
+        key = f"ElitePost{index:02d}"
+        plan.append((frozenset({f"{key} placed"}), f"handrail post {index}"))
+        plan.append((frozenset({f"{key} holes cut", f"{key} holes missed"}), f"handrail post {index} holes"))
+    for k in range(1, platforms + 1 + (1 if top_platform else 0)) if posts else ():
+        for end in ("A", "B"):
+            key = f"ElitePlatform{k * per_flight:02d}Post{end}"
+            plan.append((frozenset({f"{key} placed"}), f"platform post {k * per_flight}{end}"))
+            plan.append(
+                (frozenset({f"{key} holes cut", f"{key} holes missed"}), f"platform post holes {k * per_flight}{end}")
+            )
     plan.extend(_brace_stage_plan(braces, knees=knees, inner=inner, tops=_flight_tops(treads, platforms)))
     return plan
 
@@ -286,6 +298,17 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     ttk.Label(platform_options, text="Mid platforms").pack(side="left")
     ttk.Entry(platform_options, textvariable=platforms_var, width=4).pack(side="left", padx=(6, 0))
     ttk.Checkbutton(platform_options, text="Top platform", variable=top_platform_var).pack(side="left", padx=(12, 0))
+    posts_var = tk.StringVar(value="")
+    post_in_out_var = tk.StringVar(value=_fmt_num(PLATFORM_POST_IN))
+    post_in_inner_var = tk.StringVar(value=_fmt_num(PLATFORM_POST_IN))
+    post_options = ttk.Frame(top)
+    post_options.grid(row=9, column=0, columnspan=8, sticky="w", pady=(4, 0))
+    ttk.Label(post_options, text="Posts at flight treads").pack(side="left")
+    ttk.Entry(post_options, textvariable=posts_var, width=8).pack(side="left", padx=(6, 0))
+    ttk.Label(post_options, text="Platform posts in from the ends: outer").pack(side="left", padx=(12, 0))
+    ttk.Entry(post_options, textvariable=post_in_out_var, width=5).pack(side="left", padx=(6, 0))
+    ttk.Label(post_options, text="inner").pack(side="left", padx=(8, 0))
+    ttk.Entry(post_options, textvariable=post_in_inner_var, width=5).pack(side="left", padx=(6, 0))
     knee_var = tk.BooleanVar(value=True)
     inner_var = tk.BooleanVar(value=True)
     brace_options = ttk.Frame(top)
@@ -317,20 +340,27 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "centerline, with L6x6x3/8 clips at every stringer end, a 3/8 tab, shell clip and pad "
             "tying each end of its inner channel to the shell, and an L3x3x3/8 knee brace from a hanger "
             "plate under each end of its outer channel down to a clip and pad on the shell. Top platform puts the same frame past "
-            "the top tread. Brace tread numbers count every pan, the extra one at each platform too."
+            "the top tread. Brace tread numbers count every pan, the extra one at each platform too.\n"
+            "Posts at flight treads: tread numbers in one flight, like 2, 4, repeated in every flight. Each "
+            "gets an L2x2x1/4 handrail post on the outside of the outer stringer just in front of it, "
+            "standing on the tread below (so not tread 1), its top cut along the rail 3/4 in under the "
+            "42 in top rail, bolted through the stringer with two 13/16 holes. With posts, each platform "
+            "also gets one near each end of its outer channel, bolted through the web, its heel the "
+            "outer distance in from the platform end. The inner distance is for the inner rail, which "
+            "is not built yet."
         ),
         justify="left",
         wraplength=640,
-    ).grid(row=9, column=0, columnspan=8, sticky="w", pady=(0, 4))
+    ).grid(row=10, column=0, columnspan=8, sticky="w", pady=(0, 4))
 
     summary_var = tk.StringVar(value="")
     ttk.Label(top, textvariable=summary_var, justify="left").grid(
-        row=10, column=0, columnspan=8, sticky="w", pady=(4, 4)
+        row=11, column=0, columnspan=8, sticky="w", pady=(4, 4)
     )
 
-    ttk.Label(top, text="Plan of the formed stringer").grid(row=11, column=0, columnspan=8, sticky="w")
+    ttk.Label(top, text="Plan of the formed stringer").grid(row=12, column=0, columnspan=8, sticky="w")
     plan = tk.Canvas(top, width=_PLAN, height=_PLAN, background="#f4f1ea", highlightthickness=1)
-    plan.grid(row=12, column=0, columnspan=8, sticky="w")
+    plan.grid(row=13, column=0, columnspan=8, sticky="w")
 
     def read_wall() -> float:
         try:
@@ -451,6 +481,15 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         status_var.set(f"Stringer → {result.title}")
         messagebox.showinfo("Stringer", f"{result.title}\n\n{result.note}")
 
+    def read_post_in(var: tk.StringVar, side: str) -> float:
+        try:
+            value = float(var.get().strip())
+        except ValueError as exc:
+            raise ValueError(f"The {side} platform post distance must be a number of inches.") from exc
+        if value < 0:
+            raise ValueError(f"The {side} platform post distance cannot be negative.")
+        return value
+
     def read_braces(count: int) -> tuple[int, ...]:
         braces = parse_brace_treads(braces_var.get())
         over = [index for index in braces if index > count]
@@ -466,8 +505,11 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             current.validate()
             wall = read_wall()
             platforms = read_platforms(current.treads)
-            pans = flight_treads(current.treads, platforms) * (platforms + 1)
-            braces = read_braces(pans)
+            per_flight = flight_treads(current.treads, platforms)
+            braces = read_braces(per_flight * (platforms + 1))
+            posts = read_post_treads(posts_var.get(), per_flight)
+            post_in = read_post_in(post_in_out_var, "outer")
+            read_post_in(post_in_inner_var, "inner")
         except ValueError as exc:
             messagebox.showerror("Stair", str(exc) if str(exc) else "Pan wall must be numeric.")
             return
@@ -481,7 +523,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             session = connect()
             result = build_stair(
                 session.app, current, wall, progress=progress, shell=with_shell, platforms=platforms,
-                top_platform=top_platform,
+                top_platform=top_platform, posts=posts, platform_post_in=post_in,
             )
             notes = [result.note]
             if braces:
@@ -502,7 +544,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
 
         stages = _stair_stage_plan(
             current.treads, shell=with_shell, braces=braces, knees=knees, inner=inner, platforms=platforms,
-            top_platform=top_platform,
+            top_platform=top_platform, posts=posts,
         )
         run_job("Stair", stages, work)
 
