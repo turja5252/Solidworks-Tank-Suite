@@ -20,6 +20,7 @@ from swauto.stair.brace_sw import (
 from swauto.stair.development import MAX_PLATFORMS, flight_treads, stair_plan
 from swauto.stair.inner_clip_sw import add_inner_clip, clip_angle_profile
 from swauto.stair.post_sw import PLATFORM_POST_IN, read_post_treads
+from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN, check_platform_mid_top
 from swauto.stair.stringer import (
     TREAD_DEPTH_IN,
     TREAD_MARK_IN,
@@ -130,7 +131,7 @@ def _brace_stage_plan(
 
 def _stair_stage_plan(
     treads: int, *, shell: bool = True, braces=(), knees: bool = False, inner: bool = False,
-    platforms: int = 0, top_platform: bool = False, posts=(), top_rail: bool = False,
+    platforms: int = 0, top_platform: bool = False, posts=(), top_rail: bool = False, mid_rail: bool = False,
 ) -> list[tuple[frozenset[str], str]]:
     """One equal share per progress line the stair build actually emits.
 
@@ -198,13 +199,14 @@ def _stair_stage_plan(
                 (frozenset({f"{key} holes cut", f"{key} holes missed"}), f"platform post holes {k * per_flight}{end}")
             )
     landings = platforms + (1 if top_platform else 0)
-    for k in range(platforms + 1) if top_rail and posts else ():
-        plan.append((frozenset({f"EliteRailF{k + 1} placed"}), f"top rail flight {k + 1}"))
-        if k < landings:
-            key = f"ElitePlatform{(k + 1) * per_flight:02d}Rail"
-            for end in ("A", "B") if k < platforms else ("A",):
-                plan.append((frozenset({f"{key}{end} placed"}), f"top rail landing {(k + 1) * per_flight}{end}"))
-            plan.append((frozenset({f"{key} placed"}), f"platform top rail {(k + 1) * per_flight}"))
+    for run, label, wanted in (("Rail", "top rail", top_rail), ("Mid", "midrail", mid_rail)):
+        for k in range(platforms + 1) if wanted and posts else ():
+            plan.append((frozenset({f"Elite{run}F{k + 1} placed"}), f"{label} flight {k + 1}"))
+            if k < landings:
+                key = f"ElitePlatform{(k + 1) * per_flight:02d}{run}"
+                for end in ("A", "B") if k < platforms else ("A",):
+                    plan.append((frozenset({f"{key}{end} placed"}), f"{label} landing {(k + 1) * per_flight}{end}"))
+                plan.append((frozenset({f"{key} placed"}), f"platform {label} {(k + 1) * per_flight}"))
     plan.extend(_brace_stage_plan(braces, knees=knees, inner=inner, tops=_flight_tops(treads, platforms)))
     return plan
 
@@ -319,6 +321,11 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     ttk.Entry(post_options, textvariable=post_in_inner_var, width=5).pack(side="left", padx=(6, 0))
     top_rail_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(post_options, text="Top rail", variable=top_rail_var).pack(side="left", padx=(12, 0))
+    mid_rail_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(post_options, text="Midrail", variable=mid_rail_var).pack(side="left", padx=(12, 0))
+    mid_top_var = tk.StringVar(value=_fmt_num(PLATFORM_MID_TOP_IN))
+    ttk.Label(post_options, text="top on platforms").pack(side="left", padx=(6, 0))
+    ttk.Entry(post_options, textvariable=mid_top_var, width=5).pack(side="left", padx=(6, 0))
     knee_var = tk.BooleanVar(value=True)
     inner_var = tk.BooleanVar(value=True)
     brace_options = ttk.Frame(top)
@@ -359,7 +366,10 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "outer distance in from the platform end. The inner distance is for the inner rail, which "
             "is not built yet. Top rail runs an L2x2x1/4 42 in up over the outer posts, rolled to a helix on "
             "each flight, mitered to a level piece where it reaches a platform, and bolted to the platform "
-            "post through a short vertical end piece; each platform has its own rail between its posts."
+            "post through a short vertical end piece; each platform has its own rail between its posts. "
+            "Midrail runs a 2 x 1/4 flat bar on the walk side of the posts, 21 in up on the flights and "
+            "its top on platforms (24 in by default) across them, level to 1/4 in short of the same end "
+            "pieces, which come down to its bottom."
         ),
         justify="left",
         wraplength=640,
@@ -523,6 +533,12 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             post_in = read_post_in(post_in_out_var, "outer")
             read_post_in(post_in_inner_var, "inner")
             top_rail = bool(top_rail_var.get()) and bool(posts)
+            mid_rail = bool(mid_rail_var.get()) and bool(posts)
+            try:
+                mid_top = float(mid_top_var.get().strip())
+            except ValueError as exc:
+                raise ValueError("The platform midrail top must be a number of inches.") from exc
+            check_platform_mid_top(mid_top)
         except ValueError as exc:
             messagebox.showerror("Stair", str(exc) if str(exc) else "Pan wall must be numeric.")
             return
@@ -537,6 +553,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             result = build_stair(
                 session.app, current, wall, progress=progress, shell=with_shell, platforms=platforms,
                 top_platform=top_platform, posts=posts, platform_post_in=post_in, top_rail=top_rail,
+                mid_rail=mid_rail, platform_mid_top=mid_top,
             )
             notes = [result.note]
             if braces:
@@ -557,7 +574,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
 
         stages = _stair_stage_plan(
             current.treads, shell=with_shell, braces=braces, knees=knees, inner=inner, platforms=platforms,
-            top_platform=top_platform, posts=posts, top_rail=top_rail,
+            top_platform=top_platform, posts=posts, top_rail=top_rail, mid_rail=mid_rail,
         )
         run_job("Stair", stages, work)
 
