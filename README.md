@@ -14,6 +14,7 @@ Inspired by your Elite AutoLISP Tank Properties (ETP) workflow and by how apps l
 
 | Tab | What it does |
 |-----|----------------|
+| **Preview** | Instant elevation / plan / 3/4 view from `TankProject` — no SolidWorks wait |
 | **Tank Properties** | Diameter + basis, up to 8 courses, plate layout / stagger, live curved shell plates, Save/Load JSON (+ ETP-style sidecar) |
 | **Floor** | Lap-welded shoulder plate layout + SolidWorks build |
 | **Roof** | Cone roof (bar/angle ring), flat pattern, roof plate layout |

@@ -11,6 +11,7 @@ from swauto.session import connect
 from swauto.stair.stringer_gui import build_stringer_tab, build_tread_joint_tab
 from swauto.tank.floor_gui import build_floor_tab
 from swauto.tank.gui import build_tank_tab
+from swauto.tank.preview_gui import build_preview_tab
 from swauto.tank.project import TankProject
 from swauto.tank.roof_gui import build_roof_tab
 
@@ -28,18 +29,21 @@ def main() -> int:
 
     # One coherent tank: shell hub + module specs; tabs subscribe for sync.
     project = TankProject()
+    preview_tab = ttk.Frame(notebook)
     tank_tab = ttk.Frame(notebook)
     floor_tab = ttk.Frame(notebook)
     roof_tab = ttk.Frame(notebook)
     stringer_tab = ttk.Frame(notebook)
     joint_tab = ttk.Frame(notebook)
     cyl_tab = ttk.Frame(notebook)
+    notebook.add(preview_tab, text="Preview")
     notebook.add(tank_tab, text="Tank Properties")
     notebook.add(floor_tab, text="Floor")
     notebook.add(roof_tab, text="Roof")
     notebook.add(stringer_tab, text="Stringer")
     notebook.add(joint_tab, text="Tread Joint")
     notebook.add(cyl_tab, text="Live Cylinder")
+    build_preview_tab(preview_tab, status_var, project)
     build_tank_tab(tank_tab, status_var, project)
     build_floor_tab(floor_tab, status_var, project)
     build_roof_tab(roof_tab, status_var, project)
