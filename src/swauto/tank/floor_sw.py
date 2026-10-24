@@ -11,6 +11,7 @@ import contextlib
 import time
 
 from swauto.comutil import com_value, format_com_error
+from swauto.display import display_frozen, redraw
 from swauto.errors import SolidWorksError
 from swauto.features import find_feature, iter_features
 from swauto.params import rename_feature
@@ -37,9 +38,13 @@ def create_floor(
     *,
     model=None,
     on_row=None,
-    pause_s: float = 0.65,
+    pause_s: float = 0.12,
 ) -> FloorResult:
     """Add the floor to ``model``, or open a new part when ``model`` is omitted.
+
+    Graphics stay frozen while a row's plates are created (SW spends time on
+    features, not paints). After each row the view refreshes so the row-by-row
+    animation still shows. ``pause_s`` is only the beat between rows.
 
     ``on_row(row_number, row_count)`` runs after that row exists, before the pause.
     """
@@ -59,14 +64,14 @@ def create_floor(
         built = 0
         for index, row in enumerate(rows, start=1):
             tint = ROW_COLORS[(index - 1) % len(ROW_COLORS)]
-            for plate in row:
-                try:
-                    _build_plate(target, plate, spec.thickness_in * _INCH, tint)
-                except SolidWorksError as exc:
-                    warnings.append(str(exc))
-                    continue
-                built += 1
-            _redraw(target)
+            with display_frozen(target):
+                for plate in row:
+                    try:
+                        _build_plate(target, plate, spec.thickness_in * _INCH, tint)
+                    except SolidWorksError as exc:
+                        warnings.append(str(exc))
+                        continue
+                    built += 1
             if on_row is not None:
                 on_row(index, len(rows))
             if pause_s > 0:
@@ -77,7 +82,7 @@ def create_floor(
         raise SolidWorksError(f"Floor failed ({_where(exc)}): {format_com_error(exc)}") from exc
 
     _hide_sketch(target, RIM_NAME)
-    _redraw(target)
+    redraw(target)
     if built == 0:
         detail = "\n".join(warnings) if warnings else "No plate extrude succeeded."
         raise SolidWorksError(f"No floor plates were created.\n{detail}")
@@ -271,16 +276,6 @@ def _tint(model, feature, rgb: tuple[float, float, float]) -> None:
             0.0,
         )
         model.ClearSelection2(True)
-
-
-def _redraw(model) -> None:
-    with contextlib.suppress(Exception):
-        view = model.ActiveView
-        view.EnableGraphicsUpdate = True
-    with contextlib.suppress(Exception):
-        model.GraphicsRedraw2()
-    with contextlib.suppress(Exception):
-        model.WindowRedraw()
 
 
 def _delete_floor_features(model) -> None:
