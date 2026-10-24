@@ -79,17 +79,22 @@ Not copying AMETank/SMARTANK — Elite’s own SolidWorks tool using your AutoLI
 
 | Concern | Status |
 |---------|--------|
-| Unified tank session (one spec → shell → floor → roof → …) | **gap** — tabs still mostly independent |
-| JSON / ETP round-trip across modules | partial (shell today) |
+| Unified tank session (`TankProject` in `src/swauto/tank/project.py`) | **now** — shared shell hub; Floor / Roof / Stringer follow shell OD & height; Save/Load project JSON |
+| Same SolidWorks document for attach | partial — floor/roof reuse live shell model when present |
+| JSON / ETP round-trip across modules | project JSON (v1) + shell ETP sidecar |
 
 ## Suggested build waves
 
 1. **Close stair** — acceptance on Solidworks PC; math tests where possible  
-2. **Unify session** — shared `TankSpec` / document so later modules attach cleanly  
-3. **Shell nozzles (RNC)** → **roof nozzles** → **FTCO** (shared opening schedule model)  
+2. **Deepen `TankProject`** — openings/access slots on the same project; one rebuild order on the live part  
+3. **Shell nozzles (RNC)** → **roof nozzles** → **FTCO** (shared opening schedule on the project)  
 4. **Roof platform** (needs roof + often stair/ladder attachment points)  
 5. **Anchor chairs** + **internal piping**  
 6. **Export / drawings**; API-650 on its own track  
+
+### Coherent tank (how modules talk)
+
+The app builds one `TankProject` at launch. Tank Properties writes the shell; Floor, Roof, and Stringer subscribe and can **Follow shell** so diameter / top radii / height stay aligned. Builds prefer the live shell SolidWorks document. Use **Save project…** / **Load project…** on Tank Properties for a single JSON covering shell + floor + roof + stair params.
 
 We are **not** copying AMETank/SMARTANK. We are porting Elite’s AutoLISP parameter model into SolidWorks, module by module.
 
