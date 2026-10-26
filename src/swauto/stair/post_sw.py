@@ -7,16 +7,19 @@ edge is 1/2 in downhill of the tread's front edge and its foot is 1/2 in above
 the tread below, so the first tread of a flight has no post. The top is cut
 along the rail slope 3/4 in, square to the slope, under the top rail's top
 edge, which is 42 in above the stringer's top edge (HR_TOPMID in
-SpiralStairHandrail.lsp). Two 13/16 holes go through the leg and the stringer,
-1-1/8 in from the heel, 1 in and 4 in above the foot.
+SpiralStairHandrail.lsp), and the outstanding leg is cut back 45 degrees from
+its root down to its toe so fingers sliding along under the rail clear it. Two
+13/16 holes go through the leg and the stringer, 1-1/8 in from the heel, 1 in
+and 4 in above the foot.
 
 Each platform has a post at both ends of its outer channel (Stair Platform Top
 View.lsp, Stair Platform Streatchout.lsp): the flat leg on the outside of the
 web running toward the platform middle, heel a set distance in from the
 platform end (the lisp's "move posts inwards"), the other leg straight out. It runs from 1/4 in above the channel bottom to
-1/4 in under the platform's 42 in top rail, square, and bolts through the web
-with two 13/16 holes 1-3/4 in apart, one above the other on the channel's
-mid-depth, 1-1/8 in from the heel.
+3/4 in under the platform's 42 in top rail, square, the same weld gap as on the
+flights, with the outstanding leg cut back 45 degrees the same way, and bolts
+through the web with two 13/16 holes 1-3/4 in apart, one above the other on the
+channel's mid-depth, 1-1/8 in from the heel.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from swauto.stair.platform_sw import (
     _hole_in,
     _library,
     _radial,
+    _travel,
     _upright_angle,
     _world,
     platform_lines,
@@ -56,7 +60,6 @@ HOLE_UP_IN = (1.0, 4.0)  # above the foot
 HOLE_DIA_IN = 0.8125
 PLATFORM_POST_IN = 4.0  # heel in from the platform end, along the outer channel
 PLATFORM_FOOT_IN = 0.25  # above the channel bottom
-PLATFORM_TOP_GAP_IN = 0.25  # under the top rail's top edge, 42 in above the grating
 PLATFORM_HOLE_SPACE_IN = 1.75  # one above the other, centered on the channel's depth
 
 
@@ -119,7 +122,7 @@ def post_layout(places, per_flight: int, picks: tuple[int, ...], r_b: float) -> 
 
 
 def add_handrail_posts(model, posts: list[Post], *, r_b: float, profile: str, progress=None) -> BraceResult:
-    """Each post, its top cut along the rail, and its two bolt holes through the stringer.
+    """Each post, its top cut along the rail and cut back 45 degrees, and its two bolt holes through the stringer.
 
     ``profile`` is from ``post_profile``.
     """
@@ -129,6 +132,7 @@ def add_handrail_posts(model, posts: list[Post], *, r_b: float, profile: str, pr
         name = f"ElitePost{post.index:02d}"
         _upright_angle(model, post.phi, face_r, 1.0, 1.0, (post.foot, post.top(LEG_IN) + 0.1), LEG_IN, profile, name)
         _top_cut(model, post, face_r, name)
+        _cutback(model, post.phi, face_r, 0.0, 1.0, post.foot, post.top(THK_IN), name)
         _progress(progress, f"{name} placed")
         holes = _holes(model, post, face_r, r_b, name)
         if not holes:
@@ -139,8 +143,8 @@ def add_handrail_posts(model, posts: list[Post], *, r_b: float, profile: str, pr
     treads = ", ".join(str(p.index) for p in posts)
     note = (
         f"L2x2x1/4 handrail posts in front of tread{'s' if len(posts) > 1 else ''} {treads} on the outer "
-        f"stringer, tops cut along the rail {TOP_GAP_IN:g} in under the 42 in top rail, two 13/16 holes each "
-        "through the stringer."
+        f"stringer, tops cut along the rail {TOP_GAP_IN:g} in under the 42 in top rail and the outstanding leg "
+        "cut back 45 degrees, two 13/16 holes each through the stringer."
         + (f" Holes missed at tread(s) {', '.join(missed)}." if missed else "")
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
@@ -158,7 +162,7 @@ def add_platform_posts(
     end_t = lines.r_out * math.sin(half) - post_in
     if end_t < LEG_IN + 1.0:
         raise SolidWorksError(f"Platform posts {post_in:g} in from the ends would meet in the middle.")
-    ys = (lines.top - CHANNEL_IN + PLATFORM_FOOT_IN, tread_top + RAIL_TOP_IN - PLATFORM_TOP_GAP_IN)
+    ys = (lines.top - CHANNEL_IN + PLATFORM_FOOT_IN, tread_top + RAIL_TOP_IN - TOP_GAP_IN)
     name = f"ElitePlatform{tread_index:02d}Post"
     mid = lines.phi_a + half
     middle = lines.top - CHANNEL_IN / 2.0
@@ -167,6 +171,7 @@ def add_platform_posts(
     for label, heel_t, away in (("A", -end_t, 1.0), ("B", end_t, -1.0)):
         tag = f"{name}{label}"
         _upright_angle(model, mid, web_r, 1.0, away, ys, LEG_IN, profile, tag, heel_t=heel_t)
+        _cutback(model, mid, web_r, heel_t, away, ys[0], ys[1], tag)
         _progress(progress, f"{tag} placed")
         holes = _platform_holes(model, mid, web_r, heel_t + away * HOLE_GAUGE_IN, hole_ys, tag)
         if not holes:
@@ -176,7 +181,8 @@ def add_platform_posts(
         s._hide_construction(model)
     note = (
         f"Platform after tread {tread_index}: L2x2x1/4 posts {ys[1] - ys[0]:.2f} in long, {post_in:g} in in from "
-        "both ends of the outer channel, bolted through its web with two 13/16 holes 1-3/4 in apart."
+        "both ends of the outer channel, outstanding legs cut back 45 degrees, bolted through its web with two "
+        "13/16 holes 1-3/4 in apart."
         + (f" Holes missed at end(s) {', '.join(missed)}." if missed else "")
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
@@ -237,6 +243,31 @@ def _top_cut(model, post: Post, face_r: float, name: str) -> None:
 
     if not _cut(model, face, f"{name}Top", draw, LEG_IN + 0.5):
         raise SolidWorksError(f"{name}: the top was not cut along the rail.")
+
+
+def _cutback(
+    model, line_phi: float, heel_r: float, heel_t: float, away: float, foot: float, top: float, name: str,
+) -> None:
+    """Cut the outstanding leg of an upright angle back 45 degrees from ``top`` at its root down to its toe.
+
+    The heel is at ``heel_r`` on the radial line at ``line_phi``, ``heel_t`` along the travel, the
+    other leg running ``away`` along it. Sketched on the leg's inside face, outside the other leg
+    and no more than 0.1 in over the top, so cut before the rails go on it takes nothing else.
+    """
+    face_t = heel_t + away * THK_IN
+    normal = tuple(away * v for v in _travel(line_phi))
+    face = _face_at(s._bodies(model), _world(line_phi, heel_r + THK_IN + LEG_IN / 2.0, face_t, foot + 2.5), normal)
+    root, past = heel_r + THK_IN, heel_r + LEG_IN + 0.5
+    corners = ((root, top + 0.1), (root, top), (past, top - (past - root)), (past, top + 0.1))
+
+    def draw(manager, to_sketch):
+        pts = [to_sketch(_world(line_phi, r, face_t, y)) for r, y in corners]
+        for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
+            if manager.CreateLine(ax, ay, 0.0, bx, by, 0.0) is None:
+                raise SolidWorksError(f"{name}: cutback edge failed.")
+
+    if not _cut(model, face, f"{name}Cutback", draw, THK_IN + 0.1):
+        raise SolidWorksError(f"{name}: the outstanding leg was not cut back 45 degrees.")
 
 
 def _holes(model, post: Post, face_r: float, r_b: float, name: str) -> bool:

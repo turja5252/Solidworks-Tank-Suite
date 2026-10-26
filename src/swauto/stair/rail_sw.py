@@ -5,12 +5,14 @@ From SpiralStairHandrail.lsp (HR_TOPMID), SpiralStairHandrailWrap.lsp, Stair Pla
 Streatchout.lsp and Stair Platform Top View.lsp. The top edge is 42 in above the stringer's
 top edge on the stair and 42 in above the grating on a platform. One leg is on top, reaching
 out over the post tops; the other hangs on the walk side against the posts' flat legs. On the
-stair the section is square to the slope and the angle is rolled to a helix.
+stair the section is square to the slope, with the library angle's 3/16 root fillet and toe
+rounds, and the angle is rolled to a helix.
 
 Where a flight meets a platform the helix is mitered to a short level piece at the front edge
 of the flight's tread that is level with the platform. The level piece runs to a vertical
 L2x2 standing back to back with the platform post's outstanding leg, from the platform
-midrail's bottom up under the rail, bolted to the post with two 13/16 bolts 11-1/2 in apart.
+midrail's bottom up to 3/4 in under the rail's top, the posts' weld gap, bolted to the post with
+two 13/16 bolts 11-1/2 in apart.
 The platform's rail is its own piece between its two posts. The bottom flight starts one
 tread run below its first tread, where the stringer's top edge comes down to tread zero, as
 the lisp's automatic lower overhang does.
@@ -39,7 +41,16 @@ from swauto.stair.brace_sw import (
 )
 from swauto.stair.inner_clip_sw import _member
 from swauto.stair.platform_sw import _cut, _radial, _travel, _upright_angle, _world, platform_lines
-from swauto.stair.post_sw import HOLE_DIA_IN, HOLE_GAUGE_IN, LEG_IN, PLATFORM_POST_IN, RAIL_TOP_IN, THK_IN
+from swauto.stair.post_sw import (
+    HOLE_DIA_IN,
+    HOLE_GAUGE_IN,
+    LEG_IN,
+    PLATFORM_POST_IN,
+    RAIL_TOP_IN,
+    THK_IN,
+    TOP_GAP_IN,
+    _cutback,
+)
 from swauto.stair.stringer import THICKNESS_IN, TREAD_DEPTH_IN
 from swauto.stair.stringer_sw import _create_circle, _names, _rename_new, _select_feature
 from swauto.tank.shell import _clear_selection, _close_sketch, _open_sketch
@@ -53,11 +64,13 @@ PLATFORM_MID_TOP_IN = 24.0  # the lisp's default over the grating; the end piece
 END_BOLT_SPACE_IN = 11.5  # centered on the end piece
 END_BOLT_EDGE_IN = 1.0  # end piece past each bolt, at the least
 WELD_GAP_IN = 0.25  # a level flat bar stops this short of the end piece's edge
-# Outlines from the top outer corner, as (out, up); up is stretched by 1/cos of the slope on a flight.
+ROUND_IN = 0.1875  # the library L2x2x1/4's root fillet and the inside corner of each toe
+# Outlines from the top outer corner, as (out, up, round); up is stretched by 1/cos of the slope on a flight.
 ANGLE_SECTION = (
-    (-THK_IN, 0.0), (LEG_IN - THK_IN, 0.0), (LEG_IN - THK_IN, -THK_IN), (0.0, -THK_IN), (0.0, -LEG_IN), (-THK_IN, -LEG_IN),
+    (-THK_IN, 0.0, 0.0), (LEG_IN - THK_IN, 0.0, 0.0), (LEG_IN - THK_IN, -THK_IN, ROUND_IN),
+    (0.0, -THK_IN, ROUND_IN), (0.0, -LEG_IN, ROUND_IN), (-THK_IN, -LEG_IN, 0.0),
 )
-BAR_SECTION = ((-BAR_THK_IN, 0.0), (0.0, 0.0), (0.0, -BAR_IN), (-BAR_THK_IN, -BAR_IN))
+BAR_SECTION = ((-BAR_THK_IN, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, -BAR_IN, 0.0), (-BAR_THK_IN, -BAR_IN, 0.0))
 
 
 @dataclass(frozen=True)
@@ -85,8 +98,8 @@ class _Flight:
 
 def check_platform_mid_top(mid_top: float) -> float:
     """The platform midrail's top over the grating, if the end pieces down to its bottom still take both bolts."""
-    # The bolts center on the span up to the rail's top, 1/4 in over the end piece's, so its top margin binds.
-    highest = RAIL_TOP_IN - 2.0 * THK_IN - END_BOLT_SPACE_IN - 2.0 * END_BOLT_EDGE_IN + BAR_IN
+    # The bolts center on the span up to the rail's top, over the end piece's by the weld gap, so its top margin binds.
+    highest = RAIL_TOP_IN - 2.0 * TOP_GAP_IN - END_BOLT_SPACE_IN - 2.0 * END_BOLT_EDGE_IN + BAR_IN
     lowest = BAR_IN + 10.0
     if not lowest <= mid_top <= highest:
         raise ValueError(
@@ -190,6 +203,45 @@ def add_mid_rails(
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
 
 
+def add_bottom_end(model, places, per_flight: int, *, r_b: float, profile: str, progress=None) -> BraceResult:
+    """Close the rails' free end at the foot of the stair with HR_TOPMID's end rail.
+
+    A vertical L2x2x1/4 drops from the top rail's low end to the midrail's bottom: the rail's
+    section turned down about the radial, one leg in line with the rails 2 in back from the end,
+    the other turned out under the top rail's top leg. It meets the top rail in a miter (the
+    lisp's line G) from the rail's top at the end to its bottom 2 in in, and the midrail butts
+    against it. Both rails go in first.
+    """
+    face_r = r_b + THICKNESS_IN
+    flight = _flights(places, per_flight, r_b)[0]
+    stretch = 1.0 / math.cos(math.atan(flight.rise_per_rad / face_r))
+    drop = RAIL_TOP_IN - MID_TOP_IN
+    end = flight.front(flight.first) - flight.step  # where the rails start, as add_top_rails starts them
+    inner = end + LEG_IN / face_r
+    name = "EliteRailBottomEnd"
+    corner = _world(end, face_r, 0.0, flight.top(end))
+    along = flight.tangent(end, face_r)
+    # Square to the bisector of up the rail and down the end piece.
+    normal = _unit((along[0], along[1] + 1.0, along[2]))
+    _trim(model, set(), corner, tuple(-v for v in normal), f"{name}RailMiter")
+    _trim(
+        model, set(), _world(inner, face_r, 0.0, flight.top(inner) - drop), tuple(-v for v in _travel(inner)),
+        f"{name}MidTrim",
+    )
+    bodies0 = s._body_names(model)
+    ys = (flight.top(inner) - drop - BAR_IN * stretch, flight.top(end) + 0.5)
+    _upright_angle(model, end, face_r - THK_IN, 1.0, 1.0, ys, LEG_IN, profile, name)
+    _trim(model, bodies0, corner, normal, f"{name}Miter")
+    _progress(progress, f"{name} placed")
+    with contextlib.suppress(Exception):
+        s._hide_construction(model)
+    note = (
+        "Rails closed at the foot of the stair with an L2x2x1/4 drop from the top rail, mitered to it, down "
+        "to the midrail's bottom; the midrail butts against it."
+    )
+    return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
+
+
 def _flights(places, per_flight: int, r_b: float) -> list[_Flight]:
     flights = []
     for first in range(0, len(places), per_flight):
@@ -221,11 +273,10 @@ def _helix_rail(
     try:
         sketch = com_value(model.GetActiveSketch2)
         data = [float(v) for v in com_value(com_value(sketch.ModelToSketchTransform).ArrayData)]
-        corners = [(face_r + out, top + up * stretch) for out, up in section]
-        pts = [s._to_sketch(data, [v * _INCH for v in _world(start, r, 0.0, y)])[:2] for r, y in corners]
-        for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
-            if model.SketchManager.CreateLine(ax, ay, 0.0, bx, by, 0.0) is None:
-                raise SolidWorksError(f"{name}: rail profile edge failed.")
+        _draw_section(
+            model.SketchManager, section, name,
+            lambda out, up: s._to_sketch(data, [v * _INCH for v in _world(start, face_r + out, 0.0, top + up * stretch)])[:2],
+        )
     except Exception:
         s._recover(model)
         raise
@@ -245,6 +296,42 @@ def _helix_rail(
     with contextlib.suppress(Exception):
         rename_feature(feature, name)
     s._rebuild(model)
+
+
+def _draw_section(manager, section, name: str, at) -> None:
+    """Outline of ``section``, its (out, up, round) corners put in the sketch by ``at``. A round is a
+    quarter circle of the true section, so a quarter ellipse where ``at`` stretches it up."""
+    count = len(section)
+    corners = []  # (entry, exit, center) of each corner, in (out, up)
+    for i, (out, up, rnd) in enumerate(section):
+        if not rnd:
+            corners.append(((out, up), (out, up), None))
+            continue
+        back = _unit((section[i - 1][0] - out, section[i - 1][1] - up))
+        ahead = _unit((section[(i + 1) % count][0] - out, section[(i + 1) % count][1] - up))
+        corners.append((
+            (out + rnd * back[0], up + rnd * back[1]),
+            (out + rnd * ahead[0], up + rnd * ahead[1]),
+            (out + rnd * (back[0] + ahead[0]), up + rnd * (back[1] + ahead[1])),
+        ))
+    for i, (entry, exit_, center) in enumerate(corners):
+        if center is not None:
+            rnd = section[i][2]
+            c, a, b = at(*center), at(*entry), at(*exit_)
+            spin = 1 if (a[0] - c[0]) * (b[1] - c[1]) - (a[1] - c[1]) * (b[0] - c[0]) > 0 else -1
+            up_end, out_end = at(center[0], center[1] + rnd), at(center[0] + rnd, center[1])
+            if math.dist(up_end, c) > math.dist(out_end, c) * (1.0 + 1e-6):
+                arc = manager.CreateEllipticalArc(
+                    c[0], c[1], 0.0, up_end[0], up_end[1], 0.0, out_end[0], out_end[1], 0.0,
+                    a[0], a[1], 0.0, b[0], b[1], 0.0, spin,
+                )
+            else:
+                arc = manager.CreateArc(c[0], c[1], 0.0, a[0], a[1], 0.0, b[0], b[1], 0.0, spin)
+            if arc is None:
+                raise SolidWorksError(f"{name}: rail profile round failed.")
+        a, b = at(*exit_), at(*corners[(i + 1) % count][0])
+        if manager.CreateLine(a[0], a[1], 0.0, b[0], b[1], 0.0) is None:
+            raise SolidWorksError(f"{name}: rail profile edge failed.")
 
 
 # ------------------------------------------------------------------ landings
@@ -380,7 +467,7 @@ def _flat_bar(model, a, b, out, name: str) -> None:
     try:
         sketch = com_value(model.GetActiveSketch2)
         data = [float(v) for v in com_value(com_value(sketch.ModelToSketchTransform).ArrayData)]
-        corners = [tuple(a[i] + across * out[i] + (up if i == 1 else 0.0) for i in range(3)) for across, up in BAR_SECTION]
+        corners = [tuple(a[i] + across * out[i] + (up if i == 1 else 0.0) for i in range(3)) for across, up, _ in BAR_SECTION]
         pts = [s._to_sketch(data, [v * _INCH for v in p])[:2] for p in corners]
         for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
             if model.SketchManager.CreateLine(ax, ay, 0.0, bx, by, 0.0) is None:
@@ -413,10 +500,12 @@ def _flat_bar(model, a, b, out, name: str) -> None:
 
 def _end_piece(model, post: _Post, profile: str, mid_top: float, name: str) -> None:
     """L2x2 back to back with the post's outstanding leg, its other leg along the channel toward the end,
-    from the platform midrail's bottom up under the top rail, bolted to the post at its middle."""
-    ys = (post.grating + mid_top - BAR_IN, post.grating + RAIL_TOP_IN - THK_IN)
+    from the platform midrail's bottom up to the posts' weld gap under the top rail, cut back 45 degrees
+    with the post and bolted to it at its middle."""
+    ys = (post.grating + mid_top - BAR_IN, post.grating + RAIL_TOP_IN - TOP_GAP_IN)
     _upright_angle(model, post.mid, post.web_r, 1.0, post.away, ys, LEG_IN, profile, name, heel_t=post.heel_t)
-    middle = (ys[0] + ys[1] + THK_IN) / 2.0  # the span up to the top rail's top, as the lisp centers it
+    _cutback(model, post.mid, post.web_r, post.heel_t, post.away, ys[0], ys[1], name)
+    middle = (ys[0] + post.grating + RAIL_TOP_IN) / 2.0  # the span up to the top rail's top, as the lisp centers it
     centers = [post.world(HOLE_GAUGE_IN, post.away * THK_IN, middle + dy)
                for dy in (END_BOLT_SPACE_IN / 2.0, -END_BOLT_SPACE_IN / 2.0)]
     radius = HOLE_DIA_IN / 2.0 * _INCH
@@ -570,6 +659,10 @@ def _miter_piece(model, bodies0: set[str], point):
     for body in s._bodies(model):
         if str(body.Name) in bodies0:
             continue
+        with contextlib.suppress(Exception):
+            box = s._box_in(body)
+            if not all(box[i] - 1.0 <= point[i] <= box[i + 3] + 1.0 for i in range(3)):
+                continue
         points = _body_points(body)
         if not points:
             continue
@@ -583,31 +676,37 @@ def _plane_through(model, point, normal, name: str):
     """Reference plane through ``point`` square to ``normal``: from a 3D sketch line along the normal."""
     a = [v * _INCH for v in point]
     b = [(point[i] + normal[i]) * _INCH for i in range(3)]
-    before = _names(model)
     manager = model.SketchManager
-    with contextlib.suppress(Exception):
-        manager.AddToDB = True
-    # With a sketch selected, Insert3DSketch opens that sketch instead of a new one.
-    _clear_selection(model)
-    manager.Insert3DSketch(True)
-    line = manager.CreateLine(a[0], a[1], a[2], b[0], b[1], b[2])
-    manager.Insert3DSketch(True)
-    if line is None:
-        raise SolidWorksError(f"{name}: the miter line was not drawn.")
-    sketch = _rename_new(model, before, f"{name}LineSk", "miter line")
-    sketch_name = s._feature_name(sketch)
     nothing = com_nothing()
-    _clear_selection(model)
-    extension = model.Extension
-    if not (
-        extension.SelectByID2(f"Line1@{sketch_name}", "EXTSKETCHSEGMENT", 0, 0, 0, False, 0, nothing, 0)
-        and extension.SelectByID2(f"Point1@{sketch_name}", "EXTSKETCHPOINT", 0, 0, 0, True, 1, nothing, 0)
-    ):
-        raise SolidWorksError(f"{name}: could not select the miter line and its start.")
-    before = _names(model)
-    plane = model.FeatureManager.InsertRefPlane(2, 0.0, 4, 0.0, 0, 0.0)
-    _clear_selection(model)
-    if plane is None:
+    for _attempt in range(2):
+        before = _names(model)
+        with contextlib.suppress(Exception):
+            manager.AddToDB = True
+        # With a sketch selected, Insert3DSketch opens that sketch instead of a new one.
+        _clear_selection(model)
+        manager.Insert3DSketch(True)
+        line = manager.CreateLine(a[0], a[1], a[2], b[0], b[1], b[2])
+        manager.Insert3DSketch(True)
+        if line is None:
+            raise SolidWorksError(f"{name}: the miter line was not drawn.")
+        sketch = _rename_new(model, before, f"{name}LineSk", "miter line")
+        sketch_name = s._feature_name(sketch)
+        _clear_selection(model)
+        extension = model.Extension
+        if not (
+            extension.SelectByID2(f"Line1@{sketch_name}", "EXTSKETCHSEGMENT", 0, 0, 0, False, 0, nothing, 0)
+            and extension.SelectByID2(f"Point1@{sketch_name}", "EXTSKETCHPOINT", 0, 0, 0, True, 1, nothing, 0)
+        ):
+            raise SolidWorksError(f"{name}: could not select the miter line and its start.")
+        before = _names(model)
+        plane = model.FeatureManager.InsertRefPlane(2, 0.0, 4, 0.0, 0, 0.0)
+        _clear_selection(model)
+        if plane is not None:
+            break
+        # Right after a long feature SolidWorks now and then turns the plane down once; a new line takes.
+        s._delete_named(model, (sketch_name,))
+        s._rebuild(model)
+    else:
         raise SolidWorksError(f"{name}: the miter plane was not made.")
     plane = _rename_new(model, before, f"{name}Pln", "miter plane")
     rows = [float(v) for v in com_value(com_value(com_value(plane.GetSpecificFeature2).Transform).ArrayData)]

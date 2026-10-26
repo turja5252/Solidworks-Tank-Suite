@@ -18,8 +18,9 @@ from swauto.stair.brace_sw import (
     stair_flight_tops,
 )
 from swauto.stair.development import MAX_PLATFORMS, flight_treads, stair_plan
+from swauto.stair.grab_sw import GRAB_TOP_IN, GrabRail
 from swauto.stair.inner_clip_sw import add_inner_clip, clip_angle_profile
-from swauto.stair.post_sw import PLATFORM_POST_IN, read_post_treads
+from swauto.stair.post_sw import PLATFORM_POST_IN, RAIL_TOP_IN, read_post_treads
 from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN, check_platform_mid_top
 from swauto.stair.stringer import (
     TREAD_DEPTH_IN,
@@ -132,6 +133,7 @@ def _brace_stage_plan(
 def _stair_stage_plan(
     treads: int, *, shell: bool = True, braces=(), knees: bool = False, inner: bool = False,
     platforms: int = 0, top_platform: bool = False, posts=(), top_rail: bool = False, mid_rail: bool = False,
+    grab: bool = False,
 ) -> list[tuple[frozenset[str], str]]:
     """One equal share per progress line the stair build actually emits.
 
@@ -207,6 +209,13 @@ def _stair_stage_plan(
                 for end in ("A", "B") if k < platforms else ("A",):
                     plan.append((frozenset({f"{key}{end} placed"}), f"{label} landing {(k + 1) * per_flight}{end}"))
                 plan.append((frozenset({f"{key} placed"}), f"platform {label} {(k + 1) * per_flight}"))
+    if top_rail and mid_rail and posts:
+        plan.append((frozenset({"EliteRailBottomEnd placed"}), "rail end at the foot"))
+    for k in range(platforms + 1) if grab and posts else ():
+        plan.append((frozenset({f"EliteGrabF{k + 1} placed"}), f"grab rail flight {k + 1}"))
+    for index in (k * per_flight + pick for k in range(platforms + 1) for pick in posts) if grab else ():
+        key = f"EliteGrabBracket{index:02d}"
+        plan.append((frozenset({f"{key} placed", f"{key} skipped"}), f"grab rail connector {index}"))
     plan.extend(_brace_stage_plan(braces, knees=knees, inner=inner, tops=_flight_tops(treads, platforms)))
     return plan
 
@@ -326,6 +335,19 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     mid_top_var = tk.StringVar(value=_fmt_num(PLATFORM_MID_TOP_IN))
     ttk.Label(post_options, text="top on platforms").pack(side="left", padx=(6, 0))
     ttk.Entry(post_options, textvariable=mid_top_var, width=5).pack(side="left", padx=(6, 0))
+    grab_var = tk.BooleanVar(value=True)
+    grab_top_var = tk.StringVar(value=_fmt_num(GRAB_TOP_IN))
+    grab_low_var = tk.StringVar(value="0")
+    grab_high_var = tk.StringVar(value="0")
+    grab_options = ttk.Frame(top)
+    grab_options.grid(row=10, column=0, columnspan=8, sticky="w", pady=(4, 0))
+    ttk.Checkbutton(grab_options, text="Grab rail", variable=grab_var).pack(side="left")
+    ttk.Label(grab_options, text="pipe top").pack(side="left", padx=(6, 0))
+    ttk.Entry(grab_options, textvariable=grab_top_var, width=5).pack(side="left", padx=(6, 0))
+    ttk.Label(grab_options, text="ends +/-: low").pack(side="left", padx=(12, 0))
+    ttk.Entry(grab_options, textvariable=grab_low_var, width=5).pack(side="left", padx=(6, 0))
+    ttk.Label(grab_options, text="high").pack(side="left", padx=(8, 0))
+    ttk.Entry(grab_options, textvariable=grab_high_var, width=5).pack(side="left", padx=(6, 0))
     knee_var = tk.BooleanVar(value=True)
     inner_var = tk.BooleanVar(value=True)
     brace_options = ttk.Frame(top)
@@ -361,28 +383,40 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "Posts at flight treads: tread numbers in one flight, like 2, 4, repeated in every flight. Each "
             "gets an L2x2x1/4 handrail post on the outside of the outer stringer just in front of it, "
             "standing on the tread below (so not tread 1), its top cut along the rail 3/4 in under the "
-            "42 in top rail, bolted through the stringer with two 13/16 holes. With posts, each platform "
+            "42 in top rail and its outstanding leg cut back 45 degrees so fingers sliding along the rail "
+            "clear it, bolted through the stringer with two 13/16 holes. With posts, each platform "
             "also gets one near each end of its outer channel, bolted through the web, its heel the "
-            "outer distance in from the platform end. The inner distance is for the inner rail, which "
-            "is not built yet. Top rail runs an L2x2x1/4 42 in up over the outer posts, rolled to a helix on "
-            "each flight, mitered to a level piece where it reaches a platform, and bolted to the platform "
-            "post through a short vertical end piece; each platform has its own rail between its posts. "
+            "outer distance in from the platform end, cut back the same way and stopping the same 3/4 in "
+            "under the rail for the weld. The inner distance is for "
+            "the inner rail, which is not built yet. Top rail runs an L2x2x1/4 42 in up over the outer "
+            "posts, rolled to a helix on each flight with the library angle's 3/16 root fillet and toe "
+            "rounds, mitered to a level piece where it reaches a platform, and bolted to the platform "
+            "post through a short vertical end piece, cut back with the post; each platform has its own "
+            "rail between its posts. "
             "Midrail runs a 2 x 1/4 flat bar on the walk side of the posts, 21 in up on the flights and "
             "its top on platforms (24 in by default) across them, level to 1/4 in short of the same end "
-            "pieces, which come down to its bottom."
+            "pieces, which come down to its bottom. With both rails, an L2x2x1/4 drops from the top rail's "
+            "foot, mitered to it, to the midrail's bottom, and the midrail butts against it.\n"
+            "Grab rail runs a 1-1/2 in Sch 40 pipe, its top at the pipe top over the stringer's top edge "
+            "(34 in by default), rolled to a helix on the walk side of the outer posts. It starts over "
+            "tread 1's front edge and stops at each platform where the midrail meets the platform's, cut "
+            "square with a 1-5/8 in round cap welded on each end; ends +/- lengthens or shortens every "
+            "flight's pipe at its low and high end. Each flight post holds it on a PC #34, a 3/4 x 3/4 "
+            "quarter turn cut from 3/4 plate hanging under it: the foot's end welded to the post, the "
+            "upright under the pipe and cut to its slope."
         ),
         justify="left",
         wraplength=640,
-    ).grid(row=10, column=0, columnspan=8, sticky="w", pady=(0, 4))
+    ).grid(row=11, column=0, columnspan=8, sticky="w", pady=(0, 4))
 
     summary_var = tk.StringVar(value="")
     ttk.Label(top, textvariable=summary_var, justify="left").grid(
-        row=11, column=0, columnspan=8, sticky="w", pady=(4, 4)
+        row=12, column=0, columnspan=8, sticky="w", pady=(4, 4)
     )
 
-    ttk.Label(top, text="Plan of the formed stringer").grid(row=12, column=0, columnspan=8, sticky="w")
+    ttk.Label(top, text="Plan of the formed stringer").grid(row=13, column=0, columnspan=8, sticky="w")
     plan = tk.Canvas(top, width=_PLAN, height=_PLAN, background="#f4f1ea", highlightthickness=1)
-    plan.grid(row=13, column=0, columnspan=8, sticky="w")
+    plan.grid(row=14, column=0, columnspan=8, sticky="w")
 
     def read_wall() -> float:
         try:
@@ -539,6 +573,18 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             except ValueError as exc:
                 raise ValueError("The platform midrail top must be a number of inches.") from exc
             check_platform_mid_top(mid_top)
+            grab = None
+            if bool(grab_var.get()) and posts:
+                try:
+                    grab = GrabRail(
+                        top=float(grab_top_var.get().strip()),
+                        low=float(grab_low_var.get().strip() or "0"),
+                        high=float(grab_high_var.get().strip() or "0"),
+                    )
+                except ValueError as exc:
+                    raise ValueError("The grab rail's pipe top and end adjustments must be numbers of inches.") from exc
+                if not 0.0 < grab.top < RAIL_TOP_IN:
+                    raise ValueError(f"The grab rail's pipe top must be above 0 and under the {RAIL_TOP_IN:g} in top rail.")
         except ValueError as exc:
             messagebox.showerror("Stair", str(exc) if str(exc) else "Pan wall must be numeric.")
             return
@@ -553,7 +599,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             result = build_stair(
                 session.app, current, wall, progress=progress, shell=with_shell, platforms=platforms,
                 top_platform=top_platform, posts=posts, platform_post_in=post_in, top_rail=top_rail,
-                mid_rail=mid_rail, platform_mid_top=mid_top,
+                mid_rail=mid_rail, platform_mid_top=mid_top, grab=grab,
             )
             notes = [result.note]
             if braces:
@@ -574,7 +620,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
 
         stages = _stair_stage_plan(
             current.treads, shell=with_shell, braces=braces, knees=knees, inner=inner, platforms=platforms,
-            top_platform=top_platform, posts=posts, top_rail=top_rail, mid_rail=mid_rail,
+            top_platform=top_platform, posts=posts, top_rail=top_rail, mid_rail=mid_rail, grab=grab is not None,
         )
         run_job("Stair", stages, work)
 
