@@ -67,6 +67,8 @@ if TYPE_CHECKING:
     from swauto.stair.grab_sw import GrabRail
 
 _INCH = 0.0254
+_DELETE_ABSORBED = 1  # swDeleteSelectionOptions_e
+_DELETE_CHILDREN = 2
 TREAD_CLEAR_IN = (CLEAR_IN - TREAD_PLATE_IN) / 2.0
 # swUserPreferenceToggle_e.swUserEnableFreezeBar, swMoveFreezeBarTo_e.swMoveFreezeBarToAfterFeature
 _SW_ENABLE_FREEZE_BAR = 461
@@ -230,11 +232,20 @@ def build_stair_on_model(
             freeze_note = ""
         done = 0
         total = 0
-        # One tread at a time: the pan, then its inner bolts, then its outer bolts.
-        # One rebuild per tread, before the bolts, so a cut is not lost. Not again after each bolt.
+        # The pans are the same shape. Model the first, then copy it turned about the tank
+        # axis and raised for every later tread. The bolt holes come after every pan is in
+        # place: each hole also goes through the stringer, so a copy must not carry them.
+        # One rebuild per tread, before its bolts, so a cut is not lost.
+        if do_treads and places:
+            _tread(model, layout, places[0], wall_in)
+            _progress(progress, f"tread {places[0].index} placed")
+            master = _tread_body(model, places[0])
+            for place in places[1:]:
+                copied = master is not None and _copy_tread(model, master, places[0], place)
+                if not copied:
+                    _tread(model, layout, place, wall_in)
+                _progress(progress, f"tread {place.index} {'copied' if copied else 'placed'}")
         for place in (places if do_treads else []):
-            _tread(model, layout, place, wall_in)
-            _progress(progress, f"tread {place.index} placed")
             _rebuild(model)
             for side in ("In", "Out"):
                 total += 1
@@ -511,27 +522,69 @@ def _stringer_blank(
 ) -> None:
     """Rolled 3/8 in sheet-metal blank: a lofted bend between two arcs on the
     outside face, filling the lisp outline's box (bottom end to top end, foot
-    to cap). The thickness goes in from the arcs, so the plate is r_in to r_out.
-    It is sheet metal from the first feature, so the stringer flattens.
-    ``at`` turns and raises a higher flight: (angle, inches)."""
+    to cap). The thickness goes in from the arcs, so the plate is r_in to r_out
+    and its mid-wall is on the trim helices. It is sheet metal from the first
+    feature, so the stringer flattens. ``at`` turns and raises a higher flight:
+    (angle, inches).
+
+    InsertSheetMetalLoftedBend takes a side flag, then the thickness. Flag 1
+    rolls the wall to the other side from flag 0, but which side flag 0 picks
+    depends on what is already in the part: in a full build it rolled an upper
+    flight's inner blank outside its arcs, where on its own it rolls inside. So
+    each roll is read back, and a wall outside its arcs is deleted and rolled
+    again with the flags in turn. The blank is found by where it sits: the
+    rebuild after it can give other bodies new names.
+    """
     radius = dev.radius_in
     p4, _p_start, _p_end, p2, _p3, _l2, _l3, p5 = dev.outline
     phi_a, phi_b = at[0] + p4[0] / radius, at[0] + p2[0] / radius
-    low = _arc_sketch(model, at[1] + p5[1], r_out, phi_a, phi_b, f"{name}LowArc")
-    high = _arc_sketch(model, at[1] + p2[1], r_out, phi_a, phi_b, f"{name}HighArc")
-    _clear_selection(model)
-    if not (
-        _select_feature(model, low, "SKETCH", mark=1, append=False)
-        and _select_feature(model, high, "SKETCH", mark=1, append=True)
-    ):
-        raise SolidWorksError(f"{name}: could not select the blank arcs.")
-    before_bodies = _body_names(model)
-    feature = model.FeatureManager.InsertSheetMetalLoftedBend(THICKNESS_IN * _INCH, THICKNESS_IN * _INCH)
-    if feature is None:
-        raise SolidWorksError(f"{name}: the rolled blank (lofted bend) was not made.")
-    with contextlib.suppress(Exception):
-        rename_feature(feature, name)
-    _name_new_body(model, before_bodies, name)
+    tried = []
+    for side in (0, 1, 0, 1):
+        before = _names(model)
+        before_bodies = _body_names(model)
+        low = _arc_sketch(model, at[1] + p5[1], r_out, phi_a, phi_b, f"{name}LowArc")
+        high = _arc_sketch(model, at[1] + p2[1], r_out, phi_a, phi_b, f"{name}HighArc")
+        _clear_selection(model)
+        if not (
+            _select_feature(model, low, "SKETCH", mark=1, append=False)
+            and _select_feature(model, high, "SKETCH", mark=1, append=True)
+        ):
+            raise SolidWorksError(f"{name}: could not select the blank arcs.")
+        feature = model.FeatureManager.InsertSheetMetalLoftedBend(side, THICKNESS_IN * _INCH)
+        outcome = "not made"
+        if feature is not None:
+            _rebuild(model)
+            body = _new_blank(model, before_bodies, phi_a, phi_b, r_out)
+            if body is not None and _wall_inside(body, r_out):
+                with contextlib.suppress(Exception):
+                    rename_feature(feature, name)
+                with contextlib.suppress(Exception):
+                    body.Name = name
+                return
+            outcome = "not found" if body is None else "outside"
+            _discard_blank(model, feature)
+        tried.append(f"flag {side} {outcome}")
+        _discard_since(model, before)
+        _rebuild(model)
+    raise SolidWorksError(
+        f"{name}: the rolled blank would not land inside its arcs, {r_in:.3f} to {r_out:.3f} in ({', '.join(tried)})."
+    )
+
+
+def _new_blank(model, before: set[str], phi_a: float, phi_b: float, r_out: float):
+    """The one new body centered on the blank's arcs."""
+    mid = (phi_a + phi_b) / 2.0
+    found = []
+    for body in _bodies(model):
+        if str(body.Name) in before:
+            continue
+        try:
+            x, _y, z = _mass_point(body)
+        except Exception:
+            continue
+        if abs(math.hypot(x, z) / _INCH - r_out) < 1.0 and abs(math.remainder(math.atan2(-x, z) - mid, 2.0 * math.pi)) < 0.02:
+            found.append(body)
+    return found[0] if len(found) == 1 else None
 
 
 def _arc_sketch(model, y_in: float, radius: float, phi_a: float, phi_b: float, name: str):
@@ -544,6 +597,33 @@ def _arc_sketch(model, y_in: float, radius: float, phi_a: float, phi_b: float, n
         raise SolidWorksError(f"{name}: arc failed.")
     _close_sketch(model)
     return _rename_new(model, before, name, "blank arc")
+
+
+def _discard_blank(model, feature) -> None:
+    """Delete a rejected blank in one go, with its arcs and its own sheet-metal and flat-pattern features.
+    One at a time, newest first, SolidWorks would ask about the children."""
+    _clear_selection(model)
+    with contextlib.suppress(Exception):
+        if feature.Select2(False, 0):
+            model.Extension.DeleteSelection2(_DELETE_ABSORBED | _DELETE_CHILDREN)
+    _clear_selection(model)
+
+
+def _wall_inside(body, r_out: float) -> bool:
+    """No point of the blank stands out past its arcs' radius. Facets only cut inside a curved face, so a wall
+    rolled inward peaks exactly on the arcs, and one rolled outward 3/8 in past them."""
+    far = None
+    raw = body.GetFaces()
+    faces = list(raw) if isinstance(raw, (list, tuple)) else ([] if raw is None else [raw])
+    for face in faces:
+        try:
+            tris = list(face.GetTessTriangles(True) or [])
+        except Exception:
+            continue
+        for i in range(0, len(tris) - 2, 3):
+            r = math.hypot(tris[i], tris[i + 2]) / _INCH
+            far = r if far is None else max(far, r)
+    return far is not None and abs(far - r_out) < 0.05
 
 
 def _stringer_form(
@@ -777,11 +857,10 @@ def _cut_sweep(
     """Helical cut: a rectangle swept along a trim helix through the plate band.
 
     The rectangle is on the Right plane for the first flight, or on a radial
-    plane at ``start_phi`` where the helix of a higher flight starts.
-    CreateCornerRectangle often returns nothing even though the four lines are
-    in the sketch. ``_corner_rect`` trusts those lines, so the cut is made on
-    the first attempt. One rebuild-and-retry only if that cut feature comes
-    back empty — not six full rebuilds.
+    plane at ``start_phi`` where the helix of a higher flight starts. A helix
+    sweep is a screw about the tank axis, so a rectangle drawn at a higher
+    flight's height is cut at that height all the way along.
+    One rebuild-and-retry only if the cut feature comes back empty.
     """
     r_mid, height_in, revolutions = helix_spec
     # 19-arg InsertCutSwept4 (feature-scope booleans at the tail) removes the
@@ -944,26 +1023,48 @@ def _sketch_segment_count(model) -> int:
 
 
 def _corner_rect(model, x0: float, y0: float, x1: float, y1: float) -> bool:
-    """Right-plane corner rectangle in inches.
+    """Rectangle on the open sketch, in inches, from four lines.
 
-    With AddToDB on, CreateCornerRectangle often returns nothing even though the
-    four lines are in the sketch. A trim attempt was aborting on that and never
-    calling the cut. Trust the sketch contents, and fall back to four lines.
+    CreateCornerRectangle snaps a side onto the sketch origin while the view is
+    still zoomed out to the whole tank: the inner stringer's top cut, 5 in up,
+    was only a few pixels from that axis and landed on it, so the plate came out
+    short and the tread bolts passed over it. Lines written straight into the
+    sketch are not snapped. The corners are read back, and a snapped rectangle
+    is refused.
     """
     sketch = model.SketchManager
     with contextlib.suppress(Exception):
         sketch.AddToDB = True
+    with contextlib.suppress(Exception):
+        sketch.DisplayWhenAdded = False
     xm0, ym0, xm1, ym1 = x0 * _INCH, y0 * _INCH, x1 * _INCH, y1 * _INCH
-    for _ in range(3):
-        with contextlib.suppress(Exception):
-            sketch.CreateCornerRectangle(xm0, ym0, 0.0, xm1, ym1, 0.0)
-        if _sketch_segment_count(model) >= 4:
-            return True
     corners = ((xm0, ym0), (xm1, ym0), (xm1, ym1), (xm0, ym1))
     for (ax, ay), (bx, by) in zip(corners, corners[1:] + corners[:1], strict=False):
         with contextlib.suppress(Exception):
             sketch.CreateLine(ax, ay, 0.0, bx, by, 0.0)
-    return _sketch_segment_count(model) >= 4
+    if _sketch_segment_count(model) < 4:
+        return False
+    ys = _open_sketch_ys(model)
+    lo, hi = (y0, y1) if y0 <= y1 else (y1, y0)
+    return ys is not None and abs(ys[0] - lo) < 0.02 and abs(ys[1] - hi) < 0.02
+
+
+def _open_sketch_ys(model):
+    """The lowest and highest sketch Y of the open sketch, in inches."""
+    sketch = com_value(model.GetActiveSketch2)
+    if sketch is None:
+        return None
+    try:
+        raw = com_value(sketch.GetSketchSegments)
+    except Exception:
+        return None
+    segments = list(raw) if isinstance(raw, (list, tuple)) else ([] if raw is None else [raw])
+    ys = []
+    for segment in segments:
+        for getter in (segment.GetStartPoint2, segment.GetEndPoint2):
+            with contextlib.suppress(Exception):
+                ys.append(float(com_value(getter).Y) / _INCH)
+    return None if not ys else (min(ys), max(ys))
 
 
 def _band_faces(model, band: tuple[float, float]) -> int:
@@ -1189,6 +1290,114 @@ def _tread(model, layout, place: TreadPlace, wall_in: float) -> None:
     if body is not None:
         with contextlib.suppress(Exception):
             body.Name = name
+
+
+def _copy_tread(model, master, source: TreadPlace, place: TreadPlace) -> bool:
+    """Copy ``master`` onto ``place``: turned about the tank axis and raised."""
+    return _copy_turned(
+        model, master, place.phi - source.phi, place.center[1] - source.center[1], f"EliteTread{place.index:02d}",
+    )
+
+
+def _copy_turned(model, master, dphi: float, dy_in: float, name: str) -> bool:
+    """Copy ``master``, turned ``dphi`` about the tank axis and raised ``dy_in``.
+
+    A right-hand turn about +Y is the opposite of the stair's angle, as for the shell
+    courses. One Move/Copy Body either turns or moves: given both, it turns and drops
+    the lift, so the copy is turned, then raised. The copy is found by where its mass
+    center lands, since other bodies can take new names on a rebuild, and the original
+    has to stay put. Returns False, with nothing left behind, otherwise.
+    """
+    if abs(dphi) < 1e-9 and abs(dy_in) < 1e-6:
+        return False
+    try:
+        x, y, z = _mass_point(master)
+        kept = _box_in(master)
+    except Exception:
+        return False
+    master_name = str(master.Name)
+    if not master_name:
+        return False
+    c, sn = math.cos(dphi), math.sin(dphi)
+    turned = (x * c - z * sn, y, z * c + x * sn)
+    raised = (turned[0], y + dy_in * _INCH, turned[2])
+    nothing = com_nothing()
+    _clear_selection(model)
+    if not model.Extension.SelectByID2(master_name, "SOLIDBODY", 0.0, 0.0, 0.0, False, 1, nothing, 0):
+        return False
+    before = _names(model)
+    try:
+        model.FeatureManager.InsertMoveCopyBody2(
+            0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0,
+            0.0, -float(dphi), 0.0,
+            True, 1,
+        )
+    except Exception:
+        _recover(model)
+    _clear_selection(model)
+    body = _body_at(model, turned)
+    if body is not None and abs(dy_in) > 1e-6:
+        if model.Extension.SelectByID2(str(body.Name), "SOLIDBODY", 0.0, 0.0, 0.0, False, 1, nothing, 0):
+            try:
+                model.FeatureManager.InsertMoveCopyBody2(
+                    0.0, dy_in * _INCH, 0.0, 0.0,
+                    0.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0,
+                    False, 1,
+                )
+            except Exception:
+                _recover(model)
+        _clear_selection(model)
+        body = _body_at(model, raised)
+    fresh = [n for n in _names(model) if n not in before]
+    if body is None or not _same_box(master, kept):
+        if fresh:
+            _delete_named(model, tuple(fresh))
+            _rebuild(model)
+        return False
+    labels = iter((f"{name}Copy", f"{name}Lift"))
+    for candidate in iter_features(model):
+        if _feature_name(candidate) in fresh:
+            label = next(labels, None)
+            if label is None:
+                break
+            with contextlib.suppress(Exception):
+                rename_feature(candidate, label)
+    with contextlib.suppress(Exception):
+        body.Name = name
+    return True
+
+
+def _mass_point(body) -> tuple[float, float, float]:
+    """Center of mass, meters."""
+    props = [float(v) for v in com_value(body.GetMassProperties(1.0))]
+    return props[0], props[1], props[2]
+
+
+def _body_at(model, point_m, tol_in: float = 0.1):
+    """The one body whose mass center is at ``point_m`` (meters)."""
+    found = []
+    point_in = [v / _INCH for v in point_m]
+    for body in _bodies(model):
+        try:
+            box = _box_in(body)
+            if not all(box[i] - 1.0 <= point_in[i] <= box[i + 3] + 1.0 for i in range(3)):
+                continue
+            if math.dist(_mass_point(body), point_m) < tol_in * _INCH:
+                found.append(body)
+        except Exception:
+            continue
+    return found[0] if len(found) == 1 else None
+
+
+def _same_box(body, box) -> bool:
+    """The master was copied, not moved."""
+    try:
+        now = _box_in(body)
+    except Exception:
+        return False
+    return all(abs(now[i] - box[i]) < 0.02 for i in range(6))
 
 
 def _sketch_on(model, plane, name: str, draw):
@@ -1447,18 +1656,6 @@ def _body_names(model) -> set[str]:
         with contextlib.suppress(Exception):
             names.add(str(body.Name))
     return names
-
-
-def _name_new_body(model, before: set[str], name: str) -> None:
-    for body in _bodies(model):
-        try:
-            current = str(body.Name)
-        except Exception:
-            continue
-        if current not in before:
-            with contextlib.suppress(Exception):
-                body.Name = name
-            return
 
 
 def _box_in(body) -> list[float]:

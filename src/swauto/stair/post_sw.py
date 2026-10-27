@@ -124,16 +124,28 @@ def post_layout(places, per_flight: int, picks: tuple[int, ...], r_b: float) -> 
 def add_handrail_posts(model, posts: list[Post], *, r_b: float, profile: str, progress=None) -> BraceResult:
     """Each post, its top cut along the rail and cut back 45 degrees, and its two bolt holes through the stringer.
 
-    ``profile`` is from ``post_profile``.
+    The posts on the flights are the same piece turned about the tank axis and raised, so the first
+    is modeled and the rest are copied. The bolt holes are cut afterwards: each one also goes
+    through the stringer. ``profile`` is from ``post_profile``.
     """
     face_r = r_b + THICKNESS_IN
     missed = []
+    master_post = None
+    master_body = None
     for post in posts:
         name = f"ElitePost{post.index:02d}"
-        _upright_angle(model, post.phi, face_r, 1.0, 1.0, (post.foot, post.top(LEG_IN) + 0.1), LEG_IN, profile, name)
-        _top_cut(model, post, face_r, name)
-        _cutback(model, post.phi, face_r, 0.0, 1.0, post.foot, post.top(THK_IN), name)
-        _progress(progress, f"{name} placed")
+        copied = False
+        if master_body is not None and master_post is not None:
+            copied = s._copy_turned(
+                model, master_body, post.phi - master_post.phi, post.foot - master_post.foot, name,
+            )
+        if not copied:
+            body = _shaped_post(model, post, face_r, profile, name)
+            if master_body is None and body is not None:
+                master_post, master_body = post, body
+        _progress(progress, f"{name} {'copied' if copied else 'placed'}")
+    for post in posts:
+        name = f"ElitePost{post.index:02d}"
         holes = _holes(model, post, face_r, r_b, name)
         if not holes:
             missed.append(str(post.index))
@@ -148,6 +160,20 @@ def add_handrail_posts(model, posts: list[Post], *, r_b: float, profile: str, pr
         + (f" Holes missed at tread(s) {', '.join(missed)}." if missed else "")
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
+
+
+def _shaped_post(model, post: Post, face_r: float, profile: str, name: str):
+    """The flight post with its sloped top and 45 degree cutback, before the bolt holes."""
+    before = s._body_names(model)
+    _upright_angle(model, post.phi, face_r, 1.0, 1.0, (post.foot, post.top(LEG_IN) + 0.1), LEG_IN, profile, name)
+    _top_cut(model, post, face_r, name)
+    _cutback(model, post.phi, face_r, 0.0, 1.0, post.foot, post.top(THK_IN), name)
+    made = [body for body in s._bodies(model) if str(body.Name) not in before]
+    if len(made) != 1:
+        return None
+    with contextlib.suppress(Exception):
+        made[0].Name = name
+    return made[0]
 
 
 def side_post_heel(lines) -> float:

@@ -128,6 +128,8 @@ def add_grab_rails(
         pipes.append((pipe, lo, hi))
         _progress(progress, f"{name} placed")
     skipped = []
+    master_post = None
+    master_body = None
     for post in posts:
         name = f"EliteGrabBracket{post.index:02d}"
         pipe, lo, hi = pipes[min(len(pipes) - 1, (post.index - 1) // per_flight)]
@@ -137,8 +139,23 @@ def add_grab_rails(
             skipped.append(str(post.index))
             _progress(progress, f"{name} skipped")
             continue
-        _bracket(model, post, pipe, phi, face_r, name)
-        _progress(progress, f"{name} placed")
+        # The connector, including the cut under the pipe, is the same piece turned and raised
+        # with its post. The pipe itself is not copied.
+        copied = False
+        if master_body is not None and master_post is not None:
+            copied = s._copy_turned(
+                model, master_body, post.phi - master_post.phi, post.foot - master_post.foot, name,
+            )
+        if not copied:
+            before = s._body_names(model)
+            _bracket(model, post, pipe, phi, face_r, name)
+            made = [body for body in s._bodies(model) if str(body.Name) not in before]
+            if len(made) == 1:
+                with contextlib.suppress(Exception):
+                    made[0].Name = name
+                if master_body is None:
+                    master_post, master_body = post, made[0]
+        _progress(progress, f"{name} {'copied' if copied else 'placed'}")
     with contextlib.suppress(Exception):
         s._hide_construction(model)
     note = (
