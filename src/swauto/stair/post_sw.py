@@ -150,13 +150,22 @@ def add_handrail_posts(model, posts: list[Post], *, r_b: float, profile: str, pr
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
 
 
+def side_post_heel(lines) -> float:
+    """Radius of a side post's heel, back to back with the flight's end angle: the flight's top rail reaches
+    a leg less its thickness out past the stringer's outside face, and the end angle's leg lies along it."""
+    return lines.stringer_b + THICKNESS_IN + LEG_IN
+
+
 def add_platform_posts(
     model, tread_index: int, *, phi: float, tread_top: float, r_a: float, r_b: float, profile: str,
-    post_in: float = PLATFORM_POST_IN, progress=None,
+    post_in: float = PLATFORM_POST_IN, stringer_b: float | None = None, progress=None,
 ) -> BraceResult:
     """Posts at both ends of the outer channel of the platform after tread ``tread_index``,
-    each with its heel ``post_in`` in from the platform end."""
-    lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b)
+    each with its heel ``post_in`` in from the platform end. When the outer stringer's walk face
+    ``stringer_b`` is in from the platform's ``r_b``, they stand on the side channels instead."""
+    lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b, stringer_b=stringer_b)
+    if lines.stringer_b < lines.r_b - 0.01:
+        return _side_posts(model, tread_index, lines, tread_top, profile, progress)
     half = (lines.phi_b - lines.phi_a) / 2.0
     web_r = lines.r_out * math.cos(half)  # the outer channel's back, on the bisector
     end_t = lines.r_out * math.sin(half) - post_in
@@ -186,6 +195,52 @@ def add_platform_posts(
         + (f" Holes missed at end(s) {', '.join(missed)}." if missed else "")
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
+
+
+def _side_posts(model, tread_index: int, lines, tread_top: float, profile: str, progress) -> BraceResult:
+    """On a stair narrower than its platforms: a post on each side channel just outside the flight's top
+    rail, its flat leg out along the channel's back and bolted through the web, its other leg turned
+    toward the flight, back to back with the flight's end angle and bolted to it."""
+    heel_r = side_post_heel(lines)
+    ys = (lines.top - CHANNEL_IN + PLATFORM_FOOT_IN, tread_top + RAIL_TOP_IN - TOP_GAP_IN)
+    name = f"ElitePlatform{tread_index:02d}Post"
+    middle = lines.top - CHANNEL_IN / 2.0
+    hole_ys = (middle - PLATFORM_HOLE_SPACE_IN / 2.0, middle + PLATFORM_HOLE_SPACE_IN / 2.0)
+    missed = []
+    for label, line_phi, away in (("A", lines.phi_a, -1.0), ("B", lines.phi_b, 1.0)):
+        tag = f"{name}{label}"
+        _upright_angle(model, line_phi, heel_r, 1.0, away, ys, LEG_IN, profile, tag)
+        _progress(progress, f"{tag} placed")
+        holes = _side_holes(model, line_phi, heel_r + HOLE_GAUGE_IN, away, hole_ys, tag)
+        if not holes:
+            missed.append(label)
+        _progress(progress, f"{tag} holes {'cut' if holes else 'missed'}")
+    with contextlib.suppress(Exception):
+        s._hide_construction(model)
+    note = (
+        f"Platform after tread {tread_index}: L2x2x1/4 posts {ys[1] - ys[0]:.2f} in long on both side channels "
+        "just outside the flights' top rails, bolted through the web with two 13/16 holes 1-3/4 in apart."
+        + (f" Holes missed at end(s) {', '.join(missed)}." if missed else "")
+    )
+    return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
+
+
+def _side_holes(model, line_phi: float, r: float, away: float, hole_ys: tuple[float, float], name: str) -> bool:
+    """13/16 rounds through a side post's flat leg and the side channel's web behind it."""
+    points = [_world(line_phi, r, away * THK_IN, y) for y in hole_ys]
+    radius = HOLE_DIA_IN / 2.0 * _INCH
+
+    def draw(manager, to_sketch):
+        for point in points:
+            sx, sy = to_sketch(point)
+            if _create_circle(manager, sx, sy, radius) is None:
+                raise SolidWorksError(f"{name}: hole circle failed.")
+
+    face = _face_at(s._bodies(model), points[0], _travel(line_phi))
+    if not _cut(model, face, f"{name}Holes", draw, THK_IN + WEB_IN + 0.1):
+        return False
+    in_web = [_world(line_phi, r, -away * WEB_IN / 2.0, y) for y in hole_ys]
+    return all(_hole_in(model, p) for p in points) and all(_channel_hole(model, p) for p in in_web)
 
 
 def _platform_holes(model, mid: float, web_r: float, t: float, hole_ys: tuple[float, float], name: str) -> bool:

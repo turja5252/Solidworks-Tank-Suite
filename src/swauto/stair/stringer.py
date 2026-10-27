@@ -11,8 +11,9 @@ import math
 from dataclasses import dataclass
 
 THICKNESS_IN = 0.375
-TREAD_PLATE_IN = 36.0
+TREAD_PLATE_IN = 36.0  # the full tread, and every platform's width whatever the treads are
 CLEAR_IN = TREAD_PLATE_IN + 0.125
+TREAD_WIDTHS_IN = (36.0, 30.0)  # the lisp launcher's choices
 TREAD_DEPTH_IN = 10.9375
 TREAD_MARK_IN = 2.5
 BOLT_DIA_IN = 0.4375
@@ -27,7 +28,8 @@ END_CUT_IN = 0.125
 
 @dataclass(frozen=True)
 class StringerMock:
-    """Lengths are inches. ``outside_face`` develops the outer fiber."""
+    """Lengths are inches. ``outside_face`` develops the outer fiber. ``tread_in`` is the tread
+    plate across the stair; the stringers stand 1/16 in clear of it each side."""
 
     shell_od_in: float = 120.0
     gap_in: float = 8.0
@@ -36,6 +38,12 @@ class StringerMock:
     run_in: float = 10.5
     plate_width_in: float = 9.0
     outside_face: bool = True
+    tread_in: float = TREAD_PLATE_IN
+
+    @property
+    def clear_in(self) -> float:
+        """Between the stringers' walk faces."""
+        return self.tread_in + CLEAR_IN - TREAD_PLATE_IN
 
     def validate(self) -> None:
         if self.shell_od_in <= 0:
@@ -48,6 +56,8 @@ class StringerMock:
             raise ValueError("Rise and run must be greater than zero.")
         if self.plate_width_in <= 1:
             raise ValueError("Plate width must be greater than 1 in.")
+        if not 12.0 <= self.tread_in <= TREAD_PLATE_IN:
+            raise ValueError(f"Treads must be 12 to {TREAD_PLATE_IN:g} in across; the platforms are {TREAD_PLATE_IN:g} in.")
 
 
 @dataclass(frozen=True)
@@ -75,6 +85,12 @@ class StringerLayout:
     x1_in: float
     treads: tuple[TreadHoles, ...]
     top_holes_in: tuple[tuple[float, float], ...]
+    tread_in: float
+
+    @property
+    def clear_in(self) -> float:
+        """Between the stringers' walk faces."""
+        return self.tread_in + CLEAR_IN - TREAD_PLATE_IN
 
     @property
     def pitch_deg(self) -> float:
@@ -89,10 +105,10 @@ def layout_stringer(spec: StringerMock) -> StringerLayout:
     """Plan radii and the slanted flat plate for one outer stringer."""
     spec.validate()
     inner_face = spec.shell_od_in + spec.gap_in + THICKNESS_IN
-    outer_near = inner_face + CLEAR_IN
+    outer_near = inner_face + spec.clear_in
     outside_radius = outer_near + THICKNESS_IN
     mid_radius = outer_near + THICKNESS_IN / 2.0
-    walk_center = inner_face + (CLEAR_IN - TREAD_PLATE_IN) / 2.0 + TREAD_PLATE_IN / 2.0
+    walk_center = inner_face + spec.clear_in / 2.0
     sweep = spec.treads * (spec.run_in / walk_center)
     total_rise = spec.treads * spec.rise_in
     outside_true = math.hypot(outside_radius * sweep, total_rise)
@@ -126,6 +142,7 @@ def layout_stringer(spec: StringerMock) -> StringerLayout:
         x1_in=x1,
         treads=tuple(treads),
         top_holes_in=top_holes,
+        tread_in=spec.tread_in,
     )
 
 

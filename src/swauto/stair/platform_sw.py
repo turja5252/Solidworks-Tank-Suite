@@ -65,7 +65,7 @@ from swauto.stair.brace_sw import (
 )
 from swauto.stair.development import END_EXT_IN, PLATFORM_CLEAR_IN
 from swauto.stair.inner_clip_sw import _angle_between, _hand, _leg_axes, _member
-from swauto.stair.stringer import THICKNESS_IN, TREAD_DEPTH_IN, TREAD_MARK_IN
+from swauto.stair.stringer import CLEAR_IN, THICKNESS_IN, TREAD_DEPTH_IN, TREAD_MARK_IN
 from swauto.stair.stringer_sw import _create_circle, _names, _rename_new
 from swauto.tank.shell import _clear_selection, _close_sketch
 
@@ -101,13 +101,16 @@ HANGER_BOLT_DOWN_IN = 3.5  # below the channel bottom
 
 @dataclass(frozen=True)
 class _Lines:
-    """Plan lines of one platform: radial sides A and B, the stringer walk faces, the channel top."""
+    """Plan lines of one platform: radial sides A and B, the walk faces of a full-width stair's
+    stringers (the frame's inside), the channel top, and the outer stringer's walk face, which is
+    further in when the treads are narrower than the platform."""
 
     phi_a: float
     phi_b: float
     r_a: float
     r_b: float
     top: float
+    stringer_b: float
 
     @property
     def r_in(self) -> float:
@@ -118,10 +121,15 @@ class _Lines:
         return self.r_b + THICKNESS_IN
 
 
-def platform_lines(*, phi: float, tread_top: float, r_a: float, r_b: float) -> _Lines:
-    """A sits on the inner stringer's end, half a tread plus 1/8 in past the tread centerline at ``phi``."""
+def platform_lines(*, phi: float, tread_top: float, r_a: float, r_b: float, stringer_b: float | None = None) -> _Lines:
+    """A sits on the inner stringer's end, half a tread plus 1/8 in past the tread centerline at ``phi``.
+
+    ``r_b`` is the platform's outer walk face; ``stringer_b`` the outer stringer's, if not the same."""
     phi_a = phi + (TREAD_DEPTH_IN / 2.0 + END_EXT_IN) / r_a
-    return _Lines(phi_a, phi_a + PLATFORM_CLEAR_IN / ((r_a + r_b) / 2.0), r_a, r_b, tread_top - GRATING_IN)
+    return _Lines(
+        phi_a, phi_a + PLATFORM_CLEAR_IN / ((r_a + r_b) / 2.0), r_a, r_b, tread_top - GRATING_IN,
+        r_b if stringer_b is None else stringer_b,
+    )
 
 
 def _library(app, parts) -> str:
@@ -153,12 +161,12 @@ def add_mid_platform(model, tread_index: int, profile: str, progress=None) -> Br
 
     ``profile`` is from ``platform_profile``. The grating top is flush with that tread's top.
     """
-    r_a, r_b, treads = _stair_parts(model)
+    r_a, _r_b, treads = _stair_parts(model)
     if not 1 <= tread_index <= len(treads):
         raise SolidWorksError(f"This stair has {len(treads)} treads; there is no tread {tread_index}.")
     y_bottom, phi, _r = treads[tread_index - 1]
     return place_mid_platform(
-        model, tread_index, phi=phi, tread_top=y_bottom + TREAD_MARK_IN, r_a=r_a, r_b=r_b,
+        model, tread_index, phi=phi, tread_top=y_bottom + TREAD_MARK_IN, r_a=r_a, r_b=r_a + CLEAR_IN,
         profile=profile, progress=progress,
     )
 
@@ -248,17 +256,19 @@ def _frame(model, outline, base: float, profile: str, name: str) -> None:
 
 def add_stringer_clips(
     model, tread_index: int, *, phi: float, tread_top: float, r_a: float, r_b: float, profile: str,
-    sides: tuple[str, ...] = ("A", "B"), progress=None,
+    sides: tuple[str, ...] = ("A", "B"), stringer_b: float | None = None, progress=None,
 ) -> BraceResult:
     """Clips tying the stringer ends to the platform after tread ``tread_index``.
 
     Side A is the radial channel where the flight below stops, side B the one
-    where the flight above starts. ``profile`` is from ``clip_profile``.
+    where the flight above starts. ``profile`` is from ``clip_profile``. The outer
+    clip is on the outer stringer, at ``stringer_b`` when the treads are narrower
+    than the platform.
     """
-    lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b)
+    lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b, stringer_b=stringer_b)
     name = f"ElitePlatform{tread_index:02d}"
     hole_y = lines.top - HOLE_DOWN_IN
-    sag = CLIP_LEG_IN * CLIP_LEG_IN / (2.0 * r_b) + 0.001
+    sag = CLIP_LEG_IN * CLIP_LEG_IN / (2.0 * lines.stringer_b) + 0.001
     missed = []
     for side in sides:
         line_phi = lines.phi_a if side == "A" else lines.phi_b
@@ -269,7 +279,7 @@ def add_stringer_clips(
         clips = []
         # Inner stringer: walk face convex toward the clip, so the flat leg sits on it at the heel.
         # Outer stringer: walk face concave toward the clip, so the leg is eased in by the sag.
-        for label, heel_r, inward in (("In", r_a, 1.0), ("Out", r_b - sag, -1.0)):
+        for label, heel_r, inward in (("In", r_a, 1.0), ("Out", lines.stringer_b - sag, -1.0)):
             body = _clip(model, line_phi, heel_r, inward, away, lines.top, profile, f"{tag}{label}")
             clips.append((body, heel_r, inward))
         _progress(progress, f"{tag} angles placed")
@@ -353,7 +363,7 @@ def _channel_face(model, lines: _Lines, line_phi: float):
 def _web_holes(model, lines: _Lines, line_phi: float, hole_y: float, name: str) -> bool:
     """13/16 rounds at the inner stringer and 1-5/8 slots along the channel at the outer, through the web."""
     rounds = [_world(line_phi, lines.r_a + g, 0.0, hole_y) for g in CLIP_GAUGES_IN]
-    slots = [_world(line_phi, lines.r_b - g, 0.0, hole_y) for g in CLIP_GAUGES_IN]
+    slots = [_world(line_phi, lines.stringer_b - g, 0.0, hole_y) for g in CLIP_GAUGES_IN]
     radius = HOLE_DIA_IN / 2.0 * _INCH
 
     def draw(manager, to_sketch):
@@ -363,8 +373,8 @@ def _web_holes(model, lines: _Lines, line_phi: float, hole_y: float, name: str) 
                 raise SolidWorksError(f"{name}: hole circle failed.")
         for point in slots:
             sx, sy = to_sketch(point)
-            ax, ay = to_sketch(_world(line_phi, lines.r_b - 1.0, 0.0, hole_y))
-            bx, by = to_sketch(_world(line_phi, lines.r_b, 0.0, hole_y))
+            ax, ay = to_sketch(_world(line_phi, lines.stringer_b - 1.0, 0.0, hole_y))
+            bx, by = to_sketch(_world(line_phi, lines.stringer_b, 0.0, hole_y))
             s._slot_along(model, sx, sy, ax - bx, ay - by, SLOT_IN * _INCH, radius)
 
     if not _cut(model, _channel_face(model, lines, line_phi), name, draw, WEB_IN + 0.06):
@@ -452,7 +462,7 @@ def _upright_fits(
 
 def _clip_web_leg_holes(model, lines: _Lines, line_phi: float, hole_y: float, name: str) -> bool:
     """Rounds through both clips' web legs, from the web's back face; they land in the web's holes and slots."""
-    points = [_world(line_phi, r, 0.0, hole_y) for g in CLIP_GAUGES_IN for r in (lines.r_a + g, lines.r_b - g)]
+    points = [_world(line_phi, r, 0.0, hole_y) for g in CLIP_GAUGES_IN for r in (lines.r_a + g, lines.stringer_b - g)]
     radius = HOLE_DIA_IN / 2.0 * _INCH
 
     def draw(manager, to_sketch):

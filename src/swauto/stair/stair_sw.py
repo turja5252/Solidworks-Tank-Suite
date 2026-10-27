@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from swauto.comutil import com_nothing, com_value, format_com_error
@@ -210,25 +210,8 @@ def build_stair_on_model(
     and with ``grab`` the grab rail on the flight posts.
     """
     per_flight = flight_treads(stair.treads, platforms)
-    flight = StringerMock(
-        shell_od_in=shell_od,
-        gap_in=stair.gap_in,
-        treads=per_flight,
-        rise_in=stair.rise_in,
-        run_in=stair.run_in,
-        plate_width_in=stair.plate_width_in,
-    )
-    layout = layout_stringer(
-        StringerMock(
-            shell_od_in=shell_od,
-            gap_in=stair.gap_in,
-            treads=per_flight,
-            rise_in=stair.rise_in,
-            run_in=stair.run_in,
-            plate_width_in=stair.plate_width_in,
-            outside_face=True,
-        )
-    )
+    flight = replace(stair, shell_od_in=shell_od, treads=per_flight, outside_face=True)
+    layout = layout_stringer(flight)
     turn, lift = flight_step(flight)
     offsets = [(k * turn, k * lift) for k in range(platforms + 1)]
     places = [
@@ -340,7 +323,7 @@ def _platforms(
 
     frame_profile, clip_profile, knee_profile = profiles
     r_a = layout.inner_face_in
-    r_b = r_a + CLEAR_IN
+    r_b = r_a + CLEAR_IN  # a platform is always full width, lined up on the inner stringer
     after = []
     missed = []
     for k in range(1, platforms + 1 + (1 if top_platform else 0)):
@@ -351,7 +334,7 @@ def _platforms(
         )
         clips = add_stringer_clips(
             model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_b, profile=clip_profile,
-            sides=("A", "B") if k <= platforms else ("A",), progress=progress,
+            sides=("A", "B") if k <= platforms else ("A",), stringer_b=r_a + layout.clear_in, progress=progress,
         )
         try:
             shell = add_platform_shell_clips(
@@ -394,14 +377,15 @@ def _handrail_posts(
     midrail ``mid_top`` over a platform's grating; with ``grab``, the grab rail on the flight posts."""
     from swauto.stair.grab_sw import add_grab_rails
     from swauto.stair.post_sw import PLATFORM_POST_IN, add_handrail_posts, add_platform_posts, post_layout
-    from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN, add_bottom_end, add_mid_rails, add_top_rails
+    from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN, add_bottom_end, add_mid_rails, add_toe_plates, add_top_rails
 
     if post_in is None:
         post_in = PLATFORM_POST_IN
     if mid_top is None:
         mid_top = PLATFORM_MID_TOP_IN
     r_a = layout.inner_face_in
-    r_b = r_a + CLEAR_IN
+    r_b = r_a + layout.clear_in  # the outer stringer
+    platform_b = r_a + CLEAR_IN  # a platform is always full width, lined up on the inner stringer
     flight_posts = post_layout(places, per_flight, posts, r_b)
     note = add_handrail_posts(model, flight_posts, r_b=r_b, profile=profile, progress=progress).note
     after = []
@@ -410,8 +394,8 @@ def _handrail_posts(
         last = places[k * per_flight - 1]
         try:
             placed = add_platform_posts(
-                model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_b, profile=profile,
-                post_in=post_in, progress=progress,
+                model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=platform_b, profile=profile,
+                post_in=post_in, stringer_b=r_b, progress=progress,
             )
             after.append(str(last.index))
             if "missed" in placed.note:
@@ -425,11 +409,19 @@ def _handrail_posts(
         )
     if missed:
         note += f" Platform posts missed: {'; '.join(missed)}."
+    if platforms or top_platform:
+        try:
+            note += " " + add_toe_plates(
+                model, places, per_flight, r_a=r_a, r_b=r_b, platforms=platforms, top_platform=top_platform,
+                platform_b=platform_b, progress=progress,
+            ).note
+        except SolidWorksError as exc:
+            note += f" Toe plates stopped: {exc}"
     if top_rail:
         try:
             note += " " + add_top_rails(
                 model, places, per_flight, r_a=r_a, r_b=r_b, platforms=platforms, top_platform=top_platform,
-                profile=profile, post_in=post_in, mid_top=mid_top, progress=progress,
+                profile=profile, post_in=post_in, mid_top=mid_top, platform_b=platform_b, progress=progress,
             ).note
         except SolidWorksError as exc:
             note += f" Top rail stopped: {exc}"
@@ -437,7 +429,7 @@ def _handrail_posts(
         try:
             note += " " + add_mid_rails(
                 model, places, per_flight, r_a=r_a, r_b=r_b, platforms=platforms, top_platform=top_platform,
-                post_in=post_in, mid_top=mid_top, progress=progress,
+                post_in=post_in, mid_top=mid_top, platform_b=platform_b, progress=progress,
             ).note
         except SolidWorksError as exc:
             note += f" Midrail stopped: {exc}"
@@ -453,7 +445,8 @@ def _handrail_posts(
         try:
             note += " " + add_grab_rails(
                 model, places, per_flight, flight_posts, r_a=r_a, r_b=r_b, platforms=platforms,
-                top_platform=top_platform, post_in=post_in, mid_top=mid_top, grab=grab, progress=progress,
+                top_platform=top_platform, post_in=post_in, mid_top=mid_top, grab=grab, platform_b=platform_b,
+                progress=progress,
             ).note
         except SolidWorksError as exc:
             note += f" Grab rail stopped: {exc}"
@@ -474,20 +467,8 @@ def build_flight_stringers(
     the treads. Flat patterns stay suppressed so the stringers show bent
     until Flatten is clicked. Names end in ``suffix`` for flights above the first.
     """
-    flight = StringerMock(
-        shell_od_in=shell_od,
-        gap_in=stair.gap_in,
-        treads=stair.treads,
-        rise_in=stair.rise_in,
-        run_in=stair.run_in,
-        plate_width_in=stair.plate_width_in,
-    )
-    layout = layout_stringer(
-        StringerMock(
-            shell_od_in=shell_od, gap_in=stair.gap_in, treads=stair.treads, rise_in=stair.rise_in,
-            run_in=stair.run_in, plate_width_in=stair.plate_width_in, outside_face=True,
-        )
-    )
+    flight = replace(stair, shell_od_in=shell_od, outside_face=True)
+    layout = layout_stringer(flight)
     inner_dev, outer_dev = develop_both(flight)
     tank_face = shell_od + stair.gap_in
     jobs = (
@@ -1162,7 +1143,7 @@ def _slot_along(model, cx: float, cy: float, ux: float, uy: float, length: float
 
 def _tread_places(layout) -> list[TreadPlace]:
     inner_edge = layout.inner_face_in + TREAD_CLEAR_IN
-    center_r = inner_edge + TREAD_PLATE_IN / 2.0
+    center_r = inner_edge + layout.tread_in / 2.0
     places: list[TreadPlace] = []
     count = len(layout.treads)
     for index in range(1, count + 1):
@@ -1184,28 +1165,26 @@ def _tread_places(layout) -> list[TreadPlace]:
 def _tread(model, layout, place: TreadPlace, wall_in: float) -> None:
     name = f"EliteTread{place.index:02d}"
     inner_edge = layout.inner_face_in + TREAD_CLEAR_IN
-    outer_edge = inner_edge + TREAD_PLATE_IN
+    outer_edge = inner_edge + layout.tread_in
     half = TREAD_DEPTH_IN / 2.0
     top = _plane(model, "Top")
     base = _offset_from(model, top, place.y0, f"{name}Pln")
-    walls_sk = _sketch_on(
+    # One unmerged block, hollowed from below: on a small tank the pan's straight outer edge reaches
+    # the curved outer stringer at its corners, and a merged lid would fuse the two.
+    block_sk = _sketch_on(model, base, f"{name}Sk", lambda: _plan_rect(model, place.phi, inner_edge, outer_edge, half))
+    _extrude(model, block_sk, TREAD_MARK_IN, name, merge=False)
+    pocket_sk = _sketch_on(
         model,
         base,
-        f"{name}WallsSk",
-        lambda: (
-            _plan_rect(model, place.phi, inner_edge, outer_edge, half),
-            _plan_rect(model, place.phi, inner_edge + wall_in, outer_edge - wall_in, half - wall_in),
-        ),
+        f"{name}PocketSk",
+        lambda: _plan_rect(model, place.phi, inner_edge + wall_in, outer_edge - wall_in, half - wall_in),
     )
-    _extrude(model, walls_sk, TREAD_MARK_IN - wall_in, f"{name}Walls", merge=False)
-    lid = _offset_from(model, top, place.y1 - wall_in, f"{name}TopPln")
-    top_sk = _sketch_on(
-        model,
-        lid,
-        f"{name}TopSk",
-        lambda: _plan_rect(model, place.phi, inner_edge, outer_edge, half),
-    )
-    _extrude(model, top_sk, wall_in, name, merge=True)
+    # Up to the lid's underside, and as far down into the empty space under the pan.
+    pocket = _cut_both_ways(model, pocket_sk, TREAD_MARK_IN - wall_in)
+    if pocket is None:
+        raise SolidWorksError(f"{name}: the pan was not hollowed.")
+    with contextlib.suppress(Exception):
+        rename_feature(pocket, f"{name}Pocket")
     body = _tread_body(model, place)
     if body is not None:
         with contextlib.suppress(Exception):
@@ -1341,7 +1320,7 @@ def _bolts(model, layout, place: TreadPlace, side: str, wall_in: float) -> bool:
     """
     name = f"EliteBolt{place.index:02d}{side}"
     inner_edge = layout.inner_face_in + TREAD_CLEAR_IN
-    edge_r = inner_edge if side == "In" else inner_edge + TREAD_PLATE_IN
+    edge_r = inner_edge if side == "In" else inner_edge + layout.tread_in
     half = TREAD_DEPTH_IN / 2.0
     alongs = (half - BOLT_FROM_FRONT_IN, half - BOLT_FROM_FRONT_IN - BOLT_SPACE_IN)
     y_bolt = place.y0 + BOLT_UP_IN

@@ -23,8 +23,11 @@ from swauto.stair.inner_clip_sw import add_inner_clip, clip_angle_profile
 from swauto.stair.post_sw import PLATFORM_POST_IN, RAIL_TOP_IN, read_post_treads
 from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN, check_platform_mid_top
 from swauto.stair.stringer import (
+    CLEAR_IN,
+    THICKNESS_IN,
     TREAD_DEPTH_IN,
     TREAD_MARK_IN,
+    TREAD_WIDTHS_IN,
     StringerLayout,
     StringerMock,
     layout_stringer,
@@ -200,6 +203,8 @@ def _stair_stage_plan(
             plan.append(
                 (frozenset({f"{key} holes cut", f"{key} holes missed"}), f"platform post holes {k * per_flight}{end}")
             )
+    for k in range(1, platforms + 1 + (1 if top_platform else 0)) if posts else ():
+        plan.append((frozenset({f"ElitePlatform{k * per_flight:02d}Toe placed"}), f"toe plate {k * per_flight}"))
     landings = platforms + (1 if top_platform else 0)
     for run, label, wanted in (("Rail", "top rail", top_rail), ("Mid", "midrail", mid_rail)):
         for k in range(platforms + 1) if wanted and posts else ():
@@ -257,6 +262,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     angle_var = tk.StringVar(value=_fmt_num(slope_deg(spec.rise_in, spec.run_in)))
     plate_var = tk.StringVar(value=_fmt_num(spec.plate_width_in))
     wall_var = tk.StringVar(value="0.5")
+    tread_var = tk.StringVar(value=_fmt_num(spec.tread_in))
 
     _field(top, 2, 0, "Diameter", diameter_var, "in")
     _field(top, 2, 3, "Gap", gap_var, "in")
@@ -273,6 +279,13 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     )
     _field(top, 3, 0, "Treads", treads_var, "")
     _field(top, 3, 3, "Rise", rise_var, "in")
+    tread_options = ttk.Frame(top)
+    tread_options.grid(row=3, column=6, columnspan=2, sticky="w", padx=(6, 0), pady=(4, 0))
+    ttk.Label(tread_options, text="Tread width").pack(side="left")
+    for width in TREAD_WIDTHS_IN:
+        ttk.Radiobutton(
+            tread_options, text=f"{width:g} in", variable=tread_var, value=_fmt_num(width)
+        ).pack(side="left", padx=(6, 0))
     _field(top, 4, 0, "Run", run_var, "in")
     _field(top, 4, 3, "Angle", angle_var, "deg")
     _field(top, 5, 0, "Plate width", plate_var, "in")
@@ -373,6 +386,9 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "Inner clip to the shell adds, at each braced tread but the top of a flight, an L4x3x3/8 on "
             "the tank side of the inner stringer just above the tread, bolted to a 3/8 landing clip and "
             "pad on the shell.\n"
+            "Tread width 30 in narrows the stair: the outer stringer comes 6 in in and everything on the flights "
+            "follows it, but platforms stay 36 in, lined up on the inner stringer, so their outer edge stands "
+            "out past the flights.\n"
             "Mid platforms (0 to 3) split the treads into equal flights, as the lisp does: the tread "
             "level with each platform belongs to both flights, so 7 treads with 1 platform are two "
             "flights of 4. Each platform is a C4x5.4 frame mitered at the corners, 36 in along the walk "
@@ -392,10 +408,16 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "posts, rolled to a helix on each flight with the library angle's 3/16 root fillet and toe "
             "rounds, mitered to a level piece where it reaches a platform, and bolted to the platform "
             "post through a short vertical end piece, cut back with the post; each platform has its own "
-            "rail between its posts. "
+            "rail between its posts. On 30 in treads the flight's top rail runs on square to 1/4 in short "
+            "of the platform's side, into an end angle welded across its end and flush with its top; that "
+            "stands back to back with a post on the side channel just outside the rail and bolts to it, so "
+            "nothing is welded in the field. The platform's rails run round its outer edge, mitered at the "
+            "corners and back along each side to the post. Each platform gets a 1/4 x 6 toe plate on its "
+            "outer channel, wrapped the same way on 30 in and on past the post to the stringer. "
             "Midrail runs a 2 x 1/4 flat bar on the walk side of the posts, 21 in up on the flights and "
             "its top on platforms (24 in by default) across them, level to 1/4 in short of the same end "
-            "pieces, which come down to its bottom. With both rails, an L2x2x1/4 drops from the top rail's "
+            "pieces, which come down to its bottom; on 30 in it runs on to the platform's side, the end "
+            "angle welded on it. With both rails, an L2x2x1/4 drops from the top rail's "
             "foot, mitered to it, to the midrail's bottom, and the midrail butts against it.\n"
             "Grab rail runs a 1-1/2 in Sch 40 pipe, its top at the pipe top over the stringer's top edge "
             "(34 in by default), rolled to a helix on the walk side of the outer posts. It starts over "
@@ -463,6 +485,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             run_in=run,
             plate_width_in=plate,
             outside_face=True,
+            tread_in=float(tread_var.get()),
         )
 
     def read_platforms(treads: int) -> int:
@@ -765,7 +788,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     create_btn.configure(command=create)
     stair_btn.configure(command=create_stair)
     brace_btn.configure(command=add_braces)
-    for var in (diameter_var, gap_var, treads_var, plate_var, wall_var, platforms_var, top_platform_var):
+    for var in (diameter_var, gap_var, treads_var, plate_var, wall_var, platforms_var, top_platform_var, tread_var):
         var.trace_add("write", refresh)
     rise_var.trace_add("write", on_rise_or_run)
     run_var.trace_add("write", on_rise_or_run)
@@ -896,7 +919,7 @@ def _draw_plan(
     """Shell, stringer faces, a line per tread, and each platform's outline, over the whole stair."""
     canvas.delete("all")
     sweep = max([treads_at[-1]] + [b for _a, b in spans]) if treads_at else layout.sweep_rad
-    radii = (layout.shell_od_in, layout.inner_face_in, layout.outside_radius_in)
+    radii = (layout.shell_od_in, layout.inner_face_in, layout.outside_radius_in, _platform_out(layout))
     points = [
         (radius * math.cos(angle), radius * math.sin(angle))
         for radius in radii
@@ -918,10 +941,15 @@ def _plan_marks(canvas: tk.Canvas, layout: StringerLayout, sweep: float, treads_
         canvas.create_line(*at(layout.inner_face_in, angle), *at(layout.outside_radius_in, angle), fill="#243038")
     for side_a, side_b in spans:
         corners = (
-            at(layout.inner_face_in, side_a), at(layout.outside_radius_in, side_a),
-            at(layout.outside_radius_in, side_b), at(layout.inner_face_in, side_b),
+            at(layout.inner_face_in, side_a), at(_platform_out(layout), side_a),
+            at(_platform_out(layout), side_b), at(layout.inner_face_in, side_b),
         )
         canvas.create_polygon(*[v for corner in corners for v in corner], outline="#b5651d", fill="", width=2)
+
+
+def _platform_out(layout: StringerLayout) -> float:
+    """A platform's outer edge: always full width from the inner stringer, past narrower treads."""
+    return layout.inner_face_in + CLEAR_IN + THICKNESS_IN
 
 
 def _paint(canvas: tk.Canvas, width: int, height: int, points: list[tuple[float, float]], draw) -> None:

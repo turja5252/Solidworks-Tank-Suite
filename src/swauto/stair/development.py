@@ -27,7 +27,7 @@ Inner end holes are round, outer end holes are horizontal slots.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from swauto.stair.stringer import (
     BOLT_DIA_IN,
@@ -175,8 +175,8 @@ def develop_both(
     the radial ones from ``outer_end_ext_in``."""
     stair.validate()
     inner_face = stair.shell_od_in + stair.gap_in + THICKNESS_IN
-    outer_face = inner_face + CLEAR_IN
-    walk_center = inner_face + CLEAR_IN / 2.0
+    outer_face = inner_face + stair.clear_in
+    walk_center = inner_face + stair.clear_in / 2.0
     sweep = stair.treads * (stair.run_in / walk_center)
     rise = stair.treads * stair.rise_in
     radial_ext = outer_end_ext_in(inner_face, outer_face)
@@ -239,20 +239,15 @@ def stair_plan(
 ) -> tuple[list[float], list[tuple[float, float]]]:
     """Plan angles: every tread centerline, and each platform's two radial sides (mid ones, then the top one)."""
     per_flight = flight_treads(stair.treads, platforms)
-    flight = StringerMock(
-        shell_od_in=stair.shell_od_in, gap_in=stair.gap_in, treads=per_flight, rise_in=stair.rise_in,
-        run_in=stair.run_in, plate_width_in=stair.plate_width_in,
-    )
-    turn, _lift = flight_step(flight)
+    turn, _lift = flight_step(replace(stair, treads=per_flight))
     inner_face = stair.shell_od_in + stair.gap_in + THICKNESS_IN
-    walk_center = inner_face + CLEAR_IN / 2.0
-    step = stair.run_in / walk_center
+    step = stair.run_in / (inner_face + stair.clear_in / 2.0)
     cap = (TREAD_DEPTH_IN / 2.0 + END_EXT_IN) / inner_face
     treads = [k * turn + i * step for k in range(platforms + 1) for i in range(1, per_flight + 1)]
     spans = []
     for k in range(platforms + (1 if top_platform else 0)):
         side_a = k * turn + per_flight * step + cap
-        spans.append((side_a, side_a + PLATFORM_CLEAR_IN / walk_center))
+        spans.append((side_a, side_a + PLATFORM_CLEAR_IN / (inner_face + CLEAR_IN / 2.0)))
     return treads, spans
 
 
@@ -262,13 +257,14 @@ def flight_step(stair: StringerMock, clear_in: float = PLATFORM_CLEAR_IN) -> tup
     ``stair.treads`` is the treads in one flight. The flight below stops 1/8 in
     past its top tread, the platform runs ``clear_in`` along the walk centerline
     from there, and the next flight starts on the far side with its first tread
-    level with the platform, as the lisp shares that tread between flights.
+    level with the platform, as the lisp shares that tread between flights. The
+    treads step along the flight's own walk centerline; a platform is always the
+    full width, lined up on the inner stringer, so it runs along the full stair's.
     """
     inner_face = stair.shell_od_in + stair.gap_in + THICKNESS_IN
-    walk_center = inner_face + CLEAR_IN / 2.0
-    step = stair.run_in / walk_center
+    step = stair.run_in / (inner_face + stair.clear_in / 2.0)
     cap = (TREAD_DEPTH_IN / 2.0 + END_EXT_IN) / inner_face
-    turn = (stair.treads - 1) * step + 2.0 * cap + clear_in / walk_center
+    turn = (stair.treads - 1) * step + 2.0 * cap + clear_in / (inner_face + CLEAR_IN / 2.0)
     return turn, (stair.treads - 1) * stair.rise_in
 
 
