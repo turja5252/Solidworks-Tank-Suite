@@ -200,9 +200,10 @@ def add_platform_posts(
 def _side_posts(model, tread_index: int, lines, tread_top: float, profile: str, progress) -> BraceResult:
     """On a stair narrower than its platforms: a post on each side channel just outside the flight's top
     rail, its flat leg out along the channel's back and bolted through the web, its other leg turned
-    toward the flight, back to back with the flight's end angle and bolted to it."""
+    toward the flight, back to back with the flight's end angle and bolted to it. It runs up to the
+    underside of the platform rail's top leg."""
     heel_r = side_post_heel(lines)
-    ys = (lines.top - CHANNEL_IN + PLATFORM_FOOT_IN, tread_top + RAIL_TOP_IN - TOP_GAP_IN)
+    ys = (lines.top - CHANNEL_IN + PLATFORM_FOOT_IN, tread_top + RAIL_TOP_IN - THK_IN)
     name = f"ElitePlatform{tread_index:02d}Post"
     middle = lines.top - CHANNEL_IN / 2.0
     hole_ys = (middle - PLATFORM_HOLE_SPACE_IN / 2.0, middle + PLATFORM_HOLE_SPACE_IN / 2.0)
@@ -219,7 +220,8 @@ def _side_posts(model, tread_index: int, lines, tread_top: float, profile: str, 
         s._hide_construction(model)
     note = (
         f"Platform after tread {tread_index}: L2x2x1/4 posts {ys[1] - ys[0]:.2f} in long on both side channels "
-        "just outside the flights' top rails, bolted through the web with two 13/16 holes 1-3/4 in apart."
+        "just outside the flights' top rails, up to the underside of the platform rail's top leg, bolted through "
+        "the web with two 13/16 holes 1-3/4 in apart."
         + (f" Holes missed at end(s) {', '.join(missed)}." if missed else "")
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)

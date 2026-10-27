@@ -598,9 +598,9 @@ def _level_angle(model, a, b, out, profile: str, name: str) -> None:
 # ------------------------------------------------- narrow stairs: the platform corners
 #
 # With treads narrower than the platform, the platform stands out past the outer stringer. At each side a
-# flight meets, the flight's top rail runs on square to 1/4 in short of the platform's side, into an end
-# angle welded across its end that stands back to back with the post on the side channel and bolts to
-# it: the flight and the platform are shop pieces with nothing welded in the field. The platform's
+# flight meets, the flight's top rail runs on square to the platform's side over an end angle welded
+# under its end, which stands back to back with the post on the side channel and bolts to it: the
+# flight and the platform are shop pieces with nothing welded in the field. The platform's
 # rails and toe plate run along the outer edge, mitered round both outer corners and back along each
 # side to that post. Pieces meeting at an outer corner are mitered on the plane halving the angle
 # between their runs: ``m`` below, the piece before the corner keeping the side away from it.
@@ -658,13 +658,13 @@ def _outer_miter(side: _Side, mid: float):
 
 
 def _corner_end_piece(model, side: _Side, heel_r: float, grating: float, profile: str, mid_top: float, name: str) -> None:
-    """L2x2 across the end of the flight's top rail, heel to heel with the side post: one leg along the
+    """L2x2 under the end of the flight's top rail, heel to heel with the side post: one leg along the
     outside of the rail, back to back with the post's turned leg and bolted to it, the bolts out from the
     tank; the other in across the rail's end in the platform's side. From the platform midrail's bottom,
-    for the flight's midrail to be welded on, up flush with the rail's top."""
-    ys = (grating + mid_top - BAR_IN, grating + RAIL_TOP_IN)
+    for the flight's midrail to be welded on, up to the underside of the rail's top leg."""
+    ys = (grating + mid_top - BAR_IN, grating + RAIL_TOP_IN - THK_IN)
     _upright_angle(model, side.phi, heel_r, -1.0, side.out_t, ys, LEG_IN, profile, name)
-    middle = (ys[0] + ys[1]) / 2.0
+    middle = (ys[0] + grating + RAIL_TOP_IN) / 2.0  # the span up to the top rail's top, as the lisp centers it
     t = side.out_t * HOLE_GAUGE_IN
     centers = [side.world(heel_r - THK_IN, t, middle + dy) for dy in (END_BOLT_SPACE_IN / 2.0, -END_BOLT_SPACE_IN / 2.0)]
     radius = HOLE_DIA_IN / 2.0 * _INCH
@@ -688,8 +688,9 @@ def _corner_landing(
     model, below: _Flight, above: _Flight | None, face_r, r_a, r_b, profile, mid_top, progress,
 ) -> None:
     """Top rail at a platform wider than the stair. At each side a flight meets: the end angle, and the
-    flight's level piece on along its line, square into it. Then the platform's rail: a return along each
-    side from the side post, and the run along the outer edge, mitered round the corners."""
+    flight's level piece on along its line over it, square at the platform's side. Then the platform's
+    rail: a return along each side from the side post, and the run along the outer edge, mitered round
+    the corners."""
     tag = f"ElitePlatform{below.last.index:02d}Rail"
     lines = _lines_of(below, r_a, r_b)
     grating = below.last.y1
@@ -705,7 +706,7 @@ def _corner_landing(
         along = _unit(tuple(side.world(face_r, 0.0, top)[i] - joint[i] for i in range(3)))
         out = _outward(along, side.phi)
         start = _shift(joint, out, -THK_IN)
-        stop = _meet(start, along, side.world(face_r, side.out_t * THK_IN, top), _radial(side.phi))
+        stop = _meet(start, along, side.world(face_r, 0.0, top), _radial(side.phi))
         _corner_end_piece(model, side, heel_r, grating, profile, mid_top, f"{tag}End{key}")
         bodies0 = s._body_names(model)
         ends = (_shift(start, along, -OVERHANG_IN), _shift(stop, along, OVERHANG_IN))
