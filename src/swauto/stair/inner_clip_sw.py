@@ -74,6 +74,15 @@ class _Clip:
     shell_r: float  # shell OD
     y0: float  # tread top, the bottom of the clip
 
+    @property
+    def radial(self) -> tuple[float, float, float]:
+        return (-math.sin(self.phi), 0.0, math.cos(self.phi))
+
+    @property
+    def travel(self) -> tuple[float, float, float]:
+        """Toward the upper treads."""
+        return (-math.cos(self.phi), 0.0, -math.sin(self.phi))
+
     def world(self, r: float, t: float, y: float) -> tuple[float, float, float]:
         """Inches: r out along the hole line, t toward the upper treads, y up."""
         c, sn = math.cos(self.phi), math.sin(self.phi)
@@ -324,7 +333,8 @@ def _landing_and_pad(model, clip: _Clip, name: str) -> None:
                 raise SolidWorksError(f"{name}: landing clip edge failed.")
 
     leg_face = clip.world(clip.heel_r - LONG_LEG_IN / 2.0, heel_t, clip.y_mid)
-    landing_sketch = _sketch_at(model, leg_face, f"{name}LandingSk", draw_landing)
+    # Faces are found from the bodies: a pick through the view can take the face in front.
+    landing_sketch = _sketch_at(model, leg_face, f"{name}LandingSk", draw_landing, clip.travel)
     _extrude_to(
         model, landing_sketch, LANDING_THK_IN, clip.world((root + tip) / 2.0, clip.landing_t, clip.y_mid),
         TALL_IN + 0.1, f"{name}Landing",
@@ -334,7 +344,7 @@ def _landing_and_pad(model, clip: _Clip, name: str) -> None:
         _draw_pad(manager, lambda t, y: to_sketch(clip.world(root, t, y)), clip.landing_t, clip.y_mid, PAD_TALL_IN, name)
 
     # The landing clip's end at the shell is the pad's outside face.
-    pad_sketch = _sketch_at(model, clip.world(root, clip.landing_t, clip.y_mid), f"{name}PadSk", draw_pad)
+    pad_sketch = _sketch_at(model, clip.world(root, clip.landing_t, clip.y_mid), f"{name}PadSk", draw_pad, clip.radial)
     _extrude_to(
         model, pad_sketch, PAD_THK_IN, clip.world(clip.shell_r + PAD_THK_IN / 2.0, clip.landing_t, clip.y_mid),
         PAD_TALL_IN + 0.1, f"{name}Pad",
@@ -346,7 +356,7 @@ def _stringer_holes(model, clip: _Clip, name: str) -> bool:
     back = clip.heel_r - LEG_THK_IN
     centers = [clip.world(back, 0.0, y) for y in clip.hole_ys]
     reach = LEG_THK_IN + THICKNESS_IN + (clip.tank_face - clip.heel_r) + 0.06
-    if not _cut_holes(model, clip.world(back, 0.0, clip.y_mid), centers, reach, f"{name}Holes"):
+    if not _cut_holes(model, clip.world(back, 0.0, clip.y_mid), clip.radial, centers, reach, f"{name}Holes"):
         return False
     return all(
         s._stringer_has_hole(model, clip.tank_face, clip.world(clip.tank_face, 0.0, y), HOLE_DIA_IN / 2.0, 0.12 * _INCH)
@@ -361,11 +371,11 @@ def _landing_holes(model, clip: _Clip, name: str) -> bool:
     r = clip.heel_r - LANDING_HOLE_IN
     centers = [clip.world(r, face_t, y) for y in clip.hole_ys]
     pick = clip.world(r + 1.0, face_t, clip.y_mid)
-    return _cut_holes(model, pick, centers, LANDING_THK_IN + LEG_THK_IN + 0.06, f"{name}LandingHoles")
+    return _cut_holes(model, pick, clip.travel, centers, LANDING_THK_IN + LEG_THK_IN + 0.06, f"{name}LandingHoles")
 
 
-def _cut_holes(model, pick, centers, reach: float, name: str) -> bool:
-    """Circles at ``centers`` on the face at ``pick``, cut both ways. True when every hole is in."""
+def _cut_holes(model, pick, normal, centers, reach: float, name: str) -> bool:
+    """Circles at ``centers`` on the face at ``pick``, square to ``normal``, cut both ways. True when all are in."""
 
     def draw(manager, to_sketch):
         for point in centers:
@@ -374,7 +384,7 @@ def _cut_holes(model, pick, centers, reach: float, name: str) -> bool:
                 raise SolidWorksError(f"{name}: hole circle failed.")
 
     try:
-        sketch = _sketch_at(model, pick, f"{name}Sk", draw)
+        sketch = _sketch_at(model, pick, f"{name}Sk", draw, normal)
     except SolidWorksError:
         return False
     feature = s._cut_both_ways(model, sketch, reach)
