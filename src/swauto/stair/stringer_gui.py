@@ -38,12 +38,18 @@ from swauto.stair.stringer_sw import create_stringer_try
 from swauto.stair.tread_joint import TreadJointSpec, layout_tread_joint
 from swauto.stair.tread_joint_sw import create_tread_joint
 from swauto.tank.profile import course_radii_m
+from swauto.tank.project import TankProject
 
 _PLAN = 280
 
 
-def _tank_od_radius_in(shared: dict | None) -> float | None:
+def _tank_od_radius_in(shared: dict | TankProject | None) -> float | None:
     """Shell OD radius of the tank on the Tank Properties tab, if it has one."""
+    if isinstance(shared, TankProject):
+        try:
+            return shared.course1_od_radius_in()
+        except ValueError:
+            return None
     if not shared:
         return None
     tank = shared.get("spec")
@@ -225,7 +231,9 @@ def _stair_stage_plan(
     return plan
 
 
-def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict | None = None) -> None:
+def build_stringer_tab(
+    parent: ttk.Frame, status_var: tk.StringVar, shared: dict | TankProject | None = None
+) -> None:
     spec = StringerMock()
     tank_radius = _tank_od_radius_in(shared)
     if tank_radius is not None:
@@ -267,6 +275,8 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     _field(top, 2, 0, "Diameter", diameter_var, "in")
     _field(top, 2, 3, "Gap", gap_var, "in")
 
+    follow_var = tk.BooleanVar(value=True)
+
     def from_tank() -> None:
         radius = _tank_od_radius_in(shared)
         if radius is None:
@@ -274,8 +284,11 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             return
         diameter_var.set(_fmt_num(radius * 2.0))
 
-    ttk.Button(top, text="From Tank Properties", command=from_tank).grid(
-        row=2, column=6, columnspan=2, sticky="w", padx=(6, 0), pady=(4, 0)
+    ttk.Checkbutton(top, text="Follow shell", variable=follow_var).grid(
+        row=2, column=6, sticky="w", padx=(6, 0), pady=(4, 0)
+    )
+    ttk.Button(top, text="From Tank", command=from_tank).grid(
+        row=2, column=7, sticky="w", padx=(6, 0), pady=(4, 0)
     )
     _field(top, 3, 0, "Treads", treads_var, "")
     _field(top, 3, 3, "Rise", rise_var, "in")
@@ -799,6 +812,29 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
 
     _bind_wheel(top, on_wheel)
     scroller.bind("<MouseWheel>", on_wheel)
+
+    def _on_project(project: TankProject, _reason: str) -> None:
+        if not follow_var.get():
+            return
+        try:
+            od = project.course1_od_in()
+        except ValueError:
+            return
+        new = _fmt_num(od)
+        if diameter_var.get().strip() != new:
+            diameter_var.set(new)
+
+    if isinstance(shared, TankProject):
+        shared.subscribe(_on_project)
+        if follow_var.get():
+            _on_project(shared, "sync")
+
+        def _toggle_follow(*_args) -> None:
+            if follow_var.get() and isinstance(shared, TankProject):
+                _on_project(shared, "sync")
+
+        follow_var.trace_add("write", _toggle_follow)
+
     refresh()
 
 

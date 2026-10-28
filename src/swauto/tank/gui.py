@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 from swauto.comutil import format_com_error
 from swauto.errors import SolidWorksError, SolidWorksNotRunning, SolidWorksUnavailable
 from swauto.session import connect
+from swauto.tank.project import TankProject
 from swauto.tank.shell import LiveTank, create_tank_shell
 from swauto.tank.spec import (
     DEFAULT_MAX_PLATE_IN,
@@ -128,8 +129,19 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | N
     btn_row.grid(row=5, column=0, columnspan=10, sticky="ew", pady=(10, 0))
     create_btn = ttk.Button(btn_row, text="Create tank shell in SolidWorks")
     create_btn.pack(side="left")
-    ttk.Button(btn_row, text="Save…", command=lambda: _save(read_spec)).pack(side="left", padx=6)
-    ttk.Button(btn_row, text="Load…", command=lambda: _load(apply_spec)).pack(side="left")
+    ttk.Button(btn_row, text="Save shell…", command=lambda: _save(read_spec)).pack(side="left", padx=6)
+    ttk.Button(btn_row, text="Load shell…", command=lambda: _load(apply_spec)).pack(side="left")
+    if isinstance(holder, TankProject):
+        ttk.Button(
+            btn_row,
+            text="Save project…",
+            command=lambda: _save_project(holder, read_spec),
+        ).pack(side="left", padx=6)
+        ttk.Button(
+            btn_row,
+            text="Load project…",
+            command=lambda: _load_project(holder, apply_spec),
+        ).pack(side="left")
 
     def read_spec() -> TankSpec:
         courses = []
@@ -363,3 +375,43 @@ def _load(apply_spec) -> None:
         apply_spec(spec)
     except Exception as exc:  # noqa: BLE001
         messagebox.showerror("Tank Properties", f"Could not load file:\n{exc}")
+
+
+def _save_project(project: TankProject, read_spec) -> None:
+    try:
+        shell = read_spec()
+        shell.validate()
+    except ValueError as exc:
+        messagebox.showerror("Tank project", str(exc))
+        return
+    project.set_shell(shell, reason="shell")
+    path = filedialog.asksaveasfilename(
+        title="Save tank project",
+        defaultextension=".tank.json",
+        filetypes=[("Tank project", "*.tank.json"), ("JSON", "*.json"), ("All", "*.*")],
+    )
+    if not path:
+        return
+    project.save_json(path)
+    messagebox.showinfo("Tank project", f"Saved coherent tank project:\n{path}")
+
+
+def _load_project(project: TankProject, apply_spec) -> None:
+    path = filedialog.askopenfilename(
+        title="Load tank project",
+        filetypes=[("Tank project", "*.tank.json"), ("JSON", "*.json"), ("All", "*.*")],
+    )
+    if not path:
+        return
+    try:
+        loaded = TankProject.load_json(path)
+    except Exception as exc:  # noqa: BLE001
+        messagebox.showerror("Tank project", f"Could not load project:\n{exc}")
+        return
+    project.follow_shell = loaded.follow_shell
+    project.floor = loaded.floor
+    project.roof = loaded.roof
+    project.stair = loaded.stair
+    apply_spec(loaded.shell)
+    project.set_shell(loaded.shell, reason="shell")
+    messagebox.showinfo("Tank project", f"Loaded tank project:\n{path}")
