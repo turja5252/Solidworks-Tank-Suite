@@ -12,6 +12,7 @@ import contextlib
 import math
 
 from swauto.comutil import as_model_doc, com_nothing, com_value, format_com_error
+from swauto.display import display_frozen, redraw, set_display_live
 from swauto.errors import SolidWorksError
 from swauto.features import find_feature, iter_features
 from swauto.params import rebuild, rename_feature
@@ -157,15 +158,26 @@ def _build_individual_curved_plates(model, spec: TankSpec) -> list[str]:
     axis = _ensure_tank_axis(model)
     warnings: list[str] = []
     built = 0
-    for plate in plates:
-        try:
-            warning = _build_one_plate(model, plate, axis)
-        except SolidWorksError as exc:
-            warnings.append(str(exc))
-            continue
-        built += 1
-        if warning:
-            warnings.append(warning)
+    # Freeze paints while a course's plates are created; flash the view at each
+    # course boundary so the shell still "grows" without waiting on every plate.
+    course_no = None
+    set_display_live(model, False)
+    try:
+        for plate in plates:
+            if course_no is not None and plate.course_no != course_no:
+                redraw(model)
+                set_display_live(model, False)
+            course_no = plate.course_no
+            try:
+                warning = _build_one_plate(model, plate, axis)
+            except SolidWorksError as exc:
+                warnings.append(str(exc))
+                continue
+            built += 1
+            if warning:
+                warnings.append(warning)
+    finally:
+        redraw(model)
     _hide_construction_geometry(model)
     if built == 0:
         detail = "\n".join(warnings) if warnings else "No plate revolve succeeded."

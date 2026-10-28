@@ -24,7 +24,9 @@ from swauto.tank.spec import TankSpec
 _CENTER_LABELS = ("Plate on centerline", "Seam on centerline")
 _CENTER_VALUES = (CENTER_PLATE, CENTER_SEAM)
 _PLAY_MS = 420
-_BUILD_PAUSE_S = 0.65
+# Beat between SolidWorks rows after graphics unfreeze (animation, not work time).
+_ANIM_LABELS = ("Off", "Fast", "Normal", "Slow")
+_ANIM_PAUSE_S = (0.0, 0.05, 0.12, 0.35)
 _CANVAS = 340
 
 
@@ -88,6 +90,15 @@ def build_floor_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | 
     build_btn.pack(side="left")
     play_btn = ttk.Button(btn_row, text="Play rows")
     play_btn.pack(side="left", padx=6)
+    ttk.Label(btn_row, text="SW animation").pack(side="left", padx=(12, 4))
+    anim_var = tk.StringVar(value="Fast")
+    ttk.Combobox(
+        btn_row,
+        textvariable=anim_var,
+        values=_ANIM_LABELS,
+        width=8,
+        state="readonly",
+    ).pack(side="left")
 
     def read_spec() -> FloorSpec:
         try:
@@ -202,12 +213,16 @@ def build_floor_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | 
                 status_var.set(f"Floor row {number} of {total} — watch SolidWorks")
                 root.update()
 
+            try:
+                pause_s = _ANIM_PAUSE_S[_ANIM_LABELS.index(anim_var.get())]
+            except ValueError:
+                pause_s = _ANIM_PAUSE_S[1]
             result = create_floor(
                 session.app,
                 spec_now,
                 model=model,
                 on_row=on_row,
-                pause_s=_BUILD_PAUSE_S,
+                pause_s=pause_s,
             )
         except (SolidWorksNotRunning, SolidWorksUnavailable, SolidWorksError, ValueError) as exc:
             state["busy"] = False
