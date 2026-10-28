@@ -39,6 +39,11 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | N
     spec = TankSpec()
     state: dict[str, object] = {"live": None, "after_id": None, "busy": False}
 
+    def course_one_gaps(spec_now: TankSpec) -> list:
+        """Course-1 stretches the FTCO tab keeps for its insert plates, if it has any."""
+        gaps = (holder or {}).get("course_one_gaps")
+        return list(gaps(spec_now)) if callable(gaps) else []
+
     top = ttk.Frame(parent, padding=8)
     top.grid(row=0, column=0, sticky="nsew")
     parent.columnconfigure(0, weight=1)
@@ -228,7 +233,7 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | N
         try:
             root.iconify()
             session = connect()
-            live.update(session.app, spec_now)
+            live.update(session.app, spec_now, course_one_gaps(spec_now))
         except (SolidWorksNotRunning, SolidWorksUnavailable, SolidWorksError, ValueError) as exc:
             status_var.set("Tank update failed.")
             if show_errors:
@@ -261,7 +266,7 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | N
         root.iconify()
         try:
             session = connect()
-            result = create_tank_shell(session.app, spec_now)
+            result = create_tank_shell(session.app, spec_now, course_one_gaps(spec_now))
         except (SolidWorksNotRunning, SolidWorksUnavailable, SolidWorksError, ValueError) as exc:
             root.deiconify()
             root.lift()

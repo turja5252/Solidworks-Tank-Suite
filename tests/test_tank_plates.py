@@ -1,6 +1,10 @@
 import math
 
+import pytest
+
 from swauto.tank.plates import (
+    CourseOneGap,
+    course_one_pieces,
     course_seam_shift_in,
     developed_circumference_in,
     layout_plates,
@@ -95,3 +99,67 @@ def test_plate_plane_contains_start_azimuth():
     plane = containing_plane_angle(two_thirds)
     assert abs(plane + math.pi / 3.0) < 1e-9
     assert radius_sign_for_azimuth(plane, two_thirds) == -1.0
+
+
+# Course 1 around FTCO insert plates: a 1000 in course of four 250 in plates, seams from 0.
+
+
+def _lengths(pieces):
+    return [round(length, 6) for _start, length in pieces]
+
+
+def test_left_anchor_puts_a_seam_on_the_near_edge_and_the_far_edge_cuts_a_plate_short():
+    pieces = course_one_pieces(1000.0, 250.0, 0.0, 300.0, [CourseOneGap(500.0, 130.0, "left")])
+    assert [round(start, 6) for start, _ in pieces] == [185.0, 565.0, 685.0, 935.0]
+    assert _lengths(pieces) == [250.0, 120.0, 250.0, 250.0]
+
+
+def test_right_anchor_puts_the_seam_on_the_far_edge():
+    pieces = course_one_pieces(1000.0, 250.0, 0.0, 300.0, [CourseOneGap(500.0, 130.0, "right")])
+    assert [round(start, 6) for start, _ in pieces] == [65.0, 315.0, 565.0, 815.0]
+    assert _lengths(pieces) == [250.0, 120.0, 250.0, 250.0]
+
+
+def test_short_anchor_takes_the_edge_already_nearest_a_seam():
+    # Edges at 455 and 585; the seam at 500 is 45 from the left edge and 85 from the right.
+    pieces = course_one_pieces(1000.0, 250.0, 0.0, 300.0, [CourseOneGap(520.0, 130.0, "short")])
+    assert any(abs(start + length - 455.0) < 1e-6 for start, length in pieces)
+    assert sum(length for _, length in pieces) == pytest.approx(870.0)
+
+
+def test_unanchored_gaps_split_each_open_stretch_evenly():
+    gaps = [CourseOneGap(250.0, 100.0), CourseOneGap(750.0, 100.0)]
+    pieces = course_one_pieces(1000.0, 250.0, 0.0, 300.0, gaps)
+    assert sorted(round(start, 6) for start, _ in pieces) == [0.0, 300.0, 500.0, 800.0]
+    assert _lengths(pieces) == [200.0] * 4
+
+
+def test_two_anchors_fall_back_to_even_stretches_like_the_lisp():
+    gaps = [CourseOneGap(250.0, 100.0, "left"), CourseOneGap(750.0, 100.0, "right")]
+    assert _lengths(course_one_pieces(1000.0, 250.0, 0.0, 300.0, gaps)) == [200.0] * 4
+
+
+def test_a_gap_across_the_seam_origin_wraps():
+    pieces = course_one_pieces(1000.0, 250.0, 0.0, 300.0, [CourseOneGap(0.0, 130.0, "left")])
+    assert sum(length for _, length in pieces) == pytest.approx(870.0)
+    # The gap runs from 935 round through 0 to 65; every plate stays between 65 and 935.
+    assert all(65.0 - 1e-6 <= start and start + length <= 935.0 + 1e-6 for start, length in pieces)
+
+
+def test_overlapping_inserts_are_refused():
+    with pytest.raises(ValueError, match="overlap"):
+        course_one_pieces(1000.0, 250.0, 0.0, 300.0, [CourseOneGap(500.0, 130.0), CourseOneGap(550.0, 130.0)])
+
+
+def test_layout_leaves_the_gap_open_on_course_one_only():
+    c1 = Course(96, 1.0, max_length_in=480.0, stagger=STAGGER_BASE)
+    c2 = Course(96, 0.75, max_length_in=480.0, stagger=STAGGER_HALF)
+    spec = TankSpec(diameter_in=606, diameter_basis="od", courses=[c1, c2] + [Course(0, 0)] * 6)
+    plain = layout_plates(spec)
+    circ = developed_circumference_in(spec, spec.courses[0])
+    gapped = layout_plates(spec, [CourseOneGap(circ / 4.0, 149.0, "left")])
+    course1 = [p for p in gapped if p.course_no == 1]
+    assert sum(p.length_in for p in course1) == pytest.approx(circ - 149.0)
+    assert sum(p.sweep_rad for p in course1) == pytest.approx(2 * math.pi * (1 - 149.0 / circ))
+    assert [p for p in gapped if p.course_no == 2] == [p for p in plain if p.course_no == 2]
+    assert [p.plate_no for p in course1] == list(range(1, len(course1) + 1))

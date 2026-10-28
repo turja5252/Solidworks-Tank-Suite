@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import contextlib
 import math
+from collections.abc import Sequence
 
 from swauto.comutil import as_model_doc, com_nothing, com_value, format_com_error
 from swauto.errors import SolidWorksError
 from swauto.features import find_feature, iter_features
 from swauto.params import rebuild, rename_feature
 from swauto.parts import new_part, select_front_plane, select_plane
-from swauto.tank.plates import layout_plates
+from swauto.tank.plates import CourseOneGap, layout_plates
 from swauto.tank.spec import TankSpec
 
 FEATURE_PREFIX = "EliteTank"
@@ -59,11 +60,11 @@ class LiveTank:
         self.spec = spec
         self.model = model
 
-    def update(self, app, spec: TankSpec) -> None:
+    def update(self, app, spec: TankSpec, gaps: Sequence[CourseOneGap] = ()) -> None:
         spec.validate()
         model = self._resolve_model(app)
         _delete_elite_tank_features(model)
-        _build_shell_on_model(model, spec)
+        _build_shell_on_model(model, spec, gaps)
         self.spec = spec
         self.title = str(com_value(model.GetTitle) or self.title)
         self.model = model
@@ -95,11 +96,11 @@ class TankResult:
         self.note = note
 
 
-def create_tank_shell(app, spec: TankSpec) -> TankResult:
+def create_tank_shell(app, spec: TankSpec, gaps: Sequence[CourseOneGap] = ()) -> TankResult:
     spec.validate()
     try:
         model = new_part(app)
-        note = _build_shell_on_model(model, spec)
+        note = _build_shell_on_model(model, spec, gaps)
     except SolidWorksError:
         raise
     except Exception as exc:
@@ -129,10 +130,13 @@ def _error_text(exc: BaseException) -> str:
     return f"{_fail_site(exc)}: {format_com_error(exc)}"
 
 
-def _build_shell_on_model(model, spec: TankSpec) -> str:
-    """Curved plates only. A failure stays a failure — do not substitute seam lines."""
+def _build_shell_on_model(model, spec: TankSpec, gaps: Sequence[CourseOneGap] = ()) -> str:
+    """Curved plates only. A failure stays a failure — do not substitute seam lines.
+
+    ``gaps`` are course-1 stretches left open for FTCO insert plates.
+    """
     try:
-        warnings = _build_individual_curved_plates(model, spec)
+        warnings = _build_individual_curved_plates(model, spec, gaps)
     except SolidWorksError:
         raise
     except Exception as exc:
@@ -147,8 +151,8 @@ def _build_shell_on_model(model, spec: TankSpec) -> str:
     return f"{len(warnings)} plates were not finished. {warnings[0]}"
 
 
-def _build_individual_curved_plates(model, spec: TankSpec) -> list[str]:
-    plates = layout_plates(spec)
+def _build_individual_curved_plates(model, spec: TankSpec, gaps: Sequence[CourseOneGap] = ()) -> list[str]:
+    plates = layout_plates(spec, gaps)
     if not plates:
         raise SolidWorksError("No plates to build.")
 

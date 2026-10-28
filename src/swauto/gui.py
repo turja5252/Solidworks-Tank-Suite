@@ -30,6 +30,7 @@ def main() -> int:
     floor_tab = ttk.Frame(notebook)
     roof_tab = ttk.Frame(notebook)
     nozzle_tab = ttk.Frame(notebook)
+    ftco_tab = ttk.Frame(notebook)
     stringer_tab = ttk.Frame(notebook)
     joint_tab = ttk.Frame(notebook)
     cyl_tab = ttk.Frame(notebook)
@@ -37,6 +38,7 @@ def main() -> int:
     notebook.add(floor_tab, text="Floor")
     notebook.add(roof_tab, text="Roof")
     notebook.add(nozzle_tab, text="Shell Nozzles")
+    notebook.add(ftco_tab, text="FTCO")
     notebook.add(stringer_tab, text="Stringer")
     notebook.add(joint_tab, text="Tread Joint")
     notebook.add(cyl_tab, text="Live Cylinder")
@@ -44,6 +46,7 @@ def main() -> int:
     build_floor_tab(floor_tab, status_var, shared)
     build_roof_tab(roof_tab, status_var, shared)
     _build_nozzle_tab(nozzle_tab, status_var, shared)
+    _build_cleanout_tab(ftco_tab, status_var, shared)
     build_stringer_tab(stringer_tab, status_var, shared)
     build_tread_joint_tab(joint_tab, status_var)
     _build_cylinder_tab(cyl_tab, status_var)
@@ -65,6 +68,22 @@ def _build_nozzle_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict[
         ttk.Label(
             parent,
             text=f"The Shell Nozzles tab could not load:\n{type(exc).__name__}: {exc}",
+            wraplength=640,
+            justify="left",
+            padding=12,
+        ).pack(anchor="w")
+
+
+def _build_cleanout_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict[str, object]) -> None:
+    """Like the nozzle tab: if the FTCO tab fails to load, say why there and keep the app up."""
+    try:
+        from swauto.cleanout.gui import build_cleanout_tab
+
+        build_cleanout_tab(parent, status_var, shared)
+    except Exception as exc:  # noqa: BLE001
+        ttk.Label(
+            parent,
+            text=f"The FTCO tab could not load:\n{type(exc).__name__}: {exc}",
             wraplength=640,
             justify="left",
             padding=12,
