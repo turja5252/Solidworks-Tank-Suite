@@ -1,0 +1,30 @@
+---
+description: Boundaries for the shell nozzle engine, which is built apart from the structural (stair) package
+alwaysApply: true
+---
+
+# Shell nozzle engine: where it lives
+
+The nozzle engine is built in its own package so the structural package cannot be harmed.
+
+- Write nozzle code only in `src/swauto/nozzle/`, and its tests only in `tests/test_nozzle_*.py`.
+- Do not edit anything in `src/swauto/stair/` (stringers, treads, platforms, posts, rails, grab rail).
+  It is separate work; touch it only when the user explicitly asks for structural work.
+- Treat these shared modules as read-only: `src/swauto/{comutil,errors,features,params,parts,session,units}.py`
+  and `src/swauto/tank/`. Import from them freely. If one needs a change, ask the user first, or copy the
+  helper into `src/swauto/nozzle/`.
+- Do not import from `swauto.stair` in nozzle code; copy what you need, so neither side breaks the other.
+- The app tab is already wired: `src/swauto/gui.py` calls `build_nozzle_tab(parent, status_var, shared)`
+  in `src/swauto/nozzle/gui.py`, and shows any error inside the tab instead of crashing. Don't edit `gui.py`.
+
+## Where the shell comes from
+
+- `shared["spec"]` is the `TankSpec` from the Tank Properties tab (`swauto.tank.spec`): diameter, wall basis
+  (`od`/`id`/`mw`), and courses bottom up (`active_courses()`, each with `height_in` and `thickness_in`).
+- `swauto.tank.profile.course_radii_m(spec, course)` gives a course's outer and inner radius in meters.
+- `shared["live"].model` is the shell's SolidWorks part, once the user has built it on Tank Properties.
+
+## Layout
+
+Follow the tank package: geometry and rules in plain modules that test without SolidWorks
+(for example `nozzle/spec.py`), SolidWorks code in `*_sw.py`, the tab in `gui.py`.

@@ -1,0 +1,23 @@
+---
+description: SolidWorks 2013 automation from Python (pywin32 late binding) - conventions and traps found in this project
+globs: src/swauto/**/*.py
+alwaysApply: false
+---
+
+# SolidWorks 2013 from Python
+
+- SolidWorks works in meters, the code in inches: convert at the API (`* 0.0254`). Y is up; the tank axis is X = Z = 0.
+- Late binding turns some no-argument methods into properties (`FirstFeature`, `GetNextFeature`, `GetActiveSketch2`,
+  `EditRebuild3`). Read them through `swauto.comutil.com_value`; reading `model.EditRebuild3` rebuilds.
+- Draw sketches with `SketchManager.AddToDB = True` and plain `CreateLine`/`CreateArc`/`CreateCircleByRadius`.
+  `CreateCornerRectangle` has dropped a corner onto the sketch origin: draw four lines and read the points back.
+- Body names change when later features or rebuilds touch them. Find bodies by geometry (box, mass center), not name.
+- `InsertMoveCopyBody2` turns or moves, not both: given both it turns and drops the move. Turn, then move.
+  Select the body with mark 1 or the call does nothing.
+- `InsertSheetMetalLoftedBend(side, thickness)`: the first argument is a side flag, and which side 0 gives depends on
+  what is already in the part. Read the wall back.
+- Check every feature you make (it exists, it cut what it should). If not, delete what that attempt made.
+- Keep graphics on. Don't hide the Front, Top and Right planes. Don't call `GetMathUtility().CreatePoint`.
+- One script drives SolidWorks at a time. Before running one, check no app build is running (a `pythonw` process
+  busy with SolidWorks). Test in a new part, not the user's open part. If SolidWorks shows a dialog, ask the user.
+- Don't search or read SolidWorks' install folders or other installed programs' files.

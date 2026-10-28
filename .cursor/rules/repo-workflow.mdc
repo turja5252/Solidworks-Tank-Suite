@@ -1,0 +1,15 @@
+---
+description: Git, scratch files and app restarts in this repository
+alwaysApply: true
+---
+
+# Repo workflow
+
+- Don't commit or push unless the user asks. Don't change git config.
+- Commit as the user, through environment variables: `GIT_AUTHOR_NAME` and `GIT_COMMITTER_NAME` = `Tanzim Nasir`,
+  `GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_EMAIL` = `tanzim.nasir@eliteintegrityservices.com`.
+  Git is `C:\Program Files\Git\cmd\git.exe`; remote `origin`, branch `main`.
+- Never stage `README.md`; it stays modified and uncommitted. Stage files by name, not `git add -A`.
+- Write the commit message to a UTF-8 file and use `git commit -F`.
+- Scratch scripts go in `C:\Temp` and are deleted afterwards, one file at a time; never delete `C:\Temp` recursively.
+- The app loads the code when it starts: after a change, the user has to close and reopen "Elite SW Auto".
