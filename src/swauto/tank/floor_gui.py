@@ -19,6 +19,7 @@ from swauto.tank.floor import (
 )
 from swauto.tank.floor_sw import create_floor
 from swauto.tank.profile import course_radii_m
+from swauto.tank.project import TankProject
 from swauto.tank.spec import TankSpec
 
 _CENTER_LABELS = ("Plate on centerline", "Seam on centerline")
@@ -70,6 +71,10 @@ def build_floor_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | 
         row=5, column=1, columnspan=2, sticky="w", pady=(6, 0)
     )
     _field(top, 6, 0, "Center shift", shift_var, "in")
+    follow_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(top, text="Follow shell OD", variable=follow_var).grid(
+        row=7, column=0, columnspan=3, sticky="w", pady=(6, 0)
+    )
     ttk.Button(top, text="Use course 1 OD", command=lambda: _use_shell_od(holder, diameter_var)).grid(
         row=7, column=3, columnspan=2, sticky="w", pady=(6, 0)
     )
@@ -250,6 +255,29 @@ def build_floor_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | 
         shift_var,
     ):
         var.trace_add("write", refresh)
+
+    def _on_project(project: TankProject, _reason: str) -> None:
+        if not follow_var.get():
+            return
+        try:
+            od = project.course1_od_in()
+        except ValueError:
+            return
+        new = f"{od:.6g}"
+        if diameter_var.get().strip() != new:
+            diameter_var.set(new)
+
+    if isinstance(holder, TankProject):
+        holder.subscribe(_on_project)
+        if follow_var.get():
+            _on_project(holder, "sync")
+
+        def _toggle_follow(*_args) -> None:
+            if follow_var.get() and isinstance(holder, TankProject):
+                _on_project(holder, "sync")
+
+        follow_var.trace_add("write", _toggle_follow)
+
     refresh()
 
 
@@ -259,7 +287,13 @@ def _field(parent, row: int, column: int, label: str, variable: tk.StringVar, un
     ttk.Label(parent, text=unit).grid(row=row, column=column + 2, sticky="w", padx=(2, 10), pady=(4, 0))
 
 
-def _use_shell_od(holder: dict | None, diameter_var: tk.StringVar) -> None:
+def _use_shell_od(holder: dict | TankProject | None, diameter_var: tk.StringVar) -> None:
+    if isinstance(holder, TankProject):
+        try:
+            diameter_var.set(f"{holder.course1_od_in():.6g}")
+        except ValueError as exc:
+            messagebox.showerror("Floor", str(exc))
+        return
     spec = holder.get("spec") if holder else None
     if not isinstance(spec, TankSpec) or not spec.active_courses():
         messagebox.showerror("Floor", "Set a shell on Tank Properties first.")

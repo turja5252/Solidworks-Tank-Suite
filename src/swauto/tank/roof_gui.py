@@ -22,6 +22,7 @@ from swauto.tank.roof import (
     ring_profile_in,
     roof_from_tank,
 )
+from swauto.tank.project import TankProject
 from swauto.tank.roof_sw import create_roof
 from swauto.tank.spec import TankSpec
 
@@ -106,11 +107,15 @@ def build_roof_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | N
     ttk.Checkbutton(top, text="Ignore pie cut", variable=ignore_var).grid(
         row=11, column=3, columnspan=3, sticky="w", pady=(4, 0)
     )
+    follow_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(top, text="Follow shell", variable=follow_var).grid(
+        row=12, column=0, columnspan=2, sticky="w", pady=(6, 0)
+    )
     ttk.Button(
         top,
         text="Use tank shell",
-        command=lambda: _use_tank(holder, inside_var, outside_var, height_var),
-    ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        command=lambda: _use_tank(holder, inside_var, outside_var, height_var, slope_var, thickness_var),
+    ).grid(row=12, column=2, columnspan=3, sticky="w", pady=(6, 0))
 
     summary_var = tk.StringVar(value="")
     ttk.Label(top, textvariable=summary_var, justify="left").grid(
@@ -354,6 +359,23 @@ def build_roof_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | N
         ignore_var,
     ):
         var.trace_add("write", refresh)
+
+    def _on_project(project: TankProject, _reason: str) -> None:
+        if not follow_var.get():
+            return
+        _use_tank(project, inside_var, outside_var, height_var, slope_var, thickness_var, quiet=True)
+
+    if isinstance(holder, TankProject):
+        holder.subscribe(_on_project)
+        if follow_var.get():
+            _on_project(holder, "sync")
+
+        def _toggle_follow(*_args) -> None:
+            if follow_var.get() and isinstance(holder, TankProject):
+                _on_project(holder, "sync")
+
+        follow_var.trace_add("write", _toggle_follow)
+
     refresh()
 
 
@@ -364,23 +386,50 @@ def _field(parent, row: int, column: int, label: str, variable: tk.StringVar, un
 
 
 def _use_tank(
-    holder: dict | None,
+    holder: dict | TankProject | None,
     inside_var: tk.StringVar,
     outside_var: tk.StringVar,
     height_var: tk.StringVar,
+    slope_var: tk.StringVar | None = None,
+    thickness_var: tk.StringVar | None = None,
+    *,
+    quiet: bool = False,
 ) -> None:
-    spec = holder.get("spec") if holder else None
-    if not isinstance(spec, TankSpec) or not spec.active_courses():
-        messagebox.showerror("Roof", "Set a shell on Tank Properties first.")
-        return
     try:
-        roof = roof_from_tank(spec, slope_in_per_ft=0.0, thickness_in=0.25)
-    except ValueError as exc:
-        messagebox.showerror("Roof", str(exc))
-        return
-    inside_var.set(f"{roof.inside_radius_in:.6g}")
-    outside_var.set(f"{roof.outside_radius_in:.6g}")
-    height_var.set(f"{roof.shell_height_in:.6g}")
+        slope = float(slope_var.get().strip()) if slope_var is not None else 0.75
+    except ValueError:
+        slope = 0.75
+    try:
+        thickness = float(thickness_var.get().strip()) if thickness_var is not None else 0.25
+    except ValueError:
+        thickness = 0.25
+    if isinstance(holder, TankProject):
+        try:
+            roof = roof_from_tank(holder.shell, slope_in_per_ft=slope, thickness_in=thickness)
+        except ValueError as exc:
+            if not quiet:
+                messagebox.showerror("Roof", str(exc))
+            return
+    else:
+        spec = holder.get("spec") if holder else None
+        if not isinstance(spec, TankSpec) or not spec.active_courses():
+            if not quiet:
+                messagebox.showerror("Roof", "Set a shell on Tank Properties first.")
+            return
+        try:
+            roof = roof_from_tank(spec, slope_in_per_ft=slope, thickness_in=thickness)
+        except ValueError as exc:
+            if not quiet:
+                messagebox.showerror("Roof", str(exc))
+            return
+    _set_if_changed(inside_var, f"{roof.inside_radius_in:.6g}")
+    _set_if_changed(outside_var, f"{roof.outside_radius_in:.6g}")
+    _set_if_changed(height_var, f"{roof.shell_height_in:.6g}")
+
+
+def _set_if_changed(variable: tk.StringVar, value: str) -> None:
+    if variable.get().strip() != value:
+        variable.set(value)
 
 
 def _bind_page_wheel(widget, handler, skip: tuple) -> None:
