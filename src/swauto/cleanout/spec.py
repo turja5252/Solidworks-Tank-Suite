@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from swauto.tank.plates import ANCHORS
 
+PIECES = ("Insert", "Repad", "Neck", "Flange", "Gasket", "Cover", "BottomPlate")  # each one fabricated piece
 OPENING_WIDTH_IN = 48.0
 INSERT_TO_NECK_GAP_IN = 3.0 / 16.0  # insert cutout clears the neck OD by this
 REPAD_TO_NECK_GAP_IN = 1.0 / 16.0  # repad cutout clears the neck OD by this

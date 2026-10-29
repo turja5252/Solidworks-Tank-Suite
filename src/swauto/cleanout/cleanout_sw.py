@@ -29,6 +29,7 @@ from swauto.cleanout.spec import (
     LUG_TOP_HALF_IN,
     NECK_PAST_REPAD_IN,
     OPENING_WIDTH_IN,
+    PIECES,
     REPAD_TO_NECK_GAP_IN,
     TELLTALE_DIA_IN,
     Cleanout,
@@ -142,68 +143,90 @@ def delete_cleanouts(model) -> None:
 
 
 def _build_one(model, cleanout: Cleanout, frame: _Frame, shell_outside: float, circumference: float) -> None:
-    tag = PREFIX + "".join(ch for ch in cleanout.mark if ch.isalnum())
+    tag = tag_of(cleanout)
+    axis = _ensure_tank_axis(model)
+    for piece in PIECES:
+        build_piece(model, cleanout, piece, frame, shell_outside, axis)
+    _finish(model, cleanout, tag)
+
+
+def tag_of(cleanout: Cleanout) -> str:
+    return PREFIX + "".join(ch for ch in cleanout.mark if ch.isalnum())
+
+
+def build_piece(model, cleanout: Cleanout, piece: str, frame: _Frame, shell_outside: float, axis) -> None:
+    """One FTCO piece into ``model``, in place on the tank: one of ``PIECES``. ``axis`` is the tank axis."""
+    tag = tag_of(cleanout)
     dims = cleanout.dims
     insert_in = frame.r_mid - cleanout.insert_thk_in / 2.0
     insert_out = frame.r_mid + cleanout.insert_thk_in / 2.0
     repad_out = insert_out + cleanout.repad_thk_in
     flange_back = repad_out + NECK_PAST_REPAD_IN
-    axis = _ensure_tank_axis(model)
     center = azimuth_rad(cleanout.orientation_deg)
 
-    # Insert plate: course 1 between its seams, centered on the mid-wall, opening cut through.
-    half = dims.insert_length_in / 2.0 / frame.r_mid
-    _sector(model, axis, f"{tag}Insert", center, half, insert_in, insert_out, 0.0, frame.height)
-    _arch_cut(model, frame, cleanout, frame.r_mid, cleanout.neck_od_half_in + INSERT_TO_NECK_GAP_IN,
-              cleanout.insert_thk_in, f"{tag}InsertOpening", f"{tag}Insert")
+    if piece == "Insert":
+        # Course 1 between its seams, centered on the mid-wall, opening cut through.
+        half = dims.insert_length_in / 2.0 / frame.r_mid
+        _sector(model, axis, f"{tag}Insert", center, half, insert_in, insert_out, 0.0, frame.height)
+        _arch_cut(model, frame, cleanout, frame.r_mid, cleanout.neck_od_half_in + INSERT_TO_NECK_GAP_IN,
+                  cleanout.insert_thk_in, f"{tag}InsertOpening", f"{tag}Insert")
+    elif piece == "Repad":
+        # A band on the insert, cut to the outline wrapped onto the shell, then opened and drilled.
+        repad_mid = insert_out + cleanout.repad_thk_in / 2.0
+        band_half = (dims.repad_half_in + 2.0) / frame.r_mid
+        _sector(model, axis, f"{tag}RepadBand", center, band_half, insert_out, repad_out, 0.0,
+                dims.repad_top_in + 1.0)
+        _repad_outline(model, frame, cleanout, repad_mid, f"{tag}RepadKeep")
+        _common(model, f"{tag}RepadBand", f"{tag}RepadKeep", f"{tag}Repad")
+        _arch_cut(model, frame, cleanout, repad_mid, cleanout.neck_od_half_in + REPAD_TO_NECK_GAP_IN,
+                  cleanout.repad_thk_in, f"{tag}RepadOpening", f"{tag}Repad")
+        # The telltale goes square through the plate where it is, so it is sketched on the shell there.
+        tx, ty = dims.telltale
+        at_telltale = _Frame(phi=frame.phi - tx / frame.r_mid, r_mid=frame.r_mid, height=frame.height)
+        _hole_cut(model, at_telltale, repad_mid, [(0.0, ty)], TELLTALE_DIA_IN,
+                  cleanout.repad_thk_in / 2.0 + 0.5, f"{tag}Telltale", f"{tag}Repad")
+    elif piece == "Neck":
+        # The opening's walls and arch, from past the insert's inside face out to the flange; trimmed
+        # back to the insert's inside face.
+        start = insert_in - 3.0
+        neck_mid = (start + flange_back) / 2.0
+        _flat(model, frame, neck_mid, (flange_back - start) / 2.0, _neck_outline(cleanout), f"{tag}NeckRaw")
+        span = (cleanout.neck_od_half_in + 3.0) / frame.r_mid
+        _sector(model, axis, f"{tag}NeckTrim", center, span, 1.0, insert_in, -1.0, dims.opening_height_in + 2.0)
+        _subtract(model, f"{tag}NeckRaw", f"{tag}NeckTrim", f"{tag}Neck")
+    elif piece in ("Flange", "Gasket", "Cover"):
+        # Stacked out from the neck end, each with the bolt holes: flange, full-face gasket, cover.
+        holes = [((x, y), BOLT_HOLE_DIA_IN / 2.0) for x, y in dims.bolt_holes]
+        s = flange_back
+        for name, thk, loops in (
+            ("Flange", cleanout.flange_thk_in, [_flange_outer(cleanout), _neck_od_closed(cleanout)]),
+            ("Gasket", cleanout.gasket_thk_in, [_flange_outer(cleanout), _neck_od_closed(cleanout)]),
+            ("Cover", cleanout.cover_thk_in, [_cover_outer(cleanout)]),
+        ):
+            if name == piece:
+                circles = holes + ([((0.0, dims.arch_center_in + LUG_HOLE_RISE_IN), LUG_HOLE_DIA_IN / 2.0)]
+                                   if name == "Cover" else [])
+                _flat(model, frame, s + thk / 2.0, thk / 2.0, loops, f"{tag}{name}", circles)
+                break
+            s += thk
+    elif piece == "BottomPlate":
+        _bottom_plate(model, frame, cleanout, center, shell_outside, flange_back, f"{tag}BottomPlate")
+    else:
+        raise SolidWorksError(f"{cleanout.mark}: no FTCO piece called {piece!r}.")
 
-    # Repad: a band on the insert, cut to the outline wrapped onto the shell, then opened and drilled.
-    repad_mid = insert_out + cleanout.repad_thk_in / 2.0
-    band_half = (dims.repad_half_in + 2.0) / frame.r_mid
-    _sector(model, axis, f"{tag}RepadBand", center, band_half, insert_out, repad_out, 0.0, dims.repad_top_in + 1.0)
-    _repad_outline(model, frame, cleanout, repad_mid, f"{tag}RepadKeep")
-    _common(model, f"{tag}RepadBand", f"{tag}RepadKeep", f"{tag}Repad")
-    _arch_cut(model, frame, cleanout, repad_mid, cleanout.neck_od_half_in + REPAD_TO_NECK_GAP_IN,
-              cleanout.repad_thk_in, f"{tag}RepadOpening", f"{tag}Repad")
-    # The telltale goes square through the plate where it is, so it is sketched on the shell there.
-    tx, ty = dims.telltale
-    at_telltale = _Frame(phi=frame.phi - tx / frame.r_mid, r_mid=frame.r_mid, height=frame.height)
-    _hole_cut(model, at_telltale, repad_mid, [(0.0, ty)], TELLTALE_DIA_IN,
-              cleanout.repad_thk_in / 2.0 + 0.5, f"{tag}Telltale", f"{tag}Repad")
 
-    # Neck: the opening's walls and arch, from past the insert's inside face out to the flange; trimmed
-    # back to the insert's inside face.
-    start = insert_in - 3.0
-    neck_mid = (start + flange_back) / 2.0
-    _flat(model, frame, neck_mid, (flange_back - start) / 2.0, _neck_outline(cleanout), f"{tag}NeckRaw")
-    span = (cleanout.neck_od_half_in + 3.0) / frame.r_mid
-    _sector(model, axis, f"{tag}NeckTrim", center, span, 1.0, insert_in, -1.0, dims.opening_height_in + 2.0)
-    _subtract(model, f"{tag}NeckRaw", f"{tag}NeckTrim", f"{tag}Neck")
-
-    # Flange, full-face gasket and cover, stacked out from the neck end, each with the bolt holes.
-    holes = [((x, y), BOLT_HOLE_DIA_IN / 2.0) for x, y in dims.bolt_holes]
-    s = flange_back
-    for name, thk, loops in (
-        ("Flange", cleanout.flange_thk_in, [_flange_outer(cleanout), _neck_od_closed(cleanout)]),
-        ("Gasket", cleanout.gasket_thk_in, [_flange_outer(cleanout), _neck_od_closed(cleanout)]),
-        ("Cover", cleanout.cover_thk_in, [_cover_outer(cleanout)]),
-    ):
-        circles = holes + ([((0.0, dims.arch_center_in + LUG_HOLE_RISE_IN), LUG_HOLE_DIA_IN / 2.0)]
-                           if name == "Cover" else [])
-        _flat(model, frame, s + thk / 2.0, thk / 2.0, loops, f"{tag}{name}", circles)
-        s += thk
-
-    _bottom_plate(model, frame, cleanout, center, shell_outside, flange_back, f"{tag}BottomPlate")
-    _finish(model, cleanout, tag)
-
-
-def _finish(model, cleanout: Cleanout, tag: str) -> None:
-    """Hide the planes, name the bodies for the Solid Bodies folder, and list the gasket for the BOM."""
+def hide_planes(model, tag: str) -> None:
+    """The reference planes the pieces were sketched on, out of sight."""
     for feature in list(iter_features(model)):
         name = str(com_value(feature.Name) or "")
         if name.startswith(tag) and str(com_value(feature.GetTypeName2) or "") == "RefPlane":
             _blank_reference(model, feature, name, "PLANE")
-    gasket = f"Gasket - {cleanout.gasket_material}" if cleanout.gasket_material else "Gasket"
+
+
+def _finish(model, cleanout: Cleanout, tag: str) -> None:
+    """Hide the planes, name the bodies for the Solid Bodies folder, and list the gasket for the BOM."""
+    hide_planes(model, tag)
+    gasket =f"Gasket - {cleanout.gasket_material}" if cleanout.gasket_material else "Gasket"
     for feature, label in (
         ("Insert", "Insert plate"), ("Repad", "Repad"), ("Neck", "Neck"), ("Flange", "Flange"),
         ("Gasket", gasket), ("Cover", "Cover"), ("BottomPlate", "Bottom plate"),

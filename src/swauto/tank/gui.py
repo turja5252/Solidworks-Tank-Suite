@@ -133,8 +133,9 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | N
     btn_row.grid(row=5, column=0, columnspan=10, sticky="ew", pady=(10, 0))
     create_btn = ttk.Button(btn_row, text="Create tank shell in SolidWorks")
     create_btn.pack(side="left")
-    ttk.Button(btn_row, text="Save…", command=lambda: _save(read_spec)).pack(side="left", padx=6)
-    ttk.Button(btn_row, text="Load…", command=lambda: _load(apply_spec)).pack(side="left")
+    # These write and read a tank-only file; the whole project is saved from the bar at the top.
+    ttk.Button(btn_row, text="Export tank file…", command=lambda: _save(read_spec)).pack(side="left", padx=6)
+    ttk.Button(btn_row, text="Import tank file…", command=lambda: _load(apply_spec)).pack(side="left")
 
     def read_spec() -> TankSpec:
         courses = []
@@ -188,6 +189,9 @@ def build_tank_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | N
             stagger_vars[i].set(_stagger_label(course.stagger))
             adjust_vars[i].set(f"{course.adjust_in:g}")
         refresh_height()
+
+    if holder is not None:
+        holder["apply_spec"] = apply_spec  # the Project tab fills this tab from a saved project
 
     def refresh_height(*_args) -> None:
         try:
@@ -340,7 +344,7 @@ def _save(read_spec) -> None:
         messagebox.showerror("Tank Properties", str(exc))
         return
     path = filedialog.asksaveasfilename(
-        title="Save Tank Properties",
+        title="Export the tank to its own file (the project is saved with Save project)",
         defaultextension=".json",
         filetypes=[("JSON", "*.json"), ("All", "*.*")],
     )

@@ -9,6 +9,7 @@ from tkinter import messagebox, ttk
 from swauto.cleanout.layout import course_one_gaps
 from swauto.cleanout.spec import SIZES, Cleanout
 from swauto.errors import SolidWorksError
+from swauto.tank.open_shell import find_shell
 from swauto.tank.spec import TankSpec
 
 START_ROWS = 4  # the FTCO Engine's slots
@@ -89,6 +90,20 @@ def cleanout_from_row(values: dict[str, str]) -> Cleanout:
             label = next(c.heading for c in _COLUMNS if c.key == key).split("\n")[0].lower()
             raise ValueError(f"The {label} must be a number.") from None
     return Cleanout(**kwargs)
+
+
+def row_values(cleanout: Cleanout) -> dict[str, str]:
+    """A saved FTCO as grid cells: what reading the row gives back."""
+    values = {}
+    for column in _COLUMNS:
+        value = getattr(cleanout, column.key)
+        if column.key == "anchor":
+            values[column.key] = str(value).capitalize()
+        elif isinstance(value, float):
+            values[column.key] = f"{value:g}"
+        else:
+            values[column.key] = str(value)
+    return values
 
 
 def check_rows(rows: list[dict[str, str]], spec) -> list[RowCheck]:
@@ -215,12 +230,14 @@ def build_cleanout_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         if not cleanouts:
             messagebox.showerror("FTCO", "Fill in at least one row first.")
             return
-        live = shared.get("live")
-        model = getattr(live, "model", None)
-        spec = getattr(live, "spec", None)
-        if model is None or not isinstance(spec, TankSpec):
-            messagebox.showerror("FTCO", "Create the tank shell on Tank Properties first.")
+        try:
+            from swauto.session import connect
+
+            live = find_shell(shared, connect().app)  # this run's shell, or the shell part open in SolidWorks
+        except (ValueError, SolidWorksError) as exc:
+            messagebox.showerror("FTCO", str(exc))
             return
+        spec = live.spec
         busy["on"] = True
         status_var.set("Rebuilding course 1 around the FTCOs, then building them...")
         frame.update_idletasks()
@@ -237,6 +254,20 @@ def build_cleanout_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     ttk.Label(bar, textvariable=count_var).grid(row=0, column=2, sticky="w")
     for _ in range(START_ROWS):
         add_row()
+
+    def load_cleanouts(saved) -> None:
+        """Fill the grid from a saved project; rows past the saved FTCOs are cleared."""
+        while len(rows) < len(saved):
+            add_row()
+        for row in rows:
+            for var in row["vars"].values():
+                var.set("")
+        for row, cleanout in zip(rows, saved):
+            for key, value in row_values(cleanout).items():
+                row["vars"][key].set(value)
+        check_all()
+
+    shared["load_cleanouts"] = load_cleanouts
     book = parent.master
     if isinstance(book, ttk.Notebook):
         book.bind("<<NotebookTabChanged>>", lambda _e: check_all(), add="+")

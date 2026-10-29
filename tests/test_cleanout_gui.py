@@ -48,26 +48,22 @@ def test_two_anchors_or_overlaps_fail_every_row():
     assert "one FTCO can be anchored" in checks[0].message
 
 
-def test_tab_opens_with_four_rows_and_gives_the_tank_its_gaps():
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        page = ttk.Frame(root)
-        shared: dict = {"spec": _tank()}
-        build_cleanout_tab(page, tk.StringVar(), shared)
-        page.update_idletasks()
-        assert shared["cleanouts"] == []
-        assert shared["course_one_gaps"](_tank()) == []
-        texts = []
+def test_tab_opens_with_four_rows_and_gives_the_tank_its_gaps(tk_window):
+    root = tk_window
+    page = ttk.Frame(root)
+    shared: dict = {"spec": _tank()}
+    build_cleanout_tab(page, tk.StringVar(), shared)
+    page.update_idletasks()
+    assert shared["cleanouts"] == []
+    assert shared["course_one_gaps"](_tank()) == []
+    texts = []
 
-        def walk(widget):
-            for child in widget.winfo_children():
-                if "text" in child.keys():
-                    texts.append(str(child.cget("text")))
-                walk(child)
+    def walk(widget):
+        for child in widget.winfo_children():
+            if "text" in child.keys():
+                texts.append(str(child.cget("text")))
+            walk(child)
 
-        walk(page)
-        assert str(START_ROWS) in texts and str(START_ROWS + 1) not in texts
-        assert "Build on shell" in texts and "Add row" in texts
-    finally:
-        root.destroy()
+    walk(page)
+    assert str(START_ROWS) in texts and str(START_ROWS + 1) not in texts
+    assert "Build on shell" in texts and "Add row" in texts
