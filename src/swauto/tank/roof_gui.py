@@ -22,6 +22,7 @@ from swauto.tank.roof import (
     ring_profile_in,
     roof_from_tank,
 )
+from swauto.tank.follow import follow_tank
 from swauto.tank.roof_sw import create_roof
 from swauto.tank.spec import TankSpec
 
@@ -112,6 +113,13 @@ def build_roof_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | N
         command=lambda: _use_tank(holder, inside_var, outside_var, height_var),
     ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
+    def _tank_values(tank: TankSpec) -> list[str]:
+        roof = roof_from_tank(tank, slope_in_per_ft=0.0, thickness_in=0.25)  # only its radii and height
+        return [f"{roof.inside_radius_in:.6g}", f"{roof.outside_radius_in:.6g}", f"{roof.shell_height_in:.6g}"]
+
+    # The shell radii and height follow Tank Properties until they are typed over.
+    follow_tank(parent, holder, [inside_var, outside_var, height_var], _tank_values)
+
     summary_var = tk.StringVar(value="")
     ttk.Label(top, textvariable=summary_var, justify="left").grid(
         row=13, column=0, columnspan=8, sticky="w", pady=(6, 4)
@@ -187,7 +195,11 @@ def build_roof_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | N
             summary_var.set(str(exc))
             canvas.delete("all")
             flat_canvas.delete("all")
+            if holder is not None:
+                holder["roof"] = None
             return
+        if holder is not None:
+            holder["roof"] = spec_now  # the Roof Nozzles tab places its nozzles on this cone
         pattern = flat_pattern(spec_now)
         landing = "on the compression ring" if spec_now.ring_active() else "on the shell inside"
         gap_deg = 360.0 - pattern.sector_deg

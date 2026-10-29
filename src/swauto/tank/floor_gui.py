@@ -18,6 +18,7 @@ from swauto.tank.floor import (
     row_color_hex,
 )
 from swauto.tank.floor_sw import create_floor
+from swauto.tank.follow import follow_tank
 from swauto.tank.profile import course_radii_m
 from swauto.tank.spec import TankSpec
 
@@ -73,6 +74,9 @@ def build_floor_tab(parent: ttk.Frame, status_var: tk.StringVar, holder: dict | 
     ttk.Button(top, text="Use course 1 OD", command=lambda: _use_shell_od(holder, diameter_var)).grid(
         row=7, column=3, columnspan=2, sticky="w", pady=(6, 0)
     )
+    # The diameter follows course 1's OD on Tank Properties until it is typed over.
+    follow_tank(parent, holder, [diameter_var],
+                lambda tank: [f"{course_radii_m(tank, tank.active_courses()[0])[0] * 2.0 / 0.0254:.6g}"])
 
     summary_var = tk.StringVar(value="")
     ttk.Label(top, textvariable=summary_var, justify="left").grid(
