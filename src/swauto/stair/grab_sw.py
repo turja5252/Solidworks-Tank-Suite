@@ -168,9 +168,11 @@ def add_grab_rails(
 
 
 def _miter_phi(below, above, face_r, r_a, r_b, post_in, mid_top, side: str) -> float:
-    """Angle of the vertical through the midrail's miter with the platform midrail, where the lisp stops the pipe."""
+    """Angle of the vertical through the midrail's miter with the platform midrail, where the lisp stops the pipe.
+    Read off the joint point, it is taken to the turn nearest the flight's own angles: atan2 wraps at 180°."""
     joint, _normal = _joint(below, above, face_r, r_a, r_b, post_in, side, mid_top, MID_TOP_IN)
-    return math.atan2(-joint[0], joint[2])
+    near = below.last.phi
+    return near + math.remainder(math.atan2(-joint[0], joint[2]) - near, 2.0 * math.pi)
 
 
 def _pipe(model, pipe: _Pipe, lo: float, hi: float, name: str) -> None:

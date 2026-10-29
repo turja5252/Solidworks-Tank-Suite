@@ -160,11 +160,7 @@ def _layout(model, tread_index: int, shell_radius_in: float | None) -> _Clip:
     (y_low, phi_low, _r1), (y_high, phi_high, _r2) = next(
         (a, b) for a, b in zip(treads, treads[1:]) if b[0] - a[0] > 0.01
     )
-    tan_p = (y_high - y_low) / (phi_high - phi_low) / r_a
-    pitch = math.atan(tan_p)
-    # Inner stringer development at its walk face: the top edge runs through the
-    # tread's trailing top corner, and the top hole is EDGE_CLEAR_IN square below it.
-    along = -TREAD_DEPTH_IN / 2.0 + (HOLE_LOW_IN + HOLE_SPACE_IN) / tan_p + EDGE_CLEAR_IN / math.sin(pitch)
+    tan_p = (y_high - y_low) / math.remainder(phi_high - phi_low, 2.0 * math.pi) / r_a  # atan2 angles wrap at 180°
     tank_face = r_a - THICKNESS_IN
     reach = max(HEEL_FROM_HOLE_IN, SHORT_LEG_IN - HEEL_FROM_HOLE_IN)
     sag = reach * reach / (2.0 * tank_face) + 0.001
@@ -178,12 +174,30 @@ def _layout(model, tread_index: int, shell_radius_in: float | None) -> _Clip:
             f"The gap is {tank_face - shell_r:.2f} in; the inner clip's 4 in leg needs at least {MIN_GAP_IN:g} in."
         )
     return _Clip(
-        phi=phi + along / r_a,
+        phi=clip_phi(phi, r_a, tan_p),
         heel_r=tank_face - sag,
         tank_face=tank_face,
         shell_r=shell_r,
         y0=y_bottom + TREAD_MARK_IN,
     )
+
+
+def clip_phi(phi: float, r_a: float, tan_p: float) -> float:
+    """Angle of an inner clip's stringer holes, for the tread centered at ``phi``.
+
+    Inner stringer development at its walk face ``r_a``, whose top edge rises ``tan_p``: the top edge runs
+    through the tread's trailing top corner, and the top hole is EDGE_CLEAR_IN square below it.
+    """
+    pitch = math.atan(tan_p)
+    along = -TREAD_DEPTH_IN / 2.0 + (HOLE_LOW_IN + HOLE_SPACE_IN) / tan_p + EDGE_CLEAR_IN / math.sin(pitch)
+    return phi + along / r_a
+
+
+def clip_pad(clip_angle: float, tread_top: float, shell_r: float) -> tuple[float, float]:
+    """Plan angle and middle height of an inner clip's shell pad (PAD_WIDE_IN by PAD_TALL_IN, full-radius
+    ends): on the landing clip's mid-plane, LANDING_THK_IN thick on the uphill face of the 4 in leg."""
+    landing_t = HEEL_FROM_HOLE_IN + LANDING_THK_IN / 2.0
+    return clip_angle + math.atan2(landing_t, shell_r + PAD_THK_IN), tread_top + TALL_IN / 2.0
 
 
 def _clip_angle(model, clip: _Clip, profile: str, name: str) -> None:

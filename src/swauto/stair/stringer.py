@@ -24,6 +24,7 @@ TOP_HOLE_DIA_IN = 0.8125
 TOP_HOLE_DROP_IN = 2.25
 TOP_HOLE_BACK_IN = (2.1875, 4.6875)
 END_CUT_IN = 0.125
+MAX_TREADS = 200  # a 100 ft shell at 7.5 in rises is 160 treads
 
 
 @dataclass(frozen=True)
@@ -50,8 +51,8 @@ class StringerMock:
             raise ValueError("Shell outside radius must be greater than zero.")
         if self.gap_in < 0:
             raise ValueError("Gap cannot be negative.")
-        if self.treads < 2 or self.treads > 80:
-            raise ValueError("Use 2 to 80 treads for the mock.")
+        if self.treads < 2 or self.treads > MAX_TREADS:
+            raise ValueError(f"Use 2 to {MAX_TREADS} treads.")
         if self.rise_in <= 0 or self.run_in <= 0:
             raise ValueError("Rise and run must be greater than zero.")
         if self.plate_width_in <= 1:

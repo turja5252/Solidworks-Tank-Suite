@@ -513,27 +513,11 @@ def add_platform_knee_braces(
     ``profile`` is the L3x3x0.375 file (``brace_sw.angle_profile``). The part does not need a shell.
     """
     lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b)
-    half = (lines.phi_b - lines.phi_a) / 2.0
-    mid = lines.phi_a + half
-    outer_chord = lines.r_out * math.cos(half)  # the outer channel's back, from the axis along the bisector
-    r_mid_plate = lines.r_out - HANGER_IN_FROM_OUTSIDE_IN - HANGER_WIDE_IN / 2.0
-    set_in = HANGER_FROM_END_IN + HANGER_THK_IN
     name = f"ElitePlatform{tread_index:02d}Knee"
     missed = []
-    for label, knee_phi, side in (
-        ("A", lines.phi_a + set_in / r_mid_plate, 1.0),
-        ("B", lines.phi_b - set_in / r_mid_plate, -1.0),
-    ):
+    for label, frame, knee, back in platform_knees(lines, shell_r):
         tag = f"{name}{label}"
-        frame = _Frame(phi=knee_phi, y_top=lines.top, r_a=r_a, r_b=r_b)
-        back = outer_chord / math.cos(knee_phi - mid)  # outer channel back on this radial line
-        _hanger(model, frame, back, lines.top, side, f"{tag}Hanger")
-        r1 = back - HANGER_IN_FROM_OUTSIDE_IN - HANGER_WIDE_IN / 2.0
-        y1 = lines.top - CHANNEL_IN - HANGER_BOLT_DOWN_IN
-        r2 = shell_r + CLIP_BOLT_OUT_IN
-        if r2 >= r1 - 1.0:
-            raise SolidWorksError("The platform knee brace has no room between the platform and the shell.")
-        knee = _Knee(t_face=0.0, top=(r1, y1), bottom=(r2, y1 - (r1 - r2)), shell_r=shell_r, side=side)
+        _hanger(model, frame, back, lines.top, knee.side, f"{tag}Hanger")
         _knee_angle(model, frame, knee, profile, tag)
         _knee_clip_and_pad(model, frame, knee, tag)
         if not _knee_holes(model, frame, knee, tag):
@@ -547,6 +531,42 @@ def add_platform_knee_braces(
         + (f" Holes missed at end(s) {', '.join(missed)}." if missed else "")
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
+
+
+def platform_knees(lines: _Lines, shell_r: float) -> list[tuple[str, _Frame, _Knee, float]]:
+    """The knee brace at each end of a platform's outer channel: end label, radial frame, knee, and the outer
+    channel back's radius on that line. Raises when the shell leaves no room."""
+    half = (lines.phi_b - lines.phi_a) / 2.0
+    mid = lines.phi_a + half
+    outer_chord = lines.r_out * math.cos(half)  # the outer channel's back, from the axis along the bisector
+    r_mid_plate = lines.r_out - HANGER_IN_FROM_OUTSIDE_IN - HANGER_WIDE_IN / 2.0
+    set_in = HANGER_FROM_END_IN + HANGER_THK_IN
+    knees = []
+    for label, knee_phi, side in (
+        ("A", lines.phi_a + set_in / r_mid_plate, 1.0),
+        ("B", lines.phi_b - set_in / r_mid_plate, -1.0),
+    ):
+        frame = _Frame(phi=knee_phi, y_top=lines.top, r_a=lines.r_a, r_b=lines.r_b)
+        back = outer_chord / math.cos(knee_phi - mid)  # outer channel back on this radial line
+        r1 = back - HANGER_IN_FROM_OUTSIDE_IN - HANGER_WIDE_IN / 2.0
+        y1 = lines.top - CHANNEL_IN - HANGER_BOLT_DOWN_IN
+        r2 = shell_r + CLIP_BOLT_OUT_IN
+        if r2 >= r1 - 1.0:
+            raise SolidWorksError("The platform knee brace has no room between the platform and the shell.")
+        knee = _Knee(t_face=0.0, top=(r1, y1), bottom=(r2, y1 - (r1 - r2)), shell_r=shell_r, side=side)
+        knees.append((label, frame, knee, back))
+    return knees
+
+
+def shell_pads(lines: _Lines, shell_r: float) -> list[tuple[str, float, float]]:
+    """The shell pad at each end of a platform's inner channel: end label, plan angle (taken near the
+    platform's own angles) and middle height. Each pad is 4 in wide by SHELL_PAD_TALL_IN, full-radius ends."""
+    pads = []
+    for end, label in zip(_channel_ends(lines), ("A", "B"), strict=True):
+        qx, qz = _pad_point(end, shell_r)
+        phi_q = lines.phi_a + math.remainder(math.atan2(-qx, qz) - lines.phi_a, 2.0 * math.pi)
+        pads.append((label, phi_q, end.top - CHANNEL_IN / 2.0))
+    return pads
 
 
 def _hanger(model, frame: _Frame, back: float, top: float, side: float, name: str) -> None:

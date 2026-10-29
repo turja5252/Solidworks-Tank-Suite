@@ -770,10 +770,16 @@ def _extrude_to(model, sketch, depth_in: float, center_in, max_height: float, na
     raise SolidWorksError(f"{name}: did not land where it should.")
 
 
+def knee_pad(knee: _Knee) -> tuple[float, float]:
+    """Middle of a knee's shell pad: t along its frame's travel, and y. The pad is PAD_WIDE_IN by PAD_TALL_IN
+    with full-radius ends, on the shell OD, centered on the clip."""
+    return knee.t_face - knee.side * CLIP_THK_IN / 2.0, knee.bottom[1]
+
+
 def _knee_clip_and_pad(model, frame: _Frame, knee: _Knee, name: str) -> None:
     """Clip in line with the cross brace down leg, then the shell pad behind it."""
     r2, y2 = knee.bottom
-    t_mid = knee.t_face - knee.side * CLIP_THK_IN / 2.0
+    t_mid, _y = knee_pad(knee)
     root = knee.shell_r + PAD_THK_IN
     half = CLIP_HEIGHT_IN / 2.0
     clip = ((root, y2 - half), (root + CLIP_OUT_IN, y2 - half), (root + CLIP_OUT_IN, y2 + half), (root, y2 + half))

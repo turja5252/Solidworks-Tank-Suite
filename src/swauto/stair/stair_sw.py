@@ -31,6 +31,7 @@ from swauto.stair.development import (
     flight_step,
     flight_treads,
 )
+from swauto.stair.splitter import GAP_IN, Joint, SplitSettings, bottom_x, joints, top_x
 from swauto.stair.stringer import (
     BOLT_DIA_IN,
     BOLT_FROM_FRONT_IN,
@@ -59,9 +60,10 @@ from swauto.tank.shell import (
     _delete_feature,
     _feature_name,
     _open_sketch,
+    _select_data,
     create_tank_shell,
 )
-from swauto.tank.spec import WALL_OD, TankSpec
+from swauto.tank.spec import WALL_OD, Course, TankSpec, default_stagger_for_course
 
 if TYPE_CHECKING:
     from swauto.stair.grab_sw import GrabRail
@@ -76,10 +78,13 @@ _SW_FREEZE_AFTER_FEATURE = 3
 
 
 class StairResult:
-    def __init__(self, title: str, model, note: str) -> None:
+    """``shell_bodies`` names the bodies that were in the part before the stair: the shell's plates."""
+
+    def __init__(self, title: str, model, note: str, shell_bodies: frozenset[str] = frozenset()) -> None:
         self.title = title
         self.model = model
         self.note = note
+        self.shell_bodies = shell_bodies
 
 
 @dataclass(frozen=True)
@@ -95,7 +100,8 @@ def create_stair(
     app, stair: StringerMock, wall_in: float, progress=None, *, shell: bool = True, platforms: int = 0,
     top_platform: bool = False, posts: tuple[int, ...] = (), platform_post_in: float | None = None,
     top_rail: bool = False, mid_rail: bool = False, platform_mid_top: float | None = None,
-    grab: GrabRail | None = None,
+    grab: GrabRail | None = None, ground_in: float = 0.0, shell_height_in: float | None = None,
+    splits: SplitSettings | None = None,
 ) -> StairResult:
     """New part, then the stair. ``shell`` adds the tank; the stringers do not change.
 
@@ -105,7 +111,8 @@ def create_stair(
     ``platform_post_in`` sets the platform posts in from the platform ends, and
     ``top_rail`` and ``mid_rail`` run the outer top rail and midrail along the posts,
     the midrail ``platform_mid_top`` over each platform's grating. ``grab`` runs the
-    outer grab rail on the flight posts.
+    outer grab rail on the flight posts. ``ground_in`` is the stair's ground on Y,
+    the floor being 0; the shell is ``shell_height_in`` tall when given.
     """
     flight_treads(stair.treads, platforms)
     profiles = _platform_profiles(app) if platforms or top_platform else None
@@ -114,7 +121,8 @@ def create_stair(
         return create_stair_on_tank(
             app, stair, wall_in, progress=progress, platforms=platforms, top_platform=top_platform, profiles=profiles,
             posts=posts, post_profile=post_file, platform_post_in=platform_post_in, top_rail=top_rail,
-            mid_rail=mid_rail, platform_mid_top=platform_mid_top, grab=grab,
+            mid_rail=mid_rail, platform_mid_top=platform_mid_top, grab=grab, ground_in=ground_in,
+            shell_height_in=shell_height_in, splits=splits,
         )
     stair.validate()
     if wall_in <= 0 or wall_in >= TREAD_MARK_IN or wall_in * 2 >= TREAD_DEPTH_IN:
@@ -124,7 +132,7 @@ def create_stair(
         model, stair.shell_od_in, stair, wall_in, progress=progress, platforms=platforms,
         top_platform=top_platform, profiles=profiles, posts=posts, post_profile=post_file,
         platform_post_in=platform_post_in, top_rail=top_rail, mid_rail=mid_rail, platform_mid_top=platform_mid_top,
-        grab=grab,
+        grab=grab, ground_in=ground_in, splits=splits,
     )
 
 
@@ -132,9 +140,11 @@ def create_stair_on_tank(
     app, stair: StringerMock, wall_in: float, progress=None, *, platforms: int = 0, top_platform: bool = False,
     profiles: tuple[str, str, str] | None = None, posts: tuple[int, ...] = (), post_profile: str | None = None,
     platform_post_in: float | None = None, top_rail: bool = False, mid_rail: bool = False,
-    platform_mid_top: float | None = None, grab: GrabRail | None = None,
+    platform_mid_top: float | None = None, grab: GrabRail | None = None, ground_in: float = 0.0,
+    shell_height_in: float | None = None, splits: SplitSettings | None = None,
 ) -> StairResult:
-    """New part with the shell at the Stringer tab's OD radius, then the stair."""
+    """New part with the shell at the Stringer tab's OD radius, then the stair. The shell is one course of
+    ``shell_height_in`` when given, so the stair can be checked against its top."""
     stair.validate()
     if wall_in <= 0 or wall_in >= TREAD_MARK_IN or wall_in * 2 >= TREAD_DEPTH_IN:
         raise ValueError("Pan wall must be greater than zero and thinner than the tread.")
@@ -143,6 +153,11 @@ def create_stair_on_tank(
     if post_profile is None and posts:
         post_profile = _post_profile(app)
     tank = TankSpec(diameter_in=2.0 * stair.shell_od_in, diameter_basis=WALL_OD)
+    if shell_height_in:
+        tank = TankSpec(
+            diameter_in=2.0 * stair.shell_od_in, diameter_basis=WALL_OD,
+            courses=[Course(shell_height_in, 1.0, stagger=default_stagger_for_course(1))],
+        )
     shell = create_tank_shell(app, tank)
     model = shell.live.model
     outer_m, _inner_m = course_radii_m(tank, tank.active_courses()[0])
@@ -151,7 +166,8 @@ def create_stair_on_tank(
     return build_stair_on_model(
         model, shell_od, stair, wall_in, progress=progress, platforms=platforms, top_platform=top_platform,
         profiles=profiles, posts=posts, post_profile=post_profile, platform_post_in=platform_post_in,
-        top_rail=top_rail, mid_rail=mid_rail, platform_mid_top=platform_mid_top, grab=grab,
+        top_rail=top_rail, mid_rail=mid_rail, platform_mid_top=platform_mid_top, grab=grab, ground_in=ground_in,
+        splits=splits,
     )
 
 
@@ -200,6 +216,8 @@ def build_stair_on_model(
     mid_rail: bool = False,
     platform_mid_top: float | None = None,
     grab: GrabRail | None = None,
+    ground_in: float = 0.0,
+    splits: SplitSettings | None = None,
 ) -> StairResult:
     """Stringers (unless already there), then tread by tread: pan, inner bolts, outer bolts.
 
@@ -209,18 +227,14 @@ def build_stair_on_model(
     inside the platform below it. ``profiles`` is (C4 frame, 6x6 clip, 3x3 knee).
     Handrail posts at the ``posts`` treads of every flight follow, on ``post_profile``,
     and with ``top_rail`` and ``mid_rail`` the outer top rail and midrail along them,
-    and with ``grab`` the grab rail on the flight posts.
+    and with ``grab`` the grab rail on the flight posts. ``ground_in`` is where the stair's ground is on Y.
+    With ``splits`` the stringers are cut into the splitter's pieces after the treads are bolted on.
     """
-    per_flight = flight_treads(stair.treads, platforms)
-    flight = replace(stair, shell_od_in=shell_od, treads=per_flight, outside_face=True)
-    layout = layout_stringer(flight)
-    turn, lift = flight_step(flight)
-    offsets = [(k * turn, k * lift) for k in range(platforms + 1)]
-    places = [
-        _moved_place(place, k * per_flight + place.index, *offsets[k])
-        for k in range(platforms + 1)
-        for place in _tread_places(layout)
-    ]
+    where = stair_places(stair, shell_od, platforms, ground_in)
+    per_flight, flight, layout, offsets, places = (
+        where.per_flight, where.flight, where.layout, where.offsets, where.places
+    )
+    shell_bodies = frozenset(_body_names(model))
     platform_note = ""
     post_note = ""
     try:
@@ -258,6 +272,9 @@ def build_stair_on_model(
                     hit = False
                 done += int(hit)
                 _progress(progress, f"tread {place.index} {side.lower()} bolts {'through' if hit else 'missed'}")
+        split_note = ""
+        if splits is not None and stringers:
+            split_note = split_stringers(model, layout, flight, offsets, splits, progress)
         if platforms or top_platform:
             if profiles is None:
                 raise SolidWorksError("Platforms need the C4, 6x6 angle and 3x3 angle weldment profiles.")
@@ -292,21 +309,389 @@ def build_stair_on_model(
     )
     note = (
         f"Shell OD radius {shell_od:.2f} in, {len(places)} pan treads{flights} with {wall_in:g} in walls, "
-        f"top tread at {math.degrees(places[-1].phi):.2f}°, rise {stair.treads * stair.rise_in:.1f} in. "
+        f"the top tread's surface {places[-1].y1 - ground_in:.2f} in above the ground "
+        f"({stair.treads} rises of {stair.rise_in:.4g} in). "
         f"Bolt pairs through {done} of {total} stringer-to-tread joints."
     )
     if platform_note:
         note = f"{note} {platform_note}"
     if post_note:
         note = f"{note} {post_note}"
+    if split_note:
+        note = f"{note} {split_note}"
     if freeze_note:
         note = f"{note} {freeze_note}"
-    return StairResult(title=str(com_value(model.GetTitle) or "Part"), model=model, note=note)
+    return StairResult(
+        title=str(com_value(model.GetTitle) or "Part"), model=model, note=note, shell_bodies=shell_bodies
+    )
+
+
+@dataclass(frozen=True)
+class StairPlaces:
+    """Where the clockwise build puts every flight and pan, before any mirror or turn. ``offsets`` are
+    each flight's (turn, lift); ``places`` every pan, lowest first, numbered the way braces count them."""
+
+    per_flight: int
+    flight: StringerMock
+    layout: object  # StringerLayout of one flight
+    offsets: tuple[tuple[float, float], ...]
+    places: tuple[TreadPlace, ...]
+
+
+def stair_places(stair: StringerMock, shell_od: float, platforms: int = 0, ground_in: float = 0.0) -> StairPlaces:
+    """The flights and pans of a stair on a shell of OD radius ``shell_od``, its ground at ``ground_in`` on Y.
+
+    No SolidWorks: the build and the stretchout preview both place the stair from this.
+    """
+    per_flight = flight_treads(stair.treads, platforms)
+    flight = replace(stair, shell_od_in=shell_od, treads=per_flight, outside_face=True)
+    layout = layout_stringer(flight)
+    turn, lift = flight_step(flight)
+    # The ground is tread zero's walking surface (the lisp's Height/Angle pick), so tread i stands
+    # i rises up and the top tread's surface is at the stair's height. The layout centres each
+    # 2-1/2 in tread on its rise; every flight comes down half a tread to put the surfaces there.
+    ground = ground_in - TREAD_MARK_IN / 2.0
+    offsets = tuple((k * turn, ground + k * lift) for k in range(platforms + 1))
+    places = tuple(
+        _moved_place(place, k * per_flight + place.index, *offsets[k])
+        for k in range(platforms + 1)
+        for place in _tread_places(layout)
+    )
+    return StairPlaces(per_flight, flight, layout, offsets, places)
 
 
 def flight_suffix(flight: int) -> str:
     """Name ending for a flight's stringers: none for the first, F2, F3... above it."""
     return "" if flight == 0 else f"F{flight + 1}"
+
+
+SPLICE_THK_IN = 0.375  # not in the lisp: the stringer's own 3/8, on its back face (the treads are on the walk face)
+_SPLIT_MARGIN_IN = 1.0
+
+
+def split_joints(flight: StringerMock, splits: SplitSettings) -> dict[str, list[Joint]]:
+    """Each stringer's joints in one flight, by side ("In", "Out"). The same treads on both."""
+    inner, outer = develop_both(flight)
+    return {
+        "In": joints(inner, flight.rise_in, flight.treads, splits),
+        "Out": joints(outer, flight.rise_in, flight.treads, splits),
+    }
+
+
+def split_stringers(model, layout, flight: StringerMock, offsets, splits: SplitSettings, progress=None) -> str:
+    """Cut every flight's stringers into the splitter's pieces, each joint spliced by a plate on the stringer's
+    back face, with the four 13/16 holes through plate and stringer.
+
+    The cut is a level 1/4 in slab through the stringer's own band at the joint; the plate starts as a slab
+    over its extent and is trimmed to the stringer's top and bottom edges by the same helical cuts that shape
+    the stringer, swept through the plate's band. Run it before platforms, posts and clips: those cuts take
+    whatever is in the band.
+    """
+    inner_dev, outer_dev = develop_both(flight)
+    tank_face = flight.shell_od_in + flight.gap_in
+    sides = (
+        (inner_dev, tank_face, tank_face + THICKNESS_IN, "In", (tank_face - SPLICE_THK_IN, tank_face)),
+        (outer_dev, layout.outside_radius_in - THICKNESS_IN, layout.outside_radius_in, "Out",
+         (layout.outside_radius_in, layout.outside_radius_in + SPLICE_THK_IN)),
+    )
+    made = 0
+    missed = []
+    for k, at in enumerate(offsets):
+        turn, lift = at
+        for dev, r_in, r_out, side, plate_band in sides:
+            cuts = joints(dev, flight.rise_in, flight.treads, splits)
+            if not cuts:
+                continue
+            name = f"EliteSplit{side}{flight_suffix(k)}"
+            radius = dev.radius_in
+            for joint in cuts:
+                tag = f"{name}T{joint.tread:02d}"
+                low = turn + (top_x(dev, joint.y_cut) - _SPLIT_MARGIN_IN) / radius
+                high = turn + (bottom_x(dev, joint.y_cut) + _SPLIT_MARGIN_IN) / radius
+                _sector_cut(model, (r_in - 0.03, r_out + 0.03), low, high, lift + joint.y_cut - GAP_IN / 2.0,
+                            lift + joint.y_cut + GAP_IN / 2.0, f"{tag}Cut")
+                _progress(progress, f"{tag} cut")
+                xs = [x for x, _y in joint.plate]
+                ys = [y for _x, y in joint.plate]
+                base = _offset_from(model, _plane(model, "Top"), lift + min(ys), f"{tag}PlatePln")
+                sketch = _sector_sketch(model, base, plate_band, turn + (min(xs) - _SPLIT_MARGIN_IN) / radius,
+                                        turn + (max(xs) + _SPLIT_MARGIN_IN) / radius, f"{tag}Plate")
+                _extrude(model, sketch, max(ys) - min(ys), f"{tag}Plate", merge=False)
+                _progress(progress, f"{tag} splice placed")
+            # Trim this side's plates in the flight to the stringer's edges: only plates are in their band yet.
+            g = _stringer_geometry(layout, dev, r_in, r_out)
+            far = g["phi_end"]
+            helix = ((plate_band[0] + plate_band[1]) / 2.0, g["rise_per_rad"] * far, far / (2.0 * math.pi))
+            band = (plate_band[0] - 0.03, plate_band[1] + 0.03)
+            span = 30.0
+            _cut_sweep(model, helix, band, lift + g["top_at_zero"], lift + g["top_at_zero"] + span,
+                       f"{name}PlateTop", turn)
+            _cut_sweep(model, helix, band, lift + g["bottom_at_zero"] - span, lift + g["bottom_at_zero"],
+                       f"{name}PlateBottom", turn)
+            _rebuild(model)
+            _progress(progress, f"{name} splices trimmed")
+            # One small jig a hole: the holes in a row are too far apart for one flat jig on a curved face.
+            rounds = replace(dev, slotted=False)
+            outward = abs(dev.radius_in - r_out) <= abs(dev.radius_in - r_in)
+            for joint in cuts:
+                tag = f"{name}T{joint.tread:02d}"
+                hit = 0
+                for index, hole in enumerate(joint.holes, start=1):
+                    before = _names(model)
+                    try:
+                        hit += int(_end_hole_pair(model, rounds, dev.radius_in, outward, [hole], f"{tag}H{index}", at))
+                    except Exception:
+                        _discard_since(model, before)
+                made += 1
+                if hit < len(joint.holes):
+                    missed.append(f"{tag} ({len(joint.holes) - hit} of {len(joint.holes)} holes)")
+                _progress(progress, f"{tag} holes {'cut' if hit == len(joint.holes) else 'missed'}")
+    note = (
+        f"Stringers split at {made} joint{'s' if made != 1 else ''}: a 1/4 in level cut, a {SPLICE_THK_IN:g} in "
+        "splice plate on the stringer's back face, and four 13/16 holes through both."
+    )
+    return note + (f" Holes missed: {'; '.join(missed)}." if missed else "") if made else ""
+
+
+CCW_MIRROR = "EliteStairCCW"
+_MIRROR_PLANE_MARK = 2
+_MIRROR_BODY_MARK = 256
+
+
+def is_counterclockwise(model) -> bool:
+    """The stair in this part was mirrored to climb counterclockwise."""
+    return find_feature(model, CCW_MIRROR) is not None
+
+
+def mirror_stair(model, keep: frozenset[str] = frozenset(), progress=None) -> str:
+    """Turn a finished stair counterclockwise: mirror every stair body through the Right plane, then delete the
+    clockwise ones. ``keep`` names the bodies that were in the part before the stair (the shell's plates).
+
+    The stair is built climbing clockwise seen from above, and the lisp draws a counterclockwise one the same
+    way, as the mirror of its clockwise one. The Right plane holds the tank axis and the stair's foot at +Z, so
+    the foot stays put and the stair climbs toward +X instead of -X. Braces and clips go in before this: they
+    find the treads by their clockwise angles.
+    """
+    stair = [body for body in _bodies(model) if _body_name(body) not in keep]
+    if not stair:
+        raise SolidWorksError("There is no stair in this part to mirror.")
+    names = {_body_name(body) for body in stair}
+    before = _names(model)
+    before_bodies = _body_names(model)
+    _clear_selection(model)
+    nothing = com_nothing()
+    right = _feature_name(_plane(model, "Right"))
+    if not model.Extension.SelectByID2(right, "PLANE", 0.0, 0.0, 0.0, False, _MIRROR_PLANE_MARK, nothing, 0):
+        raise SolidWorksError("Could not select the Right plane to mirror the stair.")
+    picked = _select_bodies(model, stair, _MIRROR_BODY_MARK)
+    if picked != len(stair):
+        _clear_selection(model)
+        raise SolidWorksError(f"Could select only {picked} of the stair's {len(stair)} bodies to mirror.")
+    feature = _insert_body_mirror(model)
+    _clear_selection(model)
+    if feature is None:
+        _discard_since(model, before)
+        raise SolidWorksError("SolidWorks did not mirror the stair.")
+    with contextlib.suppress(Exception):
+        rename_feature(feature, CCW_MIRROR)
+    _rebuild(model)
+    mirrored = [body for body in _bodies(model) if _body_name(body) not in before_bodies]
+    if len(mirrored) != len(stair):
+        _discard_since(model, before)
+        raise SolidWorksError(f"The mirror made {len(mirrored)} bodies for the stair's {len(stair)}.")
+    _progress(progress, "stair mirrored")
+    clockwise = [body for body in _bodies(model) if _body_name(body) in names]
+    _clear_selection(model)
+    if len(clockwise) != len(stair) or _select_bodies(model, clockwise, 0) != len(stair):
+        _clear_selection(model)
+        _discard_since(model, before)
+        raise SolidWorksError("Could not select the clockwise stair to delete it after the mirror.")
+    if not _insert_delete_bodies(model):
+        _clear_selection(model)
+        _discard_since(model, before)
+        raise SolidWorksError("SolidWorks did not delete the clockwise stair after the mirror.")
+    _rebuild(model)
+    left = [body for body in _bodies(model) if _body_name(body) in names]
+    if left:
+        _discard_since(model, before)
+        raise SolidWorksError(f"{len(left)} clockwise stair bodies were left after the mirror.")
+    _keep_bent_view(model)
+    lines = _redraw_shell_lines(model, lambda p: (-p[0], p[1], p[2]), "CCW")
+    _progress(progress, "clockwise stair deleted")
+    with contextlib.suppress(Exception):
+        model.ViewZoomtofit2()
+        model.GraphicsRedraw2()
+    return (
+        f"Mirrored through the Right plane, so the stair climbs counterclockwise seen from above "
+        f"({_count(len(stair), 'body', 'bodies')}); the clockwise ones it was built from are deleted."
+        f"{_lines_note(lines)}"
+    )
+
+
+TURN_FEATURE = "EliteStairTurn"
+
+
+def turn_stair(model, angle: float, keep: frozenset[str] = frozenset(), progress=None) -> str:
+    """Turn every stair body about the tank axis by ``angle`` (radians the stair's way: from +Z toward -X,
+    clockwise seen from above), to put the stair at its orientation. ``keep`` names the shell's bodies.
+
+    The stair is built, braced and mirrored at its own angles, then one Move/Copy Body turns the finished
+    bodies, the way the treads are copied, so none of that is built anywhere new.
+    """
+    stair = [body for body in _bodies(model) if _body_name(body) not in keep]
+    if not stair:
+        raise SolidWorksError("There is no stair in this part to turn.")
+    try:
+        x, y, z = _mass_point(stair[0])
+    except Exception as exc:
+        raise SolidWorksError("Could not read where the stair is before turning it.") from exc
+    c, sn = math.cos(angle), math.sin(angle)
+
+    def turned(point):
+        return (point[0] * c - point[2] * sn, point[1], point[2] * c + point[0] * sn)
+
+    before = _names(model)
+    _clear_selection(model)
+    picked = _select_bodies(model, stair, 1)
+    if picked != len(stair):
+        _clear_selection(model)
+        raise SolidWorksError(f"Could select only {picked} of the stair's {len(stair)} bodies to turn.")
+    feature = None
+    try:
+        # A right-hand turn about +Y is the opposite of the stair's angle (see _copy_turned).
+        feature = model.FeatureManager.InsertMoveCopyBody2(
+            0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0,
+            0.0, -float(angle), 0.0,
+            False, 1,
+        )
+    except Exception:
+        _recover(model)
+    _clear_selection(model)
+    if feature is not None:
+        # Before the rebuild: the feature handle goes stale after it.
+        with contextlib.suppress(Exception):
+            rename_feature(feature, TURN_FEATURE)
+    fresh = [item for item in iter_features(model) if _feature_name(item) not in before]
+    _rebuild(model)
+    if not fresh or _body_at(model, turned((x, y, z))) is None:
+        _discard_since(model, before)
+        raise SolidWorksError("SolidWorks did not turn the stair to its orientation.")
+    _keep_bent_view(model)
+    lines = _redraw_shell_lines(model, turned, "Turn")
+    _progress(progress, "stair turned")
+    with contextlib.suppress(Exception):
+        model.ViewZoomtofit2()
+        model.GraphicsRedraw2()
+    return (
+        f"Turned {math.degrees(angle):.2f}° about the tank axis to its orientation "
+        f"({_count(len(stair), 'body', 'bodies')}).{_lines_note(lines)}"
+    )
+
+
+_SHOWN = 2  # swVisibilityState_e; a hidden sketch reads 1
+
+
+def _redraw_shell_lines(model, move, suffix: str) -> int:
+    """Knee braces draw a 3D line down the shell where a pad sits below it. Mirroring or turning the bodies
+    leaves sketches where they are, so draw each line still showing again through ``move`` (a point, in
+    meters) and hide the old one. Returns how many."""
+    count = 0
+    for feature in list(iter_features(model)):
+        name = _feature_name(feature)
+        if "ShellLine" not in name:
+            continue
+        try:
+            if com_value(feature.Visible) != _SHOWN:
+                continue
+            sketch = com_value(feature.GetSpecificFeature2)
+            ends = []
+            for segment in com_value(sketch.GetSketchSegments) or ():
+                a, b = com_value(segment.GetStartPoint2), com_value(segment.GetEndPoint2)
+                ends.append(
+                    (move((float(a.X), float(a.Y), float(a.Z))), move((float(b.X), float(b.Y), float(b.Z))))
+                )
+        except Exception:
+            continue
+        if not ends:
+            continue
+        before = _names(model)
+        # With a 3D sketch still selected, Insert3DSketch opens that one instead of a new one.
+        _clear_selection(model)
+        manager = model.SketchManager
+        manager.Insert3DSketch(True)
+        for (x0, y0, z0), (x1, y1, z1) in ends:
+            manager.CreateLine(x0, y0, z0, x1, y1, z1)
+        manager.Insert3DSketch(True)
+        with contextlib.suppress(SolidWorksError):
+            _rename_new(model, before, f"{name}{suffix}", "shell line")
+        _blank_construction(model, feature, name, "SKETCH")
+        count += 1
+    return count
+
+
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def _lines_note(lines: int) -> str:
+    return f" Redrew {_count(lines, 'shell line', 'shell lines')} under knee brace pads with it." if lines else ""
+
+
+def _body_name(body) -> str:
+    try:
+        return str(body.Name)
+    except Exception:
+        return ""
+
+
+def _select_bodies(model, bodies, mark: int) -> int:
+    """Add each body to the selection with ``mark``. How many took."""
+    data = _select_data(model, mark)
+    nothing = com_nothing()
+    count = 0
+    for body in bodies:
+        ok = False
+        if data is not None:
+            with contextlib.suppress(Exception):
+                ok = bool(body.Select2(True, data))
+        if not ok:
+            with contextlib.suppress(Exception):
+                ok = bool(
+                    model.Extension.SelectByID2(_body_name(body), "SOLIDBODY", 0.0, 0.0, 0.0, True, mark, nothing, 0)
+                )
+        count += int(ok)
+    return count
+
+
+def _insert_body_mirror(model):
+    """Mirror the selected bodies about the selected plane, unmerged, as their own bodies."""
+    manager = model.FeatureManager
+    for method_name, args in (
+        ("InsertMirrorFeature2", (True, False, False, False, 0)),
+        ("InsertMirrorFeature", (True, False, False, False)),
+    ):
+        try:
+            feature = getattr(manager, method_name)(*args)
+        except Exception:
+            continue
+        if feature is not None:
+            return feature
+    return None
+
+
+def _insert_delete_bodies(model) -> bool:
+    """Delete Body on the selected bodies. SolidWorks 2013 has only InsertDeleteBody, a no-argument call
+    that late binding makes a property: reading it is what deletes, so it is read once, through com_value."""
+    try:
+        result = com_value(model.FeatureManager.InsertDeleteBody)
+    except Exception:
+        return False
+    if result in (None, False):
+        return False
+    with contextlib.suppress(Exception):
+        rename_feature(result, f"{CCW_MIRROR}Drop")
+    return True
 
 
 def _moved_place(place: TreadPlace, index: int, turn: float, lift: float) -> TreadPlace:
@@ -572,8 +957,14 @@ def _stringer_blank(
 
 
 def _new_blank(model, before: set[str], phi_a: float, phi_b: float, r_out: float):
-    """The one new body centered on the blank's arcs."""
+    """The one new body centered on the blank's arcs.
+
+    A curved wall's mass center sits in from its radius by sin(a/2) / (a/2) of the arc it spans: half an inch
+    on a short flight, inches on a long one. So it is looked for there, on the arcs' bisector.
+    """
     mid = (phi_a + phi_b) / 2.0
+    half = abs(phi_b - phi_a) / 2.0
+    expected = r_out * (math.sin(half) / half if half > 1e-9 else 1.0)
     found = []
     for body in _bodies(model):
         if str(body.Name) in before:
@@ -582,7 +973,8 @@ def _new_blank(model, before: set[str], phi_a: float, phi_b: float, r_out: float
             x, _y, z = _mass_point(body)
         except Exception:
             continue
-        if abs(math.hypot(x, z) / _INCH - r_out) < 1.0 and abs(math.remainder(math.atan2(-x, z) - mid, 2.0 * math.pi)) < 0.02:
+        on_bisector = abs(math.remainder(math.atan2(-x, z) - mid, 2.0 * math.pi)) < 0.02
+        if abs(math.hypot(x, z) / _INCH - expected) < 1.0 and on_bisector:
             found.append(body)
     return found[0] if len(found) == 1 else None
 
@@ -691,7 +1083,7 @@ def _cut_end_angle(model, r_in: float, r_out: float, near_phi: float):
             cx, cz = (box[0] + box[3]) / 2.0, (box[2] + box[5]) / 2.0
             if not r_in - 0.5 <= math.hypot(cx, cz) <= r_out + 0.5:
                 continue
-            if abs(math.atan2(-cx, cz) - near_phi) > 0.02:
+            if abs(math.remainder(math.atan2(-cx, cz) - near_phi, 2.0 * math.pi)) > 0.02:  # atan2 wraps at 180°
                 continue
             phi = math.atan2(params[2], params[0])
             while phi - near_phi > math.pi / 2.0:
