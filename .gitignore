@@ -10,3 +10,6 @@ build/
 .env
 .DS_Store
 Thumbs.db
+
+# Run logs the app writes beside itself
+logs/
