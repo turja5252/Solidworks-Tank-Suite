@@ -1,7 +1,8 @@
 # Elite SolidWorks Automation Suite
 
 Python (pywin32) automation that builds API-650 style tank geometry in SolidWorks 2013 on the computer
-named Solidworks. See README.md for the modules and roadmap.
+named Solidworks. See README.md for the modules and roadmap, and TODO.md for ideas agreed on and
+parked for later (add new parked ideas there).
 
 The project rules live in `.cursor/rules/` so Cursor and Claude Code share one copy. Follow them:
 
