@@ -18,6 +18,8 @@ from swauto.nozzle.shape import (
     blind_seat_z,
     bolt_centers,
     gasket_loop,
+    inside_flange_loop,
+    inside_stations,
     outer_end_z,
     slip_on_loops,
     stations,
@@ -66,6 +68,8 @@ def _build_one(model, placed: Placement) -> None:
         _bolt_holes(model, placed, mark)
         if placed.nozzle.blind:
             _blind_bolt_holes(model, placed, mark)
+        if placed.inside_flange is not None:
+            _inside_bolt_holes(model, placed, mark)
         rebuild(model)
         _cut_shell(model, placed, mark)
         _move_new_bodies(model, placed, bodies_before)
@@ -89,6 +93,9 @@ def _turned_bodies(model, placed: Placement, mark: str) -> None:
     blind = blind_loop(placed)
     if blind is not None:
         _revolve_loop(model, blind, f"{_PREFIX}{mark}Blind", placed.outside_radius_in)
+    inside = inside_flange_loop(placed)
+    if inside is not None:
+        _revolve_loop(model, inside, f"{_PREFIX}{mark}InsideFlange", placed.outside_radius_in)
 
 
 def _revolve_loop(model, loop: list[tuple[float, float]], name: str, tank_radius_in: float) -> None:
@@ -264,6 +271,13 @@ def _bolt_holes(model, placed: Placement, mark: str) -> None:
     _bolt_cut(model, placed, spot.back_z, spot.face_z - spot.back_z, f"{_PREFIX}{mark}Bolts")
 
 
+def _inside_bolt_holes(model, placed: Placement, mark: str) -> None:
+    """Through the inside flange, from its raised face back toward the shell: the same way out along the
+    axis as the outside flange's cut, from its back. Same size and class, so the same bolt pattern."""
+    spot = inside_stations(placed)
+    _bolt_cut(model, placed, spot.face_z, spot.back_z - spot.face_z, f"{_PREFIX}{mark}InsideBolts")
+
+
 def _blind_bolt_holes(model, placed: Placement, mark: str) -> None:
     """Through the blind only. The gasket reaches the bolts, so a cut through the stack would nick it."""
     seat = blind_seat_z(placed)
@@ -433,6 +447,8 @@ def _name_bodies(model, placed: Placement, mark: str) -> None:
     ring = placed.gasket
     fitting = placed.flange
     parts = [("Neck", "Neck"), ("Pipe", "Pipe"), ("Flange", "Flange"), ("Repad", "Repad")]
+    if placed.inside_flange is not None:
+        parts.append(("InsideFlange", "Inside flange"))
     if ring is not None:
         parts.append(("Gasket", f"Gasket - {ring.material}"))
     if nozzle.blind:

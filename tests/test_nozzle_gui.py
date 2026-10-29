@@ -39,23 +39,19 @@ def _find(widget, text: str):
     return None
 
 
-def test_shell_nozzles_tab_opens_with_thirty_rows_and_adds_more():
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        page = ttk.Frame(root)
-        status = tk.StringVar()
-        shared: dict = {}
-        build_nozzle_tab(page, status, shared)
-        page.update_idletasks()
-        texts = _widget_texts(page)
-        assert "Build on shell" in texts
-        assert str(START_ROWS) in texts and str(START_ROWS + 1) not in texts
-        assert shared["nozzles"] == []
-        _find(page, f"Add {MORE_ROWS} rows").invoke()
-        assert str(START_ROWS + MORE_ROWS) in _widget_texts(page)
-    finally:
-        root.destroy()
+def test_shell_nozzles_tab_opens_with_thirty_rows_and_adds_more(tk_window):
+    root = tk_window
+    page = ttk.Frame(root)
+    status = tk.StringVar()
+    shared: dict = {}
+    build_nozzle_tab(page, status, shared)
+    page.update_idletasks()
+    texts = _widget_texts(page)
+    assert "Build on shell" in texts
+    assert str(START_ROWS) in texts and str(START_ROWS + 1) not in texts
+    assert shared["nozzles"] == []
+    _find(page, f"Add {MORE_ROWS} rows").invoke()
+    assert str(START_ROWS + MORE_ROWS) in _widget_texts(page)
 
 
 def _row(**typed) -> dict:

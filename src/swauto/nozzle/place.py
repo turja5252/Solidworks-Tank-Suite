@@ -36,6 +36,7 @@ class Placement:
     flange: Flange
     repad: Repad | None
     gasket: Gasket | None
+    inside_flange: Flange | None  # the break flange at the inside end, in the nozzle's class
     course_number: int
     course_bottom_in: float
     outside_radius_in: float
@@ -98,10 +99,11 @@ def projections(
 
 
 def _axis(rotation_deg: float) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-    """Outward axis, and the clockwise direction looking down on the tank."""
+    """Outward axis, and the clockwise direction looking down on the tank: the way the rotation grows,
+    from +Z toward -X, so a positive offset moves to a larger angle, as RNC has it."""
     phi = math.radians(rotation_deg)
     outward = (-math.sin(phi), 0.0, math.cos(phi))
-    clockwise = (math.cos(phi), 0.0, math.sin(phi))
+    clockwise = (-math.cos(phi), 0.0, -math.sin(phi))
     return outward, clockwise
 
 
@@ -160,12 +162,14 @@ def place(nozzle: Nozzle, spec: TankSpec) -> Placement:
         else None
     )
     face = _shift(shell, outward, outside_projection)
+    inside = None if nozzle.inside_flange == "none" else flange(nozzle.nps, nozzle.rating, nozzle.inside_flange)
     return Placement(
         nozzle=nozzle,
         pipe=neck,
         flange=fitting,
         repad=pad,
         gasket=ring,
+        inside_flange=inside,
         course_number=number,
         course_bottom_in=bottom,
         outside_radius_in=outside,

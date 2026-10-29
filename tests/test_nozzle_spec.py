@@ -126,7 +126,10 @@ def test_positive_offset_is_the_clockwise_side():
         Nozzle("N3", 6, elevation_in=10.0, offset_in=60.0, outside_projection_in=8.0),
         _shell(),
     )
-    assert placed.shell_in == pytest.approx((60.0, 10.0, 80.0))
+    # Clockwise seen from above is the way the rotation grows, from +Z toward -X: RNC puts a 60 in
+    # offset on a 100 in radius at +36.87 degrees.
+    assert placed.shell_in == pytest.approx((-60.0, 10.0, 80.0))
+    assert math.degrees(math.atan2(-placed.shell_in[0], placed.shell_in[2])) == pytest.approx(36.8699, abs=1e-3)
     assert math.hypot(placed.shell_in[0], placed.shell_in[2]) == pytest.approx(100.0)
     assert placed.chord_in == 0.0
     assert placed.face_in[2] == pytest.approx(80.0 + 8.0)

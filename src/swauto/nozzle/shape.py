@@ -14,13 +14,26 @@ from swauto.nozzle.place import Placement
 
 @dataclass(frozen=True)
 class Stations:
-    """Stations along the nozzle, inches. z = 0 is the outside of the shell."""
+    """Stations along the nozzle, inches. z = 0 is the outside of the shell. ``inner_z`` is the inside end
+    (the inside flange's raised face when there is one); ``pipe_z`` is where the pipe stops inside."""
 
     inner_z: float
     hub_z: float
     back_z: float
     seat_z: float
     face_z: float
+    pipe_z: float
+
+
+@dataclass(frozen=True)
+class InsideStations:
+    """The inside flange, turned to face into the tank: its raised face, seat and back, and its hub's end
+    toward the shell. Inches along the nozzle, z = 0 at the shell outside."""
+
+    face_z: float
+    seat_z: float
+    back_z: float
+    hub_z: float
 
 
 def stations(placed: Placement) -> Stations:
@@ -31,13 +44,68 @@ def stations(placed: Placement) -> Stations:
     hub = face - fitting.face_to_hub_end_in
     back = face - fitting.raised_face_in - fitting.thickness_in
     seat = face - fitting.raised_face_in
-    if not inner < hub < back < seat < face:
+    inside = inside_stations(placed)
+    if inside is None:
+        pipe = inner
+    else:
+        # A weld neck's hub takes the pipe end on; a slip-on's pipe runs in to under its raised face.
+        pipe = inside.hub_z if placed.inside_flange.kind == "wn" else inside.seat_z
+    if not pipe < hub < back < seat < face:
         need = fitting.face_to_hub_end_in
         raise ValueError(
             f"{placed.nozzle.mark}: the projection is shorter than the flange. "
             f"From the inner end to the raised face needs more than {need:g} in."
         )
-    return Stations(inner_z=inner, hub_z=hub, back_z=back, seat_z=seat, face_z=face)
+    return Stations(inner_z=inner, hub_z=hub, back_z=back, seat_z=seat, face_z=face, pipe_z=pipe)
+
+
+def inside_stations(placed: Placement) -> InsideStations | None:
+    """Where the inside flange sits, or None without one. Its whole length has to be inside the shell."""
+    fitting = placed.inside_flange
+    if fitting is None:
+        return None
+    face = -placed.inside_projection_in
+    seat = face + fitting.raised_face_in
+    back = seat + fitting.thickness_in
+    hub = face + fitting.face_to_hub_end_in
+    if hub > -placed.wall_in + 1e-9:
+        raise ValueError(
+            f"{placed.nozzle.mark}: the inside flange needs {fitting.face_to_hub_end_in:g} in from its face to "
+            "the end of its hub inside the shell; make the ISP at least that."
+        )
+    return InsideStations(face_z=face, seat_z=seat, back_z=back, hub_z=hub)
+
+
+def inside_flange_loop(placed: Placement) -> list[tuple[float, float]] | None:
+    """Closed (z, radius) of the inside flange, raised face toward the tank center, or None without one.
+
+    It is the outside flange's shape turned end for end: a weld neck butts the pipe at its hub, a slip-on
+    takes the pipe through its bore.
+    """
+    spot = inside_stations(placed)
+    if spot is None:
+        return None
+    fitting = placed.inside_flange
+    pipe_r = placed.pipe.outside_diameter_in / 2.0
+    hub_r = fitting.hub_diameter_in / 2.0
+    flange_r = fitting.outside_diameter_in / 2.0
+    face_r = fitting.raised_face_diameter_in / 2.0
+    if fitting.kind == "wn":
+        bore = placed.pipe.inside_diameter_in / 2.0
+        neck = [(spot.hub_z, bore), (spot.hub_z, pipe_r)]
+    else:
+        bore = fitting.slip_on_bore_in / 2.0
+        if bore <= pipe_r:
+            raise ValueError(f"{placed.nozzle.mark}: the inside slip-on's bore does not clear the pipe.")
+        neck = [(spot.hub_z, bore), (spot.hub_z, hub_r)]
+    return neck + [
+        (spot.back_z, hub_r),
+        (spot.back_z, flange_r),
+        (spot.seat_z, flange_r),
+        (spot.seat_z, face_r),
+        (spot.face_z, face_r),
+        (spot.face_z, bore),
+    ]
 
 
 def weld_neck_loop(placed: Placement) -> list[tuple[float, float]]:
@@ -51,8 +119,8 @@ def weld_neck_loop(placed: Placement) -> list[tuple[float, float]]:
     flange_r = fitting.outside_diameter_in / 2.0
     face_r = fitting.raised_face_diameter_in / 2.0
     return [
-        (spot.inner_z, bore),
-        (spot.inner_z, pipe_r),
+        (spot.pipe_z, bore),
+        (spot.pipe_z, pipe_r),
         (spot.hub_z, pipe_r),
         (spot.back_z, hub_r),
         (spot.back_z, flange_r),
@@ -77,8 +145,8 @@ def slip_on_loops(placed: Placement) -> tuple[list[tuple[float, float]], list[tu
     flange_r = fitting.outside_diameter_in / 2.0
     face_r = fitting.raised_face_diameter_in / 2.0
     pipe = [
-        (spot.inner_z, pipe_bore),
-        (spot.inner_z, pipe_r),
+        (spot.pipe_z, pipe_bore),
+        (spot.pipe_z, pipe_r),
         (spot.seat_z, pipe_r),
         (spot.seat_z, pipe_bore),
     ]

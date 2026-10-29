@@ -13,6 +13,7 @@ from swauto.nozzle.place import Placement, place
 from swauto.nozzle.repad import default_repad_size
 from swauto.nozzle.shape import stations
 from swauto.nozzle.spec import Nozzle
+from swauto.tank.open_shell import find_shell
 from swauto.tank.profile import course_radii_m
 from swauto.tank.spec import TankSpec
 
@@ -33,6 +34,7 @@ _ITEM_PARTS = {
 _SCHEDULES = ("STD", "XS", "XXS")
 _STYLES = ("Circular", "Tombstone")
 _REPADS = ("None", "Default", "Custom")
+_INSIDE = ("None", "Weld neck", "Slip-on")  # RNC's break flange, in the nozzle's class
 
 START_ROWS = 30
 MORE_ROWS = 10
@@ -62,6 +64,7 @@ _COLUMNS = (
     _Column("rotation", "Rot, deg", 60),
     _Column("osp", "OSP, in", 54),
     _Column("isp", "ISP, in", 54),
+    _Column("inside_flange", "ISP flange", 80, "combo", _INSIDE, "None"),
     _Column("offset", "Offset, in", 64),
     _Column("match", "Match", 48, "check"),
     _Column("repad", "Repad", 78, "combo", _REPADS, "None"),
@@ -168,6 +171,7 @@ def _row_nozzle(values: dict[str, object]) -> Nozzle:
         gasket=bool(values["gasket"]),
         gasket_material=str(values["gasket_material"]),
         gasket_thickness=str(values["gasket_thk"]),
+        inside_flange=str(values["inside_flange"]),
     )
 
 
@@ -181,6 +185,8 @@ def _row_summary(placed: Placement) -> str:
         for text in (
             ", blind" if nozzle.blind else "",
             f", {placed.gasket.material} gasket" if placed.gasket is not None else "",
+            f", inside {'WN' if nozzle.inside_flange == 'wn' else 'SO'} flange"
+            if nozzle.inside_flange != "none" else "",
         )
     )
     return f"OK  {nozzle.nps} in {nozzle.rating}# {shape}, course {placed.course_number}, {pad_text}{extras}"
@@ -439,14 +445,14 @@ def build_nozzle_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict |
         if not nozzles:
             messagebox.showerror("Shell nozzle", "Fill in at least one row first.")
             return
-        live = shared.get("live")
-        model = getattr(live, "model", None)
-        spec = getattr(live, "spec", None)
-        if not isinstance(spec, TankSpec):
-            spec = shared.get("spec")
-        if model is None or not isinstance(spec, TankSpec):
-            messagebox.showerror("Shell nozzle", "Create the tank shell in SolidWorks first.")
+        try:
+            from swauto.session import connect
+
+            live = find_shell(shared, connect().app)  # this run's shell, or the shell part open in SolidWorks
+        except (ValueError, SolidWorksError) as exc:
+            messagebox.showerror("Shell nozzle", str(exc))
             return
+        model, spec = live.model, live.spec
         busy["on"] = True
         status_var.set(f"Building {len(nozzles)} nozzle(s) on the shell...")
         frame.update_idletasks()
@@ -462,6 +468,19 @@ def build_nozzle_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict |
     ttk.Button(bar, text=f"Add {MORE_ROWS} rows", command=add_more).grid(row=0, column=1, padx=(0, 10))
     ttk.Label(bar, textvariable=count_var).grid(row=0, column=2, sticky="w")
 
+    def load_nozzles(saved) -> None:
+        """Fill the grid from a saved project; rows past the saved nozzles are cleared."""
+        if len(saved) > len(rows):
+            add_rows(len(saved) - len(rows))
+        for row in rows:
+            row.clear()
+        for row, nozzle in zip(rows, saved):
+            for key, value in row_values(nozzle).items():
+                row.vars[key].set(value)
+        check_all()
+
+    shared["load_nozzles"] = load_nozzles
+
     def refresh_shell() -> None:
         shell_var.set(shell_summary(current_spec()))
         check_all()
@@ -471,6 +490,39 @@ def build_nozzle_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict |
     book = parent.master
     if isinstance(book, ttk.Notebook):
         book.bind("<<NotebookTabChanged>>", lambda _event: refresh_shell(), add="+")
+
+
+def row_values(nozzle: Nozzle) -> dict[str, object]:
+    """A saved nozzle as grid cells: what reading the row gives back. Default repads fill themselves in."""
+
+    def num(value) -> str:
+        return "" if value is None else f"{value:g}"
+
+    custom = nozzle.repad_mode == "custom"
+    return {
+        "mark": nozzle.mark,
+        "service": nozzle.description,
+        "item": f"Class {nozzle.rating} {'weld neck' if nozzle.kind == 'wn' else 'slip-on'}",
+        "size": nozzle.nps,
+        "schedule": nozzle.schedule,
+        "elevation": num(nozzle.elevation_in),
+        "rotation": num(nozzle.rotation_deg),
+        "osp": num(nozzle.outside_projection_in),
+        "isp": num(nozzle.inside_projection_in),
+        "offset": num(nozzle.offset_in),
+        "match": nozzle.match_plane,
+        "repad": nozzle.repad_mode.capitalize(),
+        "pad_od": num(nozzle.repad_outer_in) if custom else "",
+        "pad_id": num(nozzle.repad_inner_in) if custom else "",
+        "pad_thk": num(nozzle.repad_thickness_in) if nozzle.repad_mode != "none" else "",
+        "style": "Tombstone" if nozzle.repad_style == "tombstone" else "Circular",
+        "telltale": num(nozzle.telltale_offset_in) if custom else "",
+        "blind": nozzle.blind,
+        "gasket": nozzle.gasket,
+        "gasket_material": nozzle.gasket_material,
+        "gasket_thk": num(nozzle.gasket_thickness_in) if nozzle.gasket else "",
+        "inside_flange": {"wn": "Weld neck", "so": "Slip-on"}.get(nozzle.inside_flange, "None"),
+    }
 
 
 def nozzle_from_fields(
@@ -496,6 +548,7 @@ def nozzle_from_fields(
     gasket: bool = False,
     gasket_material: str = "",
     gasket_thickness: str = "",
+    inside_flange: str = "None",
 ) -> Nozzle:
     """Build a nozzle from the tab fields. Lengths are inches, rotation is degrees."""
     parts = _ITEM_PARTS.get(item)
@@ -527,6 +580,7 @@ def nozzle_from_fields(
         gasket=bool(gasket),
         gasket_material=gasket_material if gasket else "",
         gasket_thickness_in=_optional_inches(gasket_thickness, "gasket thickness") if gasket else None,
+        inside_flange=inside_flange,
     )
 
 
