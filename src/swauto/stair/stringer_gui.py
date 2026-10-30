@@ -219,7 +219,7 @@ def _stair_stage_plan(
     platforms: int = 0, top_platform: bool = False, posts=(), top_rail: bool = False, mid_rail: bool = False,
     grab: bool = False, ccw: bool = False, turned: bool = False, split_treads: tuple[int, ...] = (),
     split_rounds: tuple[tuple[int, int], ...] = (), clips: tuple[int, ...] | None = None, inner_posts=(),
-    rail_splits: tuple[int, ...] = (),
+    rail_splits: tuple[int, ...] = (), shapes: tuple = (),
 ) -> list[tuple[frozenset[str], str]]:
     """One equal share per progress line the stair build actually emits.
 
@@ -230,7 +230,8 @@ def _stair_stage_plan(
     platform frames, and their clips. ``posts`` are tread numbers in a flight (or per flight,
     ``post_sw.flight_picks``); ``clips``, when given, are the inner clips' treads apart from the braces';
     ``inner_posts`` the inside handrail's, whose pipe follows them; ``rail_splits`` the pans of the posts below
-    each handrail split's bay.
+    each handrail split's bay; ``shapes`` the platforms' shapes, whose radials add a shell clip and a knee brace
+    each and whose posts between the ends add theirs.
     A counterclockwise stair ends with its mirror and the clockwise one's delete, and a
     stair turned to its orientation with the turn. ``split_treads`` are each flight's splitter
     joints (their lower treads), cut on both stringers after the bolts; ``split_rounds`` the inner
@@ -295,16 +296,21 @@ def _stair_stage_plan(
                 (frozenset({f"{key}Clip{side} holes cut", f"{key}Clip{side} holes missed"}),
                  f"platform clip holes {k * per_flight}{side}")
             )
-        for end in ("A", "B"):
+        shape = shapes[k - 1] if k - 1 < len(shapes) else None
+        radials = len(shape.radial_positions()) if shape is not None else 0
+        supports = ["A", *(f"R{i}" for i in range(1, radials + 1)), "B"]
+        for end in supports:
             plan.append((frozenset({f"{key}Shell{end} clip placed"}), f"platform shell clip {k * per_flight}{end}"))
-        for end in ("A", "B"):
+        for end in supports:
             plan.append((frozenset({f"{key}Knee{end} placed"}), f"platform knee brace {k * per_flight}{end}"))
     for index in (k * per_flight + pick for k in range(platforms + 1) for pick in flight_picks(posts, k)):
         key = f"ElitePost{index:02d}"
         plan.append((frozenset({f"{key} placed"}), f"handrail post {index}"))
         plan.append((frozenset({f"{key} holes cut", f"{key} holes missed"}), f"handrail post {index} holes"))
     for k in range(1, platforms + 1 + (1 if top_platform else 0)) if posts else ():
-        for end in ("A", "B"):
+        shape = shapes[k - 1] if k - 1 < len(shapes) else None
+        between = len(shape.post_positions()) if shape is not None else 0
+        for end in ["A", "B", *(f"M{i}" for i in range(1, between + 1))]:
             key = f"ElitePlatform{k * per_flight:02d}Post{end}"
             plan.append((frozenset({f"{key} placed"}), f"platform post {k * per_flight}{end}"))
             plan.append(
@@ -646,8 +652,11 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "about the tank (the lisp's RADIALPLATFORM), Straight keeps them straight, Auto rolls them on a "
             "platform longer than 36 in. A long platform gets radial channels between its ends, no more than the "
             "radial spacing apart along its centreline, each with a knee brace and a shell clip. A straight "
-            "platform long enough to bow its inner side into the shell is refused. The SolidWorks build makes "
-            "the 36 in straight platform today; the other shapes show in the previews.\n"
+            "platform long enough to bow its inner side into the shell is refused. A rolled frame is built as "
+            "the lisp draws it: the inner and outer channels rolled the full length, flanges in, the radial "
+            "channels between their webs, coped to the side channels' section with 1/16 in clear all round "
+            "(Chris Samm); its top rail is rolled leg out and its midrail and toe plate rolled too, with a post "
+            "beside each radial.\n"
             "Posts at flight treads: tread numbers in one flight, like 2, 4, repeated in every flight. Each "
             "gets an L2x2x1/4 handrail post on the outside of the outer stringer just in front of it, "
             "standing on the tread below (so not tread 1), its top cut along the rail 3/4 in under the "
@@ -1035,11 +1044,6 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             current.validate()
             wall = read_wall()
             platforms = read_platforms(current.treads)
-            if any(spec.length_in != PLATFORM_LENGTH_IN or spec.width_in != TREAD_PLATE_IN or spec.is_rolled
-                   for spec in current.platform_specs):
-                raise ValueError("The SolidWorks build makes the stair's own platform today: 36 in long, 36 wide, "
-                                 "straight. Longer, wider and rolled platforms show in the previews; their build "
-                                 "is next.")
             per_flight = flight_treads(current.treads, platforms)
             by_rules = bool(rules_var.get())
             braces = () if by_rules else read_braces(per_flight * (platforms + 1))
@@ -1085,6 +1089,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             if result is not None:
                 planned = applied(base, result)
                 braces, clips, splits = planned.braces, planned.clips, planned.splits
+                current = planned.stair  # with the plan's platform radials and posts
                 rule_notes = [f"Placed by the rules: {_rules_text(result)}"] + list(result.warnings)
         except ValueError as exc:
             messagebox.showerror("Stair", str(exc) if str(exc) else "Pan wall must be numeric.")
@@ -1148,7 +1153,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             ccw=ccw, turned=turned, **_split_stages(replace(current, treads=per_flight), splits),
             clips=clips if inner or clips is None else (),
             inner_posts=inner_rail.posts if inner_rail is not None else (),
-            rail_splits=tuple(pan for _side, pan in rail_splits),
+            rail_splits=tuple(pan for _side, pan in rail_splits), shapes=current.platform_specs,
         )
         run_job("Stair", stages, work)
 

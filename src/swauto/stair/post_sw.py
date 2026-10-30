@@ -209,27 +209,30 @@ def side_post_heel(lines) -> float:
 
 def add_platform_posts(
     model, tread_index: int, *, phi: float, tread_top: float, r_a: float, r_b: float, profile: str,
-    post_in: float = PLATFORM_POST_IN, stringer_b: float | None = None, progress=None,
+    post_in: float = PLATFORM_POST_IN, stringer_b: float | None = None, progress=None, spec=None,
 ) -> BraceResult:
     """Posts at both ends of the outer channel of the platform after tread ``tread_index``,
-    each with its heel ``post_in`` in from the platform end. When the outer stringer's walk face
-    ``stringer_b`` is in from the platform's ``r_b``, they stand on the side channels instead."""
-    lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b, stringer_b=stringer_b)
-    if lines.stringer_b < lines.r_b - 0.01:
-        return _side_posts(model, tread_index, lines, tread_top, profile, progress)
-    half = (lines.phi_b - lines.phi_a) / 2.0
-    web_r = lines.r_out * math.cos(half)  # the outer channel's back, on the bisector
-    end_t = lines.r_out * math.sin(half) - post_in
-    if end_t < LEG_IN + 1.0:
-        raise SolidWorksError(f"Platform posts {post_in:g} in from the ends would meet in the middle.")
+    each with its heel ``post_in`` in from the platform end, and between them where ``spec`` (the
+    platform's shape) puts them, along a straight outer channel or a rolled one. When the outer
+    stringer's walk face ``stringer_b`` is in from the platform's ``r_b``, the end ones stand on the
+    side channels instead."""
+    lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b, stringer_b=stringer_b, spec=spec)
+    between = [] if spec is None else list(spec.post_positions())
     ys = (lines.top - CHANNEL_IN + PLATFORM_FOOT_IN, tread_top + RAIL_TOP_IN - TOP_GAP_IN)
     name = f"ElitePlatform{tread_index:02d}Post"
-    mid = lines.phi_a + half
     middle = lines.top - CHANNEL_IN / 2.0
     hole_ys = (middle - PLATFORM_HOLE_SPACE_IN / 2.0, middle + PLATFORM_HOLE_SPACE_IN / 2.0)
+    places = []  # (label, angle or None for an end post, away)
+    side_note = ""
+    if lines.stringer_b < lines.r_b - 0.01:
+        side_note = _side_posts(model, tread_index, lines, tread_top, profile, progress).note
+    else:
+        places += [("A", None, 1.0), ("B", None, -1.0)]
+    places += [(f"M{i}", lines.phi_a + along / lines.r_mid, 1.0) for i, along in enumerate(between, start=1)]
     missed = []
-    for label, heel_t, away in (("A", -end_t, 1.0), ("B", end_t, -1.0)):
+    for label, angle, away in places:
         tag = f"{name}{label}"
+        mid, web_r, heel_t = platform_post_frame(lines, label, angle, post_in)
         _upright_angle(model, mid, web_r, 1.0, away, ys, LEG_IN, profile, tag, heel_t=heel_t)
         _cutback(model, mid, web_r, heel_t, away, ys[0], ys[1], tag)
         _progress(progress, f"{tag} placed")
@@ -239,13 +242,36 @@ def add_platform_posts(
         _progress(progress, f"{tag} holes {'cut' if holes else 'missed'}")
     with contextlib.suppress(Exception):
         s._hide_construction(model)
+    ends = "" if side_note else f"{post_in:g} in in from both ends of the outer channel"
+    more = f"{len(between)} between, by the radials" if between else ""
     note = (
-        f"Platform after tread {tread_index}: L2x2x1/4 posts {ys[1] - ys[0]:.2f} in long, {post_in:g} in in from "
-        "both ends of the outer channel, outstanding legs cut back 45 degrees, bolted through its web with two "
-        "13/16 holes 1-3/4 in apart."
-        + (f" Holes missed at end(s) {', '.join(missed)}." if missed else "")
+        (side_note + " " if side_note else "")
+        + (f"Platform after tread {tread_index}: L2x2x1/4 posts {ys[1] - ys[0]:.2f} in long, "
+           f"{', and '.join(part for part in (ends, more) if part)} on the outer channel, outstanding legs cut "
+           "back 45 degrees, bolted through its web with two 13/16 holes 1-3/4 in apart." if places else "")
+        + (f" Holes missed at {', '.join(missed)}." if missed else "")
     )
-    return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
+    return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note.strip())
+
+
+def platform_post_frame(lines, label: str, angle: float | None, post_in: float) -> tuple[float, float, float]:
+    """Where a post on a platform's outer channel stands, as (frame angle, the channel back's radius on it, the
+    heel along the travel from it): an end post (``angle`` None) ``post_in`` in from its end, A or B by
+    ``label``, any other at ``angle``. A straight channel is framed on the platform's bisector, a rolled one
+    on the post's own radial line, where the arc runs square to it."""
+    half = (lines.phi_b - lines.phi_a) / 2.0
+    if lines.rolled:
+        if angle is None:
+            angle = lines.phi_a + post_in / lines.r_out if label == "A" else lines.phi_b - post_in / lines.r_out
+        return angle, lines.r_out, 0.0
+    mid = lines.phi_a + half
+    web_r = lines.r_out * math.cos(half)  # the outer channel's back, on the bisector
+    if angle is None:
+        end_t = lines.r_out * math.sin(half) - post_in
+        if end_t < LEG_IN + 1.0:
+            raise SolidWorksError(f"Platform posts {post_in:g} in from the ends would meet in the middle.")
+        return mid, web_r, -end_t if label == "A" else end_t
+    return mid, web_r, web_r * math.tan(angle - mid)
 
 
 def _side_posts(model, tread_index: int, lines, tread_top: float, profile: str, progress) -> BraceResult:

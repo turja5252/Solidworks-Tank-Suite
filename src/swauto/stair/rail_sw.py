@@ -50,9 +50,10 @@ from swauto.stair.post_sw import (
     THK_IN,
     TOP_GAP_IN,
     _cutback,
+    platform_post_frame,
     side_post_heel,
 )
-from swauto.stair.stringer import THICKNESS_IN, TREAD_DEPTH_IN
+from swauto.stair.stringer import THICKNESS_IN, TREAD_DEPTH_IN, PlatformSpec
 from swauto.stair.stringer_sw import _create_circle, _names, _rename_new, _select_feature
 from swauto.tank.shell import _clear_selection, _close_sketch, _open_sketch
 
@@ -84,6 +85,7 @@ class _Flight:
     rise_per_rad: float
     step: float
     r_b: float
+    platform: PlatformSpec = PlatformSpec()  # the shape of the platform after it, if there is one
 
     def front(self, place) -> float:
         """Angle of a tread's front edge on the outer stringer, where the lisp develops it."""
@@ -116,19 +118,20 @@ def check_platform_mid_top(mid_top: float) -> float:
 def add_top_rails(
     model, places, per_flight: int, *, r_a: float, r_b: float, platforms: int, top_platform: bool, profile: str,
     post_in: float = PLATFORM_POST_IN, mid_top: float = PLATFORM_MID_TOP_IN, platform_b: float | None = None,
-    progress=None,
+    progress=None, shapes: tuple = (),
 ) -> BraceResult:
     """The outer top rail along every flight and across every platform.
 
     ``places`` are every pan, lowest first; ``profile`` is the L2x2x1/4 file
     (``post_sw.post_profile``); ``post_in`` is where the platform posts stand in from the ends;
     ``mid_top`` is the platform midrail's top, where the end pieces come down to. ``r_b`` is the
-    outer stringer's walk face, ``platform_b`` the platform's when the treads are narrower.
+    outer stringer's walk face, ``platform_b`` the platform's when the treads are narrower; ``shapes``
+    the platforms' shapes, mid ones then the top one (a rolled platform's own rail is rolled too).
     """
     check_platform_mid_top(mid_top)
     face_r = r_b + THICKNESS_IN
     pb = r_b if platform_b is None else platform_b
-    flights = _flights(places, per_flight, r_b)
+    flights = _flights(places, per_flight, r_b, shapes)
     landings = len(flights) - 1 + (1 if top_platform else 0)
     for k, flight in enumerate(flights):
         name = f"EliteRailF{k + 1}"
@@ -163,7 +166,7 @@ def add_top_rails(
 def add_mid_rails(
     model, places, per_flight: int, *, r_a: float, r_b: float, platforms: int, top_platform: bool,
     post_in: float = PLATFORM_POST_IN, mid_top: float = PLATFORM_MID_TOP_IN, platform_b: float | None = None,
-    progress=None,
+    progress=None, shapes: tuple = (),
 ) -> BraceResult:
     """The outer 2 x 1/4 flat bar midrail along every flight and across every platform, on the walk
     side of the posts in line with the top rail's hanging leg.
@@ -176,7 +179,7 @@ def add_mid_rails(
     check_platform_mid_top(mid_top)
     face_r = r_b + THICKNESS_IN
     pb = r_b if platform_b is None else platform_b
-    flights = _flights(places, per_flight, r_b)
+    flights = _flights(places, per_flight, r_b, shapes)
     landings = len(flights) - 1 + (1 if top_platform else 0)
     tops = (mid_top, MID_TOP_IN)
     for k, flight in enumerate(flights):
@@ -251,13 +254,14 @@ def add_bottom_end(model, places, per_flight: int, *, r_b: float, profile: str, 
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
 
 
-def _flights(places, per_flight: int, r_b: float) -> list[_Flight]:
+def _flights(places, per_flight: int, r_b: float, shapes: tuple = ()) -> list[_Flight]:
+    """Each flight, with the shape of the platform after it (``shapes`` the platforms', from the lowest)."""
     flights = []
-    for first in range(0, len(places), per_flight):
+    for k, first in enumerate(range(0, len(places), per_flight)):
         a, b = places[first], places[first + 1]
-        flights.append(
-            _Flight(places[first], places[first + per_flight - 1], (b.y1 - a.y1) / (b.phi - a.phi), b.phi - a.phi, r_b)
-        )
+        shape = shapes[k] if k < len(shapes) else PlatformSpec()
+        flights.append(_Flight(places[first], places[first + per_flight - 1], (b.y1 - a.y1) / (b.phi - a.phi),
+                               b.phi - a.phi, r_b, shape))
     return flights
 
 
@@ -362,11 +366,9 @@ class _Post:
 
 
 def _post(flight: _Flight, r_a: float, r_b: float, post_in: float, side: str) -> _Post:
-    lines = platform_lines(phi=flight.last.phi, tread_top=flight.last.y1, r_a=r_a, r_b=r_b)
-    half = (lines.phi_b - lines.phi_a) / 2.0
-    end_t = lines.r_out * math.sin(half) - post_in
-    away = -1.0 if side == "A" else 1.0
-    return _Post(lines.phi_a + half, lines.r_out * math.cos(half), away * end_t, away, flight.last.y1)
+    lines = platform_lines(phi=flight.last.phi, tread_top=flight.last.y1, r_a=r_a, r_b=r_b, spec=flight.platform)
+    mid, web_r, heel_t = platform_post_frame(lines, side, None, post_in)
+    return _Post(mid, web_r, heel_t, -1.0 if side == "A" else 1.0, flight.last.y1)
 
 
 def _joint(
@@ -413,9 +415,14 @@ def _landing(
         _progress(progress, f"{tag}{side} placed")
     a, b = posts["A"], posts["B"]
     top = a.grating + RAIL_TOP_IN
-    _level_angle(
-        model, a.world(-THK_IN, THK_IN, top), b.world(-THK_IN, -THK_IN, top), _radial(a.mid), profile, tag,
-    )
+    lines = _lines_of(below, r_a, r_b)
+    if lines.rolled:
+        heel = lines.r_out - THK_IN
+        _rolled_angle(model, heel, a.mid + THK_IN / heel, b.mid - THK_IN / heel, top, profile, tag)
+    else:
+        _level_angle(
+            model, a.world(-THK_IN, THK_IN, top), b.world(-THK_IN, -THK_IN, top), _radial(a.mid), profile, tag,
+        )
     _progress(progress, f"{tag} placed")
 
 
@@ -432,7 +439,12 @@ def _mid_landing(
         _progress(progress, f"{tag}{side} placed")
     a, b = (_post(below, r_a, r_b, post_in, side) for side in ("A", "B"))
     top = a.grating + mid_top
-    _flat_bar(model, a.world(0.0, THK_IN, top), b.world(0.0, -THK_IN, top), _radial(a.mid), tag)
+    lines = _lines_of(below, r_a, r_b)
+    if lines.rolled:
+        r = lines.r_out
+        _rolled_band(model, r - BAR_THK_IN, r, a.mid + THK_IN / r, b.mid - THK_IN / r, top - BAR_IN, BAR_IN, tag)
+    else:
+        _flat_bar(model, a.world(0.0, THK_IN, top), b.world(0.0, -THK_IN, top), _radial(a.mid), tag)
     _progress(progress, f"{tag} placed")
 
 
@@ -563,6 +575,69 @@ def _level_piece(model, post: _Post, joint, normal, side: str, profile: str, nam
     _trim(model, bodies0, joint, tuple(-v for v in normal) if side == "A" else normal, f"{name}Trim")
 
 
+def _rolled_angle(model, heel_r: float, a0: float, a1: float, top: float, profile: str, name: str) -> None:
+    """L2x2 rolled about the tank axis, its heel on the arc of radius ``heel_r`` at ``top`` from angle ``a0`` to
+    ``a1``: one leg straight down, the other out away from the tank, as the flights' top rail is rolled leg out
+    (Elite STWC). Turned a quarter at a time until it lies so."""
+    plane = s._offset_from(model, s._plane(model, "Top"), top, f"{name}Pln")
+
+    def draw():
+        a, b, m = s._plan_xy(heel_r, a0), s._plan_xy(heel_r, a1), s._plan_xy(heel_r, (a0 + a1) / 2.0)
+        if model.SketchManager.Create3PointArc(a[0], a[1], 0.0, b[0], b[1], 0.0, m[0], m[1], 0.0) is None:
+            raise SolidWorksError(f"{name}: rail arc failed.")
+
+    sketch = s._sketch_on(model, plane, f"{name}Sk", draw)
+    bodies_before = s._body_names(model)
+    s._select_segments(model, sketch, name, 1)
+    feature = model.FeatureManager.InsertStructuralWeldment2(profile, 1, False, 0.0)
+    if feature is None:
+        raise SolidWorksError(f"{name}: the rolled rail was not made.")
+    s._rebuild(model)
+    placed = False
+    for turn in (0.0, math.pi / 2.0, math.pi, 1.5 * math.pi):
+        if turn and not _set_turn(model, feature, turn):
+            continue
+        body = _new_body(model, bodies_before)
+        points = _body_points(body) if body is not None else []
+        if not points:
+            continue
+        radii = [math.hypot(p[0], p[2]) for p in points]
+        ys = [p[1] for p in points]
+        if (abs(min(radii) - heel_r) < 0.05 and abs(max(radii) - heel_r - LEG_IN) < 0.05
+                and abs(max(ys) - top) < 0.05 and abs(top - min(ys) - LEG_IN) < 0.05):
+            placed = True
+            break
+    if not placed:
+        raise SolidWorksError(f"{name}: could not turn the rolled rail with a leg down and a leg out.")
+    with contextlib.suppress(Exception):
+        rename_feature(feature, name)
+    _clear_selection(model)
+    with contextlib.suppress(Exception):
+        if sketch.Select2(False, 0):
+            model.BlankSketch()
+    _clear_selection(model)
+
+
+def _rolled_band(model, r0: float, r1: float, a0: float, a1: float, y0: float, tall: float, name: str) -> None:
+    """A flat bar rolled about the tank axis on edge: between radii ``r0`` and ``r1``, from angle ``a0`` to ``a1``,
+    ``y0`` up ``tall`` inches. Its own body."""
+    plane = s._offset_from(model, s._plane(model, "Top"), y0, f"{name}Pln")
+    sketch = s._sector_sketch(model, plane, (r0, r1), a0, a1, name)
+    before = s._body_names(model)
+    feature = s._extrude(model, sketch, tall, name, merge=False)
+    if feature is None:
+        raise SolidWorksError(f"{name}: the rolled bar was not made.")
+    s._rebuild(model)
+    made = [b for b in s._bodies(model) if str(b.Name) not in before]
+    if len(made) != 1 or abs(s._box_in(made[0])[1] - y0) > 0.05:
+        raise SolidWorksError(f"{name}: the rolled bar did not land where it should.")
+    _clear_selection(model)
+    with contextlib.suppress(Exception):
+        if sketch.Select2(False, 0):
+            model.BlankSketch()
+    _clear_selection(model)
+
+
 def _level_angle(model, a, b, out, profile: str, name: str) -> None:
     """L2x2 member on the heel line a to b, one leg straight down, the other out along ``out``."""
     feature, path_sketch, bodies_before = _member(model, profile, a, b, name)
@@ -607,7 +682,8 @@ def _level_angle(model, a, b, out, profile: str, name: str) -> None:
 
 
 def _lines_of(flight: _Flight, r_a: float, r_b: float):
-    return platform_lines(phi=flight.last.phi, tread_top=flight.last.y1, r_a=r_a, r_b=r_b, stringer_b=flight.r_b)
+    return platform_lines(phi=flight.last.phi, tread_top=flight.last.y1, r_a=r_a, r_b=r_b, stringer_b=flight.r_b,
+                          spec=flight.platform)
 
 
 def _narrow(lines) -> bool:
@@ -651,10 +727,24 @@ def _shift(p, d, k: float):
     return tuple(p[i] + k * d[i] for i in range(3))
 
 
-def _outer_miter(side: _Side, mid: float):
-    """At an outer corner: the return keeps the side opposite this, the outer run the side along it."""
-    t = _travel(mid)
+def _outer_miter(side: _Side, lines):
+    """At an outer corner: the return keeps the side opposite this, the outer run the side along it. The outer
+    run there goes along the straight outer side, or a rolled one's tangent at the corner."""
+    t = _travel(side.phi if lines.rolled else _outer_run(lines)[0])
     return _unit(tuple(_radial(side.phi)[i] - side.out_t * t[i] for i in range(3)))
+
+
+def _corner(lines, side: _Side, n: float, t: float, y: float):
+    """Where the outer edge ``n`` out from the outer channel's back meets the line ``t`` along the travel from
+    the side's radial line, at height ``y``: on the straight outer side, or on a rolled one's arc."""
+    if lines.rolled:
+        return side.world(math.sqrt(max((lines.r_out + n) ** 2 - t * t, 0.0)), t, y)
+    mid, outer = _outer_run(lines)
+    return _meet(outer(n, 0.0, y), _travel(mid), side.world(0.0, t, y), _radial(side.phi))
+
+
+def _plan_angle(point) -> float:
+    return math.atan2(-point[0], point[2])
 
 
 def _corner_end_piece(model, side: _Side, heel_r: float, grating: float, profile: str, mid_top: float, name: str) -> None:
@@ -696,7 +786,7 @@ def _corner_landing(
     grating = below.last.y1
     top = grating + RAIL_TOP_IN
     heel_r = side_post_heel(lines)
-    mid, outer = _outer_run(lines)
+    mid, _outer = _outer_run(lines)
     run = _travel(mid)
     flights = {"A": below, "B": above}
     for key, side in _sides(lines).items():
@@ -717,21 +807,26 @@ def _corner_landing(
     outer_corners = {}
     for key, side in _sides(lines).items():
         radial = _radial(side.phi)
-        corner = _meet(outer(-THK_IN, 0.0, top), run, side.world(heel_r, -side.out_t * THK_IN, top), radial)
+        corner = _corner(lines, side, -THK_IN, -side.out_t * THK_IN, top)
         outer_corners[key] = corner
         bodies0 = s._body_names(model)
         # Clear of the end angle by the post's leg between them, where a flight meets.
         far = side.world(heel_r + (THK_IN if flights[key] is not None else 0.0), -side.out_t * THK_IN, top)
         out = tuple(side.out_t * v for v in _travel(side.phi))
         _level_angle(model, _shift(corner, radial, OVERHANG_IN), far, out, profile, f"{tag}Return{key}")
-        _trim(model, bodies0, corner, _outer_miter(side, mid), f"{tag}Return{key}Outer")
+        _trim(model, bodies0, corner, _outer_miter(side, lines), f"{tag}Return{key}Outer")
     bodies0 = s._body_names(model)
-    _level_angle(
-        model, _shift(outer_corners["A"], run, -OVERHANG_IN), _shift(outer_corners["B"], run, OVERHANG_IN),
-        _radial(mid), profile, tag,
-    )
+    if lines.rolled:
+        heel = lines.r_out - THK_IN
+        _rolled_angle(model, heel, _plan_angle(outer_corners["A"]) - OVERHANG_IN / heel,
+                      _plan_angle(outer_corners["B"]) + OVERHANG_IN / heel, top, profile, tag)
+    else:
+        _level_angle(
+            model, _shift(outer_corners["A"], run, -OVERHANG_IN), _shift(outer_corners["B"], run, OVERHANG_IN),
+            _radial(mid), profile, tag,
+        )
     for key, side in _sides(lines).items():
-        _trim(model, bodies0, outer_corners[key], tuple(-v for v in _outer_miter(side, mid)), f"{tag}Corner{key}")
+        _trim(model, bodies0, outer_corners[key], tuple(-v for v in _outer_miter(side, lines)), f"{tag}Corner{key}")
     _progress(progress, f"{tag} placed")
 
 
@@ -770,29 +865,35 @@ def _wrap(model, lines, y: float, section, tag: str, stop_r: float | None = None
     """A bar on its top outer edge at ``y`` round the platform's outer edge: flush with the outer channel's
     back, mitered at both corners into a return along each side to ``stop_r``, by default the side post."""
     heel_r = side_post_heel(lines) if stop_r is None else stop_r
-    mid, outer = _outer_run(lines)
+    mid, _outer = _outer_run(lines)
     run = _travel(mid)
     corners = {}
     for key, side in _sides(lines).items():
         radial = _radial(side.phi)
-        corner = _meet(outer(0.0, 0.0, y), run, side.world(heel_r, 0.0, y), radial)
+        corner = _corner(lines, side, 0.0, 0.0, y)
         corners[key] = corner
         bodies0 = s._body_names(model)
         out = tuple(side.out_t * v for v in _travel(side.phi))
         _flat_bar(model, _shift(corner, radial, OVERHANG_IN), side.world(heel_r, 0.0, y), out, f"{tag}Return{key}", section)
-        _trim(model, bodies0, corner, _outer_miter(side, mid), f"{tag}Return{key}Outer")
+        _trim(model, bodies0, corner, _outer_miter(side, lines), f"{tag}Return{key}Outer")
     bodies0 = s._body_names(model)
-    _flat_bar(
-        model, _shift(corners["A"], run, -OVERHANG_IN), _shift(corners["B"], run, OVERHANG_IN), _radial(mid), tag,
-        section,
-    )
+    if lines.rolled:
+        thick, tall = -min(p[0] for p in section), -min(p[1] for p in section)
+        r = lines.r_out
+        _rolled_band(model, r - thick, r, _plan_angle(corners["A"]) - OVERHANG_IN / r,
+                     _plan_angle(corners["B"]) + OVERHANG_IN / r, y - tall, tall, tag)
+    else:
+        _flat_bar(
+            model, _shift(corners["A"], run, -OVERHANG_IN), _shift(corners["B"], run, OVERHANG_IN), _radial(mid), tag,
+            section,
+        )
     for key, side in _sides(lines).items():
-        _trim(model, bodies0, corners[key], tuple(-v for v in _outer_miter(side, mid)), f"{tag}Corner{key}")
+        _trim(model, bodies0, corners[key], tuple(-v for v in _outer_miter(side, lines)), f"{tag}Corner{key}")
 
 
 def add_toe_plates(
     model, places, per_flight: int, *, r_a: float, r_b: float, platforms: int, top_platform: bool,
-    platform_b: float | None = None, progress=None,
+    platform_b: float | None = None, progress=None, shapes: tuple = (),
 ) -> BraceResult:
     """A 1/4 x 6 toe plate standing on each platform's outer channel, its face flush with the channel's back.
 
@@ -805,12 +906,15 @@ def add_toe_plates(
     narrow = False
     for k in range(1, count + 1):
         last = places[k * per_flight - 1]
-        lines = platform_lines(phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=pb, stringer_b=r_b)
+        shape = shapes[k - 1] if k - 1 < len(shapes) else None
+        lines = platform_lines(phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=pb, stringer_b=r_b, spec=shape)
         tag = f"ElitePlatform{last.index:02d}Toe"
         y = lines.top + TOE_IN
         if _narrow(lines):
             narrow = True
             _wrap(model, lines, y, TOE_SECTION, tag, lines.stringer_b + THICKNESS_IN + THK_IN)
+        elif lines.rolled:
+            _rolled_band(model, lines.r_out - TOE_THK_IN, lines.r_out, lines.phi_a, lines.phi_b, lines.top, TOE_IN, tag)
         else:
             mid, outer = _outer_run(lines)
             end = lines.r_out * math.sin((lines.phi_b - lines.phi_a) / 2.0)

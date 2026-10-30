@@ -238,7 +238,8 @@ def build_stair_on_model(
     """Stringers (unless already there), then tread by tread: pan, inner bolts, outer bolts.
 
     With ``platforms`` the stair is that many plus one equal flights, each the
-    one below turned and raised past a 36 in mid platform. Platform frames and
+    one below turned and raised past its mid platform (``stair.platform_specs``
+    their shapes, 36 in straight by default). Platform frames and
     their stringer clips go in last: a higher flight's stringer cuts start
     inside the platform below it. ``profiles`` is (C4 frame, 6x6 clip, 3x3 knee).
     Handrail posts at the ``posts`` treads of every flight follow, on ``post_profile``,
@@ -296,20 +297,22 @@ def build_stair_on_model(
             if profiles is None:
                 raise SolidWorksError("Platforms need the C4, 6x6 angle and 3x3 angle weldment profiles.")
             platform_note = _platforms(
-                model, layout, places, per_flight, platforms, top_platform, profiles, shell_od, progress
+                model, layout, places, per_flight, platforms, top_platform, profiles, shell_od, progress,
+                stair.platform_specs,
             )
         if posts:
             if post_profile is None:
                 raise SolidWorksError("Handrail posts need the L2x2 angle weldment profile.")
             post_note = _handrail_posts(
                 model, layout, places, per_flight, posts, post_profile, platforms, top_platform,
-                platform_post_in, top_rail, mid_rail, platform_mid_top, grab, progress,
+                platform_post_in, top_rail, mid_rail, platform_mid_top, grab, progress, stair.platform_specs,
             )
         if inner_rail is not None and any(inner_rail.posts):
             if post_profile is None:
                 raise SolidWorksError("Handrail posts need the L2x2 angle weldment profile.")
             post_note = (post_note + " " + _inner_handrail(
                 model, layout, places, per_flight, inner_rail, post_profile, platforms, top_platform, progress,
+                stair.platform_specs,
             )).strip()
         if rail_splits and post_profile is not None:
             post_note = (post_note + " " + _rail_splits(
@@ -890,12 +893,13 @@ def _moved_place(place: TreadPlace, index: int, turn: float, lift: float) -> Tre
 
 
 def _platforms(
-    model, layout, places, per_flight: int, platforms: int, top_platform: bool, profiles, shell_od: float, progress
+    model, layout, places, per_flight: int, platforms: int, top_platform: bool, profiles, shell_od: float, progress,
+    shapes: tuple = (),
 ) -> str:
     """C4 frame past the top tread of each flight below a mid platform (and past the
-    last one for a top platform), the 6x6 clips where the stringers meet it, the
-    shell clips at both ends of its inner channel, and the knee braces under both
-    ends of its outer channel."""
+    last one for a top platform), of its shape in ``shapes``, the 6x6 clips where the
+    stringers meet it, the shell clips by both ends of its inner channel and every
+    radial between, and the knee braces under the outer channel at the same."""
     from swauto.stair.platform_sw import (
         add_platform_knee_braces,
         add_platform_shell_clips,
@@ -908,20 +912,23 @@ def _platforms(
     r_b = r_a + CLEAR_IN  # a platform is always full width, lined up on the inner stringer
     after = []
     missed = []
+    frames = []
     for k in range(1, platforms + 1 + (1 if top_platform else 0)):
         last = places[k * per_flight - 1]
-        place_mid_platform(
+        spec = shapes[k - 1] if k - 1 < len(shapes) else None
+        frames.append(place_mid_platform(
             model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_b, profile=frame_profile,
-            progress=progress,
-        )
+            progress=progress, spec=spec,
+        ).note)
         clips = add_stringer_clips(
             model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_b, profile=clip_profile,
             sides=("A", "B") if k <= platforms else ("A",), stringer_b=r_a + layout.clear_in, progress=progress,
+            spec=spec,
         )
         try:
             shell = add_platform_shell_clips(
                 model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_b, shell_r=shell_od,
-                progress=progress,
+                progress=progress, spec=spec,
             )
             if "missed" in shell.note:
                 missed.append(f"shell clip holes after tread {last.index}")
@@ -931,7 +938,7 @@ def _platforms(
         try:
             knees = add_platform_knee_braces(
                 model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_b, shell_r=shell_od,
-                profile=knee_profile, progress=progress,
+                profile=knee_profile, progress=progress, spec=spec,
             )
             if "missed" in knees.note:
                 missed.append(f"knee brace holes after tread {last.index}")
@@ -940,11 +947,17 @@ def _platforms(
         after.append(str(last.index))
         if "Missed" in clips.note:
             missed.append(clips.note.split("Missed: ", 1)[1].rstrip("."))
-    note = (
-        f"C4x5.4 platform frames after tread{'s' if len(after) > 1 else ''} {', '.join(after)}, "
-        "with L6x6x3/8 clips at every stringer end that meets them, shell clips at both ends "
-        "of each inner channel, and L3x3x3/8 knee braces to the shell under both ends of each outer channel."
-    )
+    if any(spec.is_rolled or spec.radial_positions() or spec.extra_in for spec in shapes):
+        note = " ".join(frames) + (
+            " L6x6x3/8 clips at every stringer end that meets them, shell clips by both ends of each inner channel "
+            "and every radial, and L3x3x3/8 knee braces to the shell under the outer channel at the same."
+        )
+    else:
+        note = (
+            f"C4x5.4 platform frames after tread{'s' if len(after) > 1 else ''} {', '.join(after)}, "
+            "with L6x6x3/8 clips at every stringer end that meets them, shell clips at both ends "
+            "of each inner channel, and L3x3x3/8 knee braces to the shell under both ends of each outer channel."
+        )
     return note + (f" Missed: {'; '.join(missed)}." if missed else "")
 
 
@@ -961,7 +974,7 @@ class InnerRail:
 
 def _inner_handrail(
     model, layout, places, per_flight: int, rail: InnerRail, profile: str, platforms: int, top_platform: bool,
-    progress,
+    progress, shapes: tuple = (),
 ) -> str:
     """The inside handrail's posts and pipe; a pipe that will not go is noted, the posts stay."""
     from swauto.stair.grab_sw import GrabRail, add_grab_rails
@@ -973,7 +986,7 @@ def _inner_handrail(
     try:
         note += " " + add_grab_rails(
             model, places, per_flight, posts, r_a=r_a, r_b=r_a + layout.clear_in, platforms=platforms,
-            top_platform=top_platform, grab=GrabRail(top=rail.top), progress=progress, inner=True,
+            top_platform=top_platform, grab=GrabRail(top=rail.top), progress=progress, inner=True, shapes=shapes,
         ).note
     except SolidWorksError as exc:
         note += f" Inside handrail pipe stopped: {exc}"
@@ -1017,7 +1030,7 @@ def _rail_splits(
 def _handrail_posts(
     model, layout, places, per_flight: int, posts: tuple[int, ...], profile: str, platforms: int,
     top_platform: bool, post_in: float | None, top_rail: bool, mid_rail: bool, mid_top: float | None,
-    grab: GrabRail | None, progress,
+    grab: GrabRail | None, progress, shapes: tuple = (),
 ) -> str:
     """Handrail posts at the same treads of every flight on the outer stringer, and near
     both ends of each platform's outer channel, ``post_in`` in from the ends. With
@@ -1043,7 +1056,7 @@ def _handrail_posts(
         try:
             placed = add_platform_posts(
                 model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=platform_b, profile=profile,
-                post_in=post_in, stringer_b=r_b, progress=progress,
+                post_in=post_in, stringer_b=r_b, progress=progress, spec=shapes[k - 1] if k - 1 < len(shapes) else None,
             )
             after.append(str(last.index))
             if "missed" in placed.note:
@@ -1061,7 +1074,7 @@ def _handrail_posts(
         try:
             note += " " + add_toe_plates(
                 model, places, per_flight, r_a=r_a, r_b=r_b, platforms=platforms, top_platform=top_platform,
-                platform_b=platform_b, progress=progress,
+                platform_b=platform_b, progress=progress, shapes=shapes,
             ).note
         except SolidWorksError as exc:
             note += f" Toe plates stopped: {exc}"
@@ -1070,6 +1083,7 @@ def _handrail_posts(
             note += " " + add_top_rails(
                 model, places, per_flight, r_a=r_a, r_b=r_b, platforms=platforms, top_platform=top_platform,
                 profile=profile, post_in=post_in, mid_top=mid_top, platform_b=platform_b, progress=progress,
+                shapes=shapes,
             ).note
         except SolidWorksError as exc:
             note += f" Top rail stopped: {exc}"
@@ -1077,7 +1091,7 @@ def _handrail_posts(
         try:
             note += " " + add_mid_rails(
                 model, places, per_flight, r_a=r_a, r_b=r_b, platforms=platforms, top_platform=top_platform,
-                post_in=post_in, mid_top=mid_top, platform_b=platform_b, progress=progress,
+                post_in=post_in, mid_top=mid_top, platform_b=platform_b, progress=progress, shapes=shapes,
             ).note
         except SolidWorksError as exc:
             note += f" Midrail stopped: {exc}"
@@ -1094,7 +1108,7 @@ def _handrail_posts(
             note += " " + add_grab_rails(
                 model, places, per_flight, flight_posts, r_a=r_a, r_b=r_b, platforms=platforms,
                 top_platform=top_platform, post_in=post_in, mid_top=mid_top, grab=grab, platform_b=platform_b,
-                progress=progress,
+                progress=progress, shapes=shapes,
             ).note
         except SolidWorksError as exc:
             note += f" Grab rail stopped: {exc}"
@@ -1422,7 +1436,14 @@ def _radial_plane(model, phi: float, name: str):
     """
     axis = _axis_y(model)
     nothing = com_nothing()
-    for angle in (phi, -phi):
+    # SolidWorks may take the angle either way round, and an angle past a half turn as its turn the other way.
+    turn = math.remainder(phi, 2.0 * math.pi)
+    tries: list[float] = []
+    for base in (phi, turn, turn + 2.0 * math.pi, turn - 2.0 * math.pi):
+        for value in (base, -base):
+            if all(abs(value - seen) > 1e-9 for seen in tries):
+                tries.append(value)
+    for angle in tries:
         _clear_selection(model)
         extension = model.Extension
         if not (

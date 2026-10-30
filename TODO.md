@@ -2,6 +2,14 @@
 
 Ideas agreed on and parked for later. Newest first.
 
+## Main steel drawing (parked 2026-10-30)
+
+The plate layouts of the main steel drawing, implemented and gamified (pieces dragged and checked green or
+red, like the Stair game). The user: the floor can be done later; the structural package comes first. The
+lisp sources, in the AutoLISP folder's Main Steel Package: MS Annular, MS Sketch, MS Soldier, MS Horizontal
+and MS LapManager (the floor), MS Compression Ring, MS Roof with External Rafters, MS CNC; and at the top
+level Shell Plate Elevation, Shell Plate Layout Editor and Shell Custom Items. Not read yet.
+
 ## Structural package (listed 2026-10-28)
 
 Done first, the same day: the Stairway tab sizes the stair from the full height (floor to top of

@@ -188,3 +188,70 @@ def _all(widget):
     yield widget
     for child in widget.winfo_children():
         yield from _all(child)
+
+
+# ---------------------------------------------------------------------------------------- the build's side
+
+
+def test_posts_between_the_ends_stand_beside_the_radials_or_where_the_plan_put_them():
+    from swauto.stair.attachments import PLATFORM_POST, OUTER, Spot, applied, plan
+
+    assert PlatformSpec(96.0).post_positions() == pytest.approx((36.0, 68.0))
+    assert PlatformSpec(96.0, posts=(50.0, 20.0)).post_positions() == (20.0, 50.0)
+    arrangement = _long()
+    result = plan(arrangement, pins=(Spot(PLATFORM_POST, 0, 50, OUTER),))
+    shape = applied(arrangement, result).stair.platform(0)
+    assert shape.posts == (36.0, 50.0, 68.0)  # the end ones (4 in from the ends) are the build's own
+
+
+def test_a_post_frame_sits_on_the_outer_side_straight_or_rolled():
+    from swauto.stair.post_sw import platform_post_frame
+
+    rolled = _lines(PlatformSpec(96.0))
+    angle, web_r, heel_t = platform_post_frame(rolled, "A", None, 4.0)
+    assert (angle - rolled.phi_a) * rolled.r_out == pytest.approx(4.0) and web_r == rolled.r_out and heel_t == 0.0
+    assert platform_post_frame(rolled, "M1", 1.0, 4.0) == (1.0, rolled.r_out, 0.0)
+    straight = _lines(PlatformSpec())
+    mid, chord_r, heel_a = platform_post_frame(straight, "A", None, 4.0)
+    _mid, _chord, heel_b = platform_post_frame(straight, "B", None, 4.0)
+    assert heel_a == pytest.approx(-heel_b) and heel_a < 0
+    # A post between the ends lands on the straight side where its radial line crosses it.
+    _m, _c, heel = platform_post_frame(straight, "M1", mid + 0.05, 4.0)
+    assert heel == pytest.approx(chord_r * math.tan(0.05))
+
+
+def test_the_build_stages_count_every_radial_and_post():
+    from swauto.stair.stringer_gui import _stair_stage_plan
+
+    labels = {key for keys, _label in _stair_stage_plan(21, platforms=1, posts=(2,), shapes=(PlatformSpec(96.0),))
+              for key in keys}
+    for name in ("ShellR1 clip placed", "ShellR2 clip placed", "KneeR2 placed", "PostM1 placed", "PostM2 holes cut"):
+        assert f"ElitePlatform11{name}" in labels
+    plain = {key for keys, _label in _stair_stage_plan(21, platforms=1, posts=(2,)) for key in keys}
+    assert "ElitePlatform11ShellR1 clip placed" not in plain
+
+
+def test_the_cope_outline_is_the_channel_section_grown_a_sixteenth_all_round():
+    from swauto.stair.platform_sw import COPE_GAP_IN, _grown_section
+
+    loop = _grown_section(COPE_GAP_IN)
+    # Closed: every piece starts where the one before it ends.
+    for shape, following in zip(loop, loop[1:] + loop[:1], strict=True):
+        assert shape[-1] == pytest.approx(following[1], abs=1e-9)
+    points = [p for shape in loop for p in shape[1:]]
+    ts, ys = [p[0] for p in points], [p[1] for p in points]
+    assert min(ts) == pytest.approx(-COPE_GAP_IN) and max(ts) == pytest.approx(1.584 + COPE_GAP_IN)
+    assert min(ys) == pytest.approx(-COPE_GAP_IN) and max(ys) == pytest.approx(4.0 + COPE_GAP_IN)
+    # The web's face stands off by the gap, and the 1:6 inside face of each flange moves out square to itself.
+    assert any(shape[0] == "line" and shape[1][0] == pytest.approx(0.184 + COPE_GAP_IN)
+               and shape[2][0] == pytest.approx(0.184 + COPE_GAP_IN) for shape in loop)
+    sloped = [shape for shape in loop if shape[0] == "line" and abs(shape[1][1] - shape[2][1]) > 0.1
+              and abs(shape[1][0] - shape[2][0]) > 0.5]
+    assert len(sloped) == 2
+    for _kind, a, b in sloped:
+        assert abs((b[1] - a[1]) / (b[0] - a[0])) == pytest.approx(1.0 / 6.0, rel=1e-3)  # as the library has it
+    (_kind, a, b), = [s for s in sloped if s[1][1] < 2.0]
+    # The library's own inside face runs through (0.4180, 0.3737); grown, it is a sixteenth off it, square to it.
+    nx, ny = 1.0 / math.sqrt(37.0), 6.0 / math.sqrt(37.0)
+    assert (a[0] - 0.4180) * nx + (a[1] - 0.3737) * ny == pytest.approx(COPE_GAP_IN, abs=1e-3) or \
+        (b[0] - 0.4180) * nx + (b[1] - 0.3737) * ny == pytest.approx(COPE_GAP_IN, abs=1e-3)

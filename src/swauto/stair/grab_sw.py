@@ -94,6 +94,7 @@ def add_grab_rails(
     model, places, per_flight: int, posts: list[Post], *, r_a: float, r_b: float, platforms: int,
     top_platform: bool, post_in: float = PLATFORM_POST_IN, mid_top: float = PLATFORM_MID_TOP_IN,
     grab: GrabRail = GrabRail(), platform_b: float | None = None, progress=None, inner: bool = False,
+    shapes: tuple = (),
 ) -> BraceResult:
     """The pipe along every flight with its two caps, and a PC #34 to it from each flight post.
 
@@ -106,7 +107,7 @@ def add_grab_rails(
     way, face_r = _post_side(r_a if inner else r_b, inner)  # the flight posts' walk side: against the stringer
     radius = face_r - way * (BRACKET_OVERALL_IN - BRACKET_IN / 2.0)  # over the middle of the PC #34's upright
     pb = r_b if platform_b is None else platform_b
-    flights = _flights(places, per_flight, r_a if inner else r_b)
+    flights = _flights(places, per_flight, r_a if inner else r_b, shapes)
     landings = 0 if inner else len(flights) - 1 + (1 if top_platform else 0)
     prefix = "EliteGrabIn" if inner else "EliteGrab"
     pipes: list[tuple[_Pipe, float, float] | None] = []

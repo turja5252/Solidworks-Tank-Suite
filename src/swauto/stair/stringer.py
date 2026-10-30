@@ -27,6 +27,7 @@ END_CUT_IN = 0.125
 MAX_TREADS = 200  # a 100 ft shell at 7.5 in rises is 160 treads
 PLATFORM_LENGTH_IN = 36.0  # along the centreline: the lisp launcher's "centerline arc" default
 PLATFORM_SPACING_IN = 40.0  # the most between a platform's radials, along its centreline (the user, 2026-10-30)
+POST_BESIDE_IN = 4.0  # a platform post toward B from a radial, clear of the radial's coped end and its bolts
 
 
 @dataclass(frozen=True)
@@ -38,13 +39,15 @@ class PlatformSpec:
     36 is the stair's own platform, and more puts D further out (C never moves). ``rolled`` rolls C and D about the
     tank axis; None takes the lisp's default, rolled when longer than 36 in. A long platform gets radials between
     A and B, no more than ``spacing_in`` apart along the centreline, each with its knee brace and shell clip;
-    ``radials`` are where they are, in from A along the centreline (None: equal bays)."""
+    ``radials`` are where they are, in from A along the centreline (None: equal bays). ``posts`` are the outer
+    side's posts between its two end posts, the same way (None: one beside each radial)."""
 
     length_in: float = PLATFORM_LENGTH_IN
     width_in: float = TREAD_PLATE_IN
     rolled: bool | None = None
     spacing_in: float = PLATFORM_SPACING_IN
     radials: tuple[float, ...] | None = None
+    posts: tuple[float, ...] | None = None
 
     @property
     def is_rolled(self) -> bool:
@@ -61,6 +64,13 @@ class PlatformSpec:
             return tuple(sorted(self.radials))
         bays = max(1, math.ceil(self.length_in / self.spacing_in - 1e-9))
         return tuple(self.length_in * i / bays for i in range(1, bays))
+
+    def post_positions(self) -> tuple[float, ...]:
+        """The outer side's posts between its end posts, in from A along the centreline: where they were put, or
+        one beside each radial."""
+        if self.posts is not None:
+            return tuple(sorted(self.posts))
+        return tuple(along + POST_BESIDE_IN for along in self.radial_positions())
 
     def validate(self) -> None:
         if not 12.0 <= self.length_in <= 1200.0:

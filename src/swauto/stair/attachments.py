@@ -45,7 +45,7 @@ from swauto.stair.landings import (
 from swauto.stair.post_sw import PLATFORM_POST_IN
 from swauto.stair.splitter import SplitSettings, choose_cuts
 from swauto.stair.stair_sw import StairPlaces, stair_places
-from swauto.stair.stringer import THICKNESS_IN, PlatformSpec
+from swauto.stair.stringer import POST_BESIDE_IN, THICKNESS_IN, PlatformSpec
 from swauto.stretchout.checks import _outlines_meet, crosses
 from swauto.stretchout.model import Item, Seam, Stretchout, _slot, build_stretchout, x_of_angle
 
@@ -68,7 +68,6 @@ POST_EVERY = 4  # tread gaps between posts (the user)
 OUTER_RAIL_FT = 40.0  # stock lengths, Elite STWC (angle, flat bar) and STWE (inside pipe)
 INNER_RAIL_FT = 20.0
 RADIAL_CLEAR_IN = 6.0  # the least between a platform's radial and an end or another radial
-POST_BESIDE_IN = 4.0  # a platform post toward B from a radial, clear of the radial's coped end and its bolts
 POST_CLEAR_IN = 6.0  # the least between two platform posts
 
 
@@ -295,8 +294,14 @@ def applied(arrangement: StairArrangement, result: Plan) -> StairArrangement:
         splits = replace(splits or SplitSettings(), fixed=tuple(result.cuts))
     stair = arrangement.stair
     count = arrangement.platforms + (1 if arrangement.top_platform else 0)
-    shapes = [replace(stair.platform(k), radials=tuple(sorted(float(s.tread) for s in result.of_kind(RADIAL)
-                                                               if s.flight == k))) for k in range(count)]
+    shapes = []
+    for k in range(count):
+        shape = stair.platform(k)
+        radials = tuple(sorted(float(s.tread) for s in result.of_kind(RADIAL) if s.flight == k))
+        # The end posts stand where the build's post distance puts them; the plan's others go between.
+        posts = tuple(sorted(float(s.tread) for s in result.of_kind(PLATFORM_POST, OUTER) if s.flight == k
+                             and POST_CLEAR_IN <= s.tread <= shape.length_in - POST_CLEAR_IN))
+        shapes.append(replace(shape, radials=radials, posts=posts))
     return replace(arrangement, stair=replace(stair, platform_specs=tuple(shapes)),
                    braces=tuple(sorted(s.pan(per_flight) for s in result.of_kind(KNEE))),
                    clips=tuple(sorted(s.pan(per_flight) for s in result.of_kind(CLIP))), splits=splits)
