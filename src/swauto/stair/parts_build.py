@@ -15,7 +15,8 @@ shell plates ("Stair tread A.SLDPRT", "Stair stringer inner B.SLDPRT"), in the s
 (the user's choices, 2026-10-30).
 
 So far: the treads, each stringer with every tread's and post's bolt holes, the outer flight posts, each platform's
-frame members and supports, the stringer clips and the shell pads.
+frame members and supports, the stringer clips, the shell pads, and the outer handrail: the platform posts, toe
+plates, top rail, midrail, the closed end at the foot, the grab rail and the handrail splices (``rail_parts``).
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from swauto.parts import new_part, quiet
 from swauto.project.items import Item, Placement, _family, _names, fingerprint
 from swauto.stair import stair_sw as s
 from swauto.stair.brace_sw import angle_profile
-from swauto.stair.grab_sw import _sketch_through
+from swauto.stair.grab_sw import GrabRail, _sketch_through
 from swauto.stair.platform_parts import clip_jobs, clip_sides, pad_job, support_jobs, web_holes
 from swauto.stair.platform_sw import (
     CHANNEL_IN,
@@ -48,9 +49,28 @@ from swauto.stair.platform_sw import (
     platform_lines,
     platform_profile,
 )
-from swauto.stair.post_sw import HOLE_GAUGE_IN, HOLE_UP_IN, THK_IN, Post, _holes, _post_side, _shaped_post
+from swauto.stair.post_sw import (
+    HOLE_GAUGE_IN,
+    HOLE_UP_IN,
+    PLATFORM_POST_IN,
+    THK_IN,
+    Post,
+    _holes,
+    _post_side,
+    _shaped_post,
+)
 from swauto.stair.post_sw import post_layout as _post_layout
 from swauto.stair.post_sw import post_profile
+from swauto.stair.rail_parts import (
+    Rails,
+    cut_frame_holes,
+    frame_holes,
+    grab_jobs,
+    rail_jobs,
+    splice_jobs,
+    split_pairs,
+)
+from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN
 from swauto.stair.stringer import (
     BOLT_DIA_IN,
     BOLT_FROM_FRONT_IN,
@@ -101,6 +121,12 @@ class StairParts:
     ground_in: float = 0.0
     turn: float = 0.0  # the whole stair turned about the tank axis, as turn_stair turns the one part
     top_platform: bool = False
+    top_rail: bool = False
+    mid_rail: bool = False
+    post_in: float | None = None  # the platform posts' heels in from the ends (post_sw.PLATFORM_POST_IN)
+    mid_top: float | None = None  # the platform midrail's top over the grating (rail_sw.PLATFORM_MID_TOP_IN)
+    grab: GrabRail | None = None  # the outer grab rail on the flight posts
+    rail_splits: tuple = ()  # (side, pan of the post below the bay) of each handrail splice, as for create_stair
 
     @property
     def where(self):
@@ -153,6 +179,51 @@ class StairParts:
             out.append((k, seat, dphi, dy))
         return out
 
+    def rails(self) -> Rails:
+        """The outer handrail's numbers on the ground-0 stair, as stair_sw._handrail_posts passes them on."""
+        where = self.where
+        r_a = where.layout.inner_face_in
+        return Rails(where.places, where.per_flight, r_a, self.r_b, r_a + CLEAR_IN, self.platforms, self.top_platform,
+                     PLATFORM_POST_IN if self.post_in is None else self.post_in,
+                     PLATFORM_MID_TOP_IN if self.mid_top is None else self.mid_top,
+                     self.top_rail, self.mid_rail, self.stair.platform_specs)
+
+    def rail_params(self) -> dict:
+        """What shapes the handrail's pieces."""
+        rails = self.rails()
+        return {"platforms": self.platforms, "top_platform": self.top_platform, "post_in": rails.post_in,
+                "mid_top": rails.mid_top, "top_rail": self.top_rail, "mid_rail": self.mid_rail,
+                "splices": [list(split) for split in self.rail_splits],
+                "shapes": [shape_params(self.stair.platform(k - 1)) for k in range(1, rails.count + 1)]}
+
+    def seat_post_holes(self, k: int, dphi: float, dy: float) -> dict[str, list]:
+        """The handrail posts' bolt holes in platform ``k``'s channels by member ("D", and "A" and "B" for a narrow
+        stair's side posts), carried back from the real platform onto its seat; none without the handrail."""
+        if not self.posts:
+            return {}
+        return {member: [([_seat(p, dphi, dy) for p in points], _seat(axis, dphi, 0.0, shift=False))
+                         for points, axis in holes]
+                for member, holes in frame_holes(self.rails(), k).items()}
+
+
+def _seat(point, dphi: float, dy: float, shift: bool = True) -> tuple[float, float, float]:
+    """A point (or with ``shift`` False, a direction) carried back ``dphi`` about the tank axis and down ``dy``."""
+    x, y, z = point
+    c, sn = math.cos(dphi), math.sin(dphi)
+    return x * c + z * sn, y - dy if shift else y, -x * sn + z * c
+
+
+def _then_holes(build, holes, name: str):
+    """``build``, then the handrail posts' bolt holes ``holes`` through what it made."""
+    if not holes:
+        return build
+
+    def run(model):
+        build(model)
+        cut_frame_holes(model, holes, name)
+
+    return run
+
 
 def flight_params(where) -> dict:
     """What shapes a flight's pieces: the flight as laid out, less the platforms' shapes."""
@@ -197,7 +268,8 @@ def platform_jobs(parts: StairParts, frame_file: str) -> list[PartJob]:
     one piece for the radials between, turned about the tank axis to each. Straight: each of the mitred A, B, C and
     D (the frame is built whole and the other three bodies deleted, so SolidWorks' own miters stay), and each radial
     between on its own (their reach changes along the chords). Where a flight meets an end (A, and B on a mid
-    platform), its web has the stringer clips' rounds and slots."""
+    platform), its web has the stringer clips' rounds and slots; where the handrail's posts bolt to a channel, their
+    holes."""
     out = []
     flight = flight_params(parts.where)
     for k, lines, dphi, dy in parts.platform_seats():
@@ -206,31 +278,32 @@ def platform_jobs(parts: StairParts, frame_file: str) -> list[PartJob]:
         common = {"version": PARTS_VERSION, "flight": flight, "shape": shape_params(parts.stair.platform(k - 1))}
         home = (parts.place(dphi, dy),)
         clips = clip_sides(k, parts.platforms)
+        posts = parts.seat_post_holes(k, dphi, dy)
+
+        def member(piece, label, build, posts=posts, name=name, common=common, home=home, **more):
+            holes = posts.get(piece, [])
+            out.append(PartJob(CHANNELS, label, dict(common, piece=piece, post_holes=[h[0] for h in holes], **more),
+                               _then_holes(build, holes, f"{name}{piece}"), home))
+
         if lines.rolled:
-            out.append(PartJob(CHANNELS, f"Platform {k} side C", dict(common, piece="C"),
-                               lambda model, lines=lines, base=base, name=name:
-                               _arc_member(model, lines.r_in, lines.phi_a, lines.phi_b, base, 0.0, frame_file,
-                                           f"{name}C"), home))
-            out.append(PartJob(CHANNELS, f"Platform {k} side D", dict(common, piece="D"),
-                               lambda model, lines=lines, base=base, name=name:
-                               _arc_member(model, lines.r_out, lines.phi_a, lines.phi_b, base + CHANNEL_IN, math.pi,
-                                           frame_file, f"{name}D"), home))
+            member("C", f"Platform {k} side C", lambda model, lines=lines, base=base, name=name:
+                   _arc_member(model, lines.r_in, lines.phi_a, lines.phi_b, base, 0.0, frame_file, f"{name}C"))
+            member("D", f"Platform {k} side D", lambda model, lines=lines, base=base, name=name:
+                   _arc_member(model, lines.r_out, lines.phi_a, lines.phi_b, base + CHANNEL_IN, math.pi, frame_file,
+                               f"{name}D"))
             ends = [lines.supports()[0], lines.supports()[-1]]
         else:
             for side in "ABCD":
                 holes = (side,) if side in clips else ()
-                out.append(PartJob(CHANNELS, f"Platform {k} side {side}",
-                                   dict(common, piece=side, holes=bool(holes)),
-                                   lambda model, lines=lines, base=base, name=name, side=side, holes=holes:
-                                   _straight_side(model, lines, base, frame_file, name, side, holes), home))
+                member(side, f"Platform {k} side {side}",
+                       lambda model, lines=lines, base=base, name=name, side=side, holes=holes:
+                       _straight_side(model, lines, base, frame_file, name, side, holes), holes=bool(holes))
             ends = []
         for label, angle, way in ends:
             holes = (label,) if label in clips else ()
-            out.append(PartJob(CHANNELS, f"Platform {k} radial {label}",
-                               dict(common, piece=label, holes=bool(holes)),
-                               lambda model, lines=lines, base=base, angle=angle, way=way, label=label, name=name,
-                               holes=holes: _end_radial(model, lines, angle, way, base, frame_file, name, label, holes),
-                               home))
+            member(label, f"Platform {k} radial {label}",
+                   lambda model, lines=lines, base=base, angle=angle, way=way, label=label, name=name, holes=holes:
+                   _end_radial(model, lines, angle, way, base, frame_file, name, label, holes), holes=bool(holes))
         between = lines.supports()[1:-1]
         if between and lines.rolled:
             label, angle, way = between[0]
@@ -296,7 +369,8 @@ def _straight_side(model, lines, base: float, frame_file: str, name: str, side: 
 def jobs(parts: StairParts, post_file: str = "", frame_file: str = "", knee_file: str = "",
          clip_file: str = "") -> list[PartJob]:
     """Every piece, in build order: the tread, each flight's two stringers, the flight post, the platforms' frames
-    and supports, the stringer clips, and the shell pad."""
+    and supports, the stringer clips, the shell pad, and with the flight posts the rest of the outer handrail
+    (``rail_parts``)."""
     where = parts.where
     first = where.places[0]
     flight = flight_params(where)
@@ -338,6 +412,14 @@ def jobs(parts: StairParts, post_file: str = "", frame_file: str = "", knee_file
         out.extend(clip_jobs(PartJob, platforms, parts.platforms, clip_file,
                              {"version": PARTS_VERSION, "flight": flight}, parts.place))
         out.append(pad_job(PartJob, platforms, parts.shell_od, {"version": PARTS_VERSION}, parts.place))
+    if posts:
+        common = {"version": PARTS_VERSION, "flight": flight, "rails": parts.rail_params()}
+        rails = parts.rails()
+        pairs = split_pairs(rails, posts, parts.rail_splits)
+        out.extend(rail_jobs(PartJob, rails, post_file, common, parts.place, pairs))
+        if parts.grab is not None:
+            out.extend(grab_jobs(PartJob, rails, parts.grab, posts, seat, common, parts.place, pairs))
+        out.extend(splice_jobs(PartJob, rails, pairs, post_file, parts.grab, common, parts.place))
     return out
 
 
