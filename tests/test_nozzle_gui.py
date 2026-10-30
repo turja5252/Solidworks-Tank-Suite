@@ -133,3 +133,20 @@ def test_adder_fields_place_a_six_inch_weld_neck():
     assert len(holes) == 8
     # Half a bolt space off the vertical, so the holes straddle the centerline.
     assert math.degrees(math.atan2(-holes[0][0], holes[0][1])) == pytest.approx(22.5)
+
+
+def test_match_radial_says_how_far_it_moves_an_offset_nozzles_face_and_is_off_for_a_radial_one(tk_window):
+    """The user, 2026-10-30: "it is not clear if you match on the radial nozzles who is matching who"."""
+    spec = TankSpec(diameter_in=200, diameter_basis="od", courses=[Course(96, 0.5)])
+    offset = _row(mark="N1", size="6", elevation="48", osp="8", isp="4", offset="20", match=True)
+    radial = _row(mark="N2", size="6", elevation="48", rotation="90", osp="8", isp="4", match=True)
+    moved, still = check_rows([offset, radial], spec)
+    chord = 100.0 - math.sqrt(100.0 ** 2 - 20.0 ** 2)
+    assert f"face {chord:.3f} in out to the radial plane" in moved.message
+    assert "radial plane" not in still.message
+    page = ttk.Frame(tk_window)
+    build_nozzle_tab(page, tk.StringVar(), {})
+    page.update_idletasks()
+    texts = _widget_texts(page)
+    assert "Match radial" in texts
+    assert any("Match radial (an offset nozzle only)" in text for text in texts)

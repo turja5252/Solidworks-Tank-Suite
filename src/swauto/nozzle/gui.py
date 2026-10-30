@@ -66,7 +66,7 @@ _COLUMNS = (
     _Column("isp", "ISP, in", 54),
     _Column("inside_flange", "ISP flange", 80, "combo", _INSIDE, "None"),
     _Column("offset", "Offset, in", 64),
-    _Column("match", "Match", 48, "check"),
+    _Column("match", "Match radial", 84, "check"),
     _Column("repad", "Repad", 78, "combo", _REPADS, "None"),
     _Column("pad_od", "Pad OD", 56),
     _Column("pad_id", "Pad ID", 56),
@@ -189,7 +189,10 @@ def _row_summary(placed: Placement) -> str:
             if nozzle.inside_flange != "none" else "",
         )
     )
-    return f"OK  {nozzle.nps} in {nozzle.rating}# {shape}, course {placed.course_number}, {pad_text}{extras}"
+    matched = (f", face {placed.chord_in:.3f} in out to the radial plane"
+               if nozzle.match_plane and nozzle.offset_in and placed.chord_in else "")
+    return (f"OK  {nozzle.nps} in {nozzle.rating}# {shape}, course {placed.course_number}, {pad_text}{extras}"
+            f"{matched}")
 
 
 class _Row:
@@ -260,6 +263,12 @@ class _Row:
         gasket = bool(self.vars["gasket"].get())
         for key in ("gasket_material", "gasket_thk"):
             self.widgets[key].state(["!disabled"] if gasket else ["disabled"])
+        # Match radial moves an offset nozzle's face and inner end; a radial nozzle (no offset) has nothing to match.
+        try:
+            offset = float(self.vars["offset"].get().strip() or "0")
+        except ValueError:
+            offset = 0.0
+        self.widgets["match"].state(["!disabled"] if offset else ["disabled"])
 
     def show(self, check: RowCheck) -> None:
         self.message = check.message
@@ -298,8 +307,11 @@ def build_nozzle_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict |
     count_var = tk.StringVar()
     ttk.Label(
         bar,
-        text="OSP: shell outside to the flange face.  ISP: shell inside to the inner end.",
+        text="OSP: shell outside to the flange face.  ISP: shell inside to the inner end.  Match radial (an offset "
+             "nozzle only): its flange face and inner end go where a radial nozzle's with the same OSP and ISP would.",
         foreground=_NOTE,
+        wraplength=620,
+        justify="left",
     ).grid(row=0, column=3, sticky="e")
 
     # Header and body are separate canvases on one horizontal scrollbar, so the header stays put.
