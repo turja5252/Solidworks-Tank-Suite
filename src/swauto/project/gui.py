@@ -102,6 +102,10 @@ def build_project_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict 
             if status == FAILED:
                 shown += f": {project.built.get(item.file, {}).get('error', '')}"
             tree.insert("", "end", values=(item.file, item.label, len(item.placements), shown))
+        if project.stair_built:
+            # Built from the Stairway tab (Build stair as parts), not from here: one row for the whole stair.
+            tree.insert("", "end", values=("Stair.SLDASM", f"The stair: {len(project.stair_built)} part files",
+                                           1, "Built from the Stairway tab"))
         copies = sum(len(item.placements) for item in items)
         todo = counts.get(NEW, 0) + counts.get(CHANGED, 0) + counts.get(FAILED, 0)
         summary_var.set(

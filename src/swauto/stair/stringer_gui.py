@@ -46,6 +46,8 @@ from swauto.stair.game import Choice, Game
 from swauto.stair.grab_sw import GRAB_TOP_IN, GrabRail
 from swauto.stair.inner_clip_sw import add_inner_clip, clip_angle_profile
 from swauto.stair.landings import StairArrangement, platform_problems
+from swauto.stair.parts_project import build_in_project, stair_parts
+from swauto.stair.parts_project import stages as parts_stages
 from swauto.stair.post_sw import PLATFORM_POST_IN, RAIL_TOP_IN, flight_picks, read_post_treads
 from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN, check_platform_mid_top
 from swauto.stair.splitter import LIMIT as SPLIT_LIMIT
@@ -709,6 +711,13 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     ttk.Label(top, textvariable=summary_var, justify="left", wraplength=640).grid(
         row=17, column=0, columnspan=8, sticky="w", pady=(4, 4)
     )
+    parts_row = ttk.Frame(top)
+    parts_row.grid(row=18, column=0, columnspan=8, sticky="w", pady=(0, 6))
+    parts_btn = ttk.Button(parts_row, text="Build stair as parts in the project")
+    parts_btn.pack(side="left")
+    ttk.Label(
+        parts_row, text="A part per piece in the project's Stair.SLDASM; a second build makes only what changed.",
+    ).pack(side="left", padx=(8, 0))
 
     ttk.Label(
         top, text="Plan from above, 0° at 12 o'clock and clockwise: red ends, the dashed arrow climbs, teal splices"
@@ -1036,65 +1045,85 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             raise ValueError(f"The stair has {count} treads; there is no tread {over[0]} for a brace.")
         return braces
 
+    def read_build() -> dict[str, object]:
+        """Everything Create stair (and Build stair as parts) reads off the tab and the Stair game. Raises
+        ValueError with what is wrong."""
+        current = read_spec()
+        current.validate()
+        wall = read_wall()
+        platforms = read_platforms(current.treads)
+        per_flight = flight_treads(current.treads, platforms)
+        by_rules = bool(rules_var.get())
+        braces = () if by_rules else read_braces(per_flight * (platforms + 1))
+        posts = () if by_rules else read_post_treads(posts_var.get(), per_flight)
+        result = None
+        inner_rail = None
+        rail_splits: tuple = ()
+        if rules_var.get():
+            # Everything the rules (or the Stair game) placed, in place of the typed posts and braces.
+            base = base_arrangement()
+            result = rules_plan(base)
+            posts = flight_posts(base, result, OUTER) if OUTER in read_rules().sides else ()
+            if INNER in read_rules().sides:
+                inner_rail = InnerRail(posts=flight_posts(base, result, INNER))
+            rail_splits = tuple((spot.side, spot.pan(per_flight)) for spot in result.of_kind(RAIL_SPLIT))
+        post_in = read_post_in(post_in_out_var, "outer")
+        read_post_in(post_in_inner_var, "inner")
+        top_rail = bool(top_rail_var.get()) and any(posts)
+        mid_rail = bool(mid_rail_var.get()) and any(posts)
+        try:
+            mid_top = float(mid_top_var.get().strip())
+        except ValueError as exc:
+            raise ValueError("The platform midrail top must be a number of inches.") from exc
+        check_platform_mid_top(mid_top)
+        grab = None
+        if bool(grab_var.get()) and any(posts):
+            try:
+                grab = GrabRail(
+                    top=float(grab_top_var.get().strip()),
+                    low=float(grab_low_var.get().strip() or "0"),
+                    high=float(grab_high_var.get().strip() or "0"),
+                )
+            except ValueError as exc:
+                raise ValueError("The grab rail's pipe top and end adjustments must be numbers of inches.") from exc
+            if not 0.0 < grab.top < RAIL_TOP_IN:
+                raise ValueError(f"The grab rail's pipe top must be above 0 and under the {RAIL_TOP_IN:g} in top rail.")
+        shell_height = float(shell_height_var.get().strip())
+        splits = read_splits()
+        _top_offset, bottom_offset = read_offsets()
+        turn, ends = read_turn(current, platforms)
+        clips = None
+        rule_notes: list[str] = []
+        if result is not None:
+            planned = applied(base, result)
+            braces, clips, splits = planned.braces, planned.clips, planned.splits
+            current = planned.stair  # with the plan's platform radials and posts
+            rule_notes = [f"Placed by the rules: {_rules_text(result)}"] + list(result.warnings)
+        return {
+            "current": current, "wall": wall, "platforms": platforms, "per_flight": per_flight,
+            "braces": braces, "posts": posts, "inner_rail": inner_rail, "rail_splits": rail_splits,
+            "post_in": post_in, "top_rail": top_rail, "mid_rail": mid_rail, "mid_top": mid_top, "grab": grab,
+            "shell_height": shell_height, "splits": splits, "bottom_offset": bottom_offset, "turn": turn,
+            "ends": ends, "clips": clips, "rule_notes": rule_notes,
+        }
+
     def create_stair() -> None:
         if state["busy"]:
             return
         runlog.inputs("Create stair", tab_inputs())
         try:
-            current = read_spec()
-            current.validate()
-            wall = read_wall()
-            platforms = read_platforms(current.treads)
-            per_flight = flight_treads(current.treads, platforms)
-            by_rules = bool(rules_var.get())
-            braces = () if by_rules else read_braces(per_flight * (platforms + 1))
-            posts = () if by_rules else read_post_treads(posts_var.get(), per_flight)
-            result = None
-            inner_rail = None
-            rail_splits: tuple = ()
-            if rules_var.get():
-                # Everything the rules (or the Stair game) placed, in place of the typed posts and braces.
-                base = base_arrangement()
-                result = rules_plan(base)
-                posts = flight_posts(base, result, OUTER) if OUTER in read_rules().sides else ()
-                if INNER in read_rules().sides:
-                    inner_rail = InnerRail(posts=flight_posts(base, result, INNER))
-                rail_splits = tuple((spot.side, spot.pan(per_flight)) for spot in result.of_kind(RAIL_SPLIT))
-            post_in = read_post_in(post_in_out_var, "outer")
-            read_post_in(post_in_inner_var, "inner")
-            top_rail = bool(top_rail_var.get()) and any(posts)
-            mid_rail = bool(mid_rail_var.get()) and any(posts)
-            try:
-                mid_top = float(mid_top_var.get().strip())
-            except ValueError as exc:
-                raise ValueError("The platform midrail top must be a number of inches.") from exc
-            check_platform_mid_top(mid_top)
-            grab = None
-            if bool(grab_var.get()) and any(posts):
-                try:
-                    grab = GrabRail(
-                        top=float(grab_top_var.get().strip()),
-                        low=float(grab_low_var.get().strip() or "0"),
-                        high=float(grab_high_var.get().strip() or "0"),
-                    )
-                except ValueError as exc:
-                    raise ValueError("The grab rail's pipe top and end adjustments must be numbers of inches.") from exc
-                if not 0.0 < grab.top < RAIL_TOP_IN:
-                    raise ValueError(f"The grab rail's pipe top must be above 0 and under the {RAIL_TOP_IN:g} in top rail.")
-            shell_height = float(shell_height_var.get().strip())
-            splits = read_splits()
-            _top_offset, bottom_offset = read_offsets()
-            turn, ends = read_turn(current, platforms)
-            clips = None
-            rule_notes: list[str] = []
-            if result is not None:
-                planned = applied(base, result)
-                braces, clips, splits = planned.braces, planned.clips, planned.splits
-                current = planned.stair  # with the plan's platform radials and posts
-                rule_notes = [f"Placed by the rules: {_rules_text(result)}"] + list(result.warnings)
+            read = read_build()
         except ValueError as exc:
             messagebox.showerror("Stair", str(exc) if str(exc) else "Pan wall must be numeric.")
             return
+        (current, wall, platforms, per_flight, braces, posts, inner_rail, rail_splits, post_in, top_rail, mid_rail,
+         mid_top, grab, shell_height, splits, bottom_offset, turn, ends, clips, rule_notes) = (
+            read[key] for key in (
+                "current", "wall", "platforms", "per_flight", "braces", "posts", "inner_rail", "rail_splits",
+                "post_in", "top_rail", "mid_rail", "mid_top", "grab", "shell_height", "splits", "bottom_offset",
+                "turn", "ends", "clips", "rule_notes",
+            )
+        )
         with_shell = bool(include_shell.get())
         knees = bool(knee_var.get())
         inner = bool(inner_var.get())
@@ -1214,7 +1243,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         start = f"0% — starting the {title.lower()}"
         state["busy"] = True
         state["stop"] = False
-        for button in (create_btn, stair_btn, brace_btn):
+        for button in (create_btn, stair_btn, brace_btn, parts_btn):
             button.configure(state="disabled")
         stop_btn.configure(state="normal")
         status_var.set(start)
@@ -1245,7 +1274,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
                 stop_btn.grab_release()
             state["busy"] = False
             stop_btn.configure(state="disabled")
-            for button in (create_btn, stair_btn, brace_btn):
+            for button in (create_btn, stair_btn, brace_btn, parts_btn):
                 button.configure(state="normal")
             status_var.set(status)
 
@@ -1269,9 +1298,48 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         finish(f"100% — {title} → {heading}")
         messagebox.showinfo(title, f"{heading}\n\n{note}")
 
+    def build_parts() -> None:
+        """The stair as parts in the open project's folder: Stair.SLDASM, put in the tank's assembly. A part per
+        piece; a part whose shape did not change since the last build is kept."""
+        if state["busy"]:
+            return
+        runlog.inputs("Build stair as parts", tab_inputs())
+        project = (shared or {}).get("project")
+        if project is None:
+            messagebox.showerror("Stair as parts", "Open or start a project on the Project tab first: the stair's "
+                                 "parts go in its folder.")
+            return
+        try:
+            read = read_build()
+            tops = _flight_tops(read["current"].treads, read["platforms"])
+            clips = read["clips"] if read["clips"] is not None else read["braces"]
+            parts, left = stair_parts(
+                read["current"], read["wall"], platforms=read["platforms"], top_platform=bool(top_platform_var.get()),
+                posts=read["posts"], ground_in=-read["bottom_offset"], turn=read["turn"],
+                ccw=hand_var.get() == COUNTERCLOCKWISE, top_rail=read["top_rail"], mid_rail=read["mid_rail"],
+                post_in=read["post_in"], mid_top=read["mid_top"], grab=read["grab"], rail_splits=read["rail_splits"],
+                braces=read["braces"], knees=bool(knee_var.get()),
+                inner_clips=tuple(i for i in clips if i not in tops) if inner_var.get() else (),
+                splits=read["splits"], inner_rail=read["inner_rail"],
+            )
+            plan = parts_stages(parts, project.stair_built)
+        except ValueError as exc:
+            messagebox.showerror("Stair as parts", str(exc))
+            return
+
+        def work(progress):
+            heading, note = build_in_project(connect().app, project, parts, progress)
+            notes = [note, *read["rule_notes"]]
+            if left:
+                notes.append(f"Not built as parts yet: {', '.join(left)}. Create stair builds them, in one part.")
+            return heading, "\n\n".join(notes)
+
+        run_job("Stair as parts", plan, work)
+
     create_btn.configure(command=create)
     stair_btn.configure(command=create_stair)
     brace_btn.configure(command=add_braces)
+    parts_btn.configure(command=build_parts)
     def on_height(*_args) -> None:
         # Pick the treads before refreshing, so the summary sees the new count.
         pick_treads()
