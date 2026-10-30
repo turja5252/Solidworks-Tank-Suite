@@ -8,7 +8,7 @@ axis and a lift (``project.items.Placement``), as the one-part build copies them
 through two pieces at once is made in each piece's part from the same numbers.
 
 So far: the treads, each flight's two stringers with every tread's and post's bolt holes, the outer flight posts,
-and each platform's frame members.
+each platform's frame members and supports (``platform_parts``), the stringer clips and the shell pads.
 """
 
 from __future__ import annotations
@@ -25,7 +25,9 @@ from swauto.errors import SolidWorksError
 from swauto.parts import new_part, quiet
 from swauto.project.items import Item, Placement
 from swauto.stair import stair_sw as s
+from swauto.stair.brace_sw import angle_profile
 from swauto.stair.grab_sw import _sketch_through
+from swauto.stair.platform_parts import build_pad, clip_jobs, clip_sides, pad_job_placements, support_jobs, web_holes
 from swauto.stair.platform_sw import (
     CHANNEL_IN,
     _arc_member,
@@ -35,6 +37,7 @@ from swauto.stair.platform_sw import (
     _signed_area,
     _sketch_on_face,
     _world,
+    clip_profile,
     platform_lines,
     platform_profile,
 )
@@ -103,7 +106,7 @@ class StairParts:
         for k in range(1, self.platforms + 1 + (1 if self.top_platform else 0)):
             last = where.places[k * where.per_flight - 1]
             out.append((k, platform_lines(phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_a + CLEAR_IN,
-                                          spec=self.stair.platform(k - 1))))
+                                          stringer_b=r_a + where.layout.clear_in, spec=self.stair.platform(k - 1))))
         return out
 
 
@@ -138,12 +141,14 @@ def platform_jobs(parts: StairParts, frame_file: str) -> list[PartJob]:
     """Each platform's frame members as parts. Rolled: the sides C and D, the end radials A and B, and one file for
     the radials between, the same piece turned about the tank axis. Straight: each of the mitered A, B, C and D
     (the frame is built whole and the other three bodies deleted, so SolidWorks' own miters stay), and each radial
-    between on its own (their reach changes along the chords)."""
+    between on its own (their reach changes along the chords). Where a flight meets an end (A, and B on a mid
+    platform), its web has the stringer clips' rounds and slots."""
     out = []
     for k, lines in parts.platform_lines():
         base = lines.top - CHANNEL_IN
         tag, name = f"Stair Platform {k}", f"ElitePlatform{k}"
         home = (Placement(parts.turn),)
+        clips = clip_sides(k, parts.platforms)
         if lines.rolled:
             out.append(PartJob(f"{tag} C.SLDPRT", f"Platform {k} side C",
                                lambda model, lines=lines, base=base, name=name:
@@ -157,13 +162,14 @@ def platform_jobs(parts: StairParts, frame_file: str) -> list[PartJob]:
         else:
             for side in "ABCD":
                 out.append(PartJob(f"{tag} {side}.SLDPRT", f"Platform {k} side {side}",
-                                   lambda model, lines=lines, base=base, name=name, side=side:
-                                   _straight_side(model, lines, base, frame_file, name, side), home))
+                                   lambda model, lines=lines, base=base, name=name, side=side, clips=clips:
+                                   _straight_side(model, lines, base, frame_file, name, side, clips), home))
             ends = []
         for label, angle, way in ends:
             out.append(PartJob(f"{tag} Radial {label}.SLDPRT", f"Platform {k} radial {label}",
-                               lambda model, lines=lines, base=base, angle=angle, way=way, label=label, name=name:
-                               _radial_member(model, lines, angle, way, base, frame_file, f"{name}{label}"), home))
+                               lambda model, lines=lines, base=base, angle=angle, way=way, label=label, name=name,
+                               clips=clips:
+                               _end_radial(model, lines, angle, way, base, frame_file, name, label, clips), home))
         between = lines.supports()[1:-1]
         if between and lines.rolled:
             label, angle, way = between[0]
@@ -180,8 +186,18 @@ def platform_jobs(parts: StairParts, frame_file: str) -> list[PartJob]:
     return out
 
 
-def _straight_side(model, lines, base: float, frame_file: str, name: str, side: str) -> None:
-    """One side of a straight platform's mitered frame: the whole frame, then the other three deleted."""
+def _end_radial(model, lines, angle: float, way: float, base: float, frame_file: str, name: str, label: str,
+                clips: tuple[str, ...]) -> None:
+    """A rolled platform's end radial A or B, with the stringer clips' holes in its web if a flight meets it."""
+    _radial_member(model, lines, angle, way, base, frame_file, f"{name}{label}")
+    if label in clips:
+        web_holes(model, lines, label, f"{name}Web{label}")
+
+
+def _straight_side(model, lines, base: float, frame_file: str, name: str, side: str,
+                   clips: tuple[str, ...] = ()) -> None:
+    """One side of a straight platform's mitered frame: the whole frame, then the other three deleted; the ends A
+    and B with the stringer clips' holes in the web where a flight meets them."""
     outline = [s._plan_xy(r, a) for r, a in ((lines.r_in, lines.phi_a), (lines.r_out, lines.phi_a),
                                               (lines.r_out, lines.phi_b), (lines.r_in, lines.phi_b))]
     if _signed_area(outline) < 0:
@@ -201,14 +217,25 @@ def _straight_side(model, lines, base: float, frame_file: str, name: str, side: 
                 "C": r + abs(math.remainder(a - middle, 2.0 * math.pi)),
                 "D": -r + abs(math.remainder(a - middle, 2.0 * math.pi))}[side]
 
-    keep = min(bodies, key=closeness)
-    for body in bodies:
-        if body is not keep and not s._delete_body(model, body):
+    while len(bodies) > 1:
+        # One at a time, the furthest first, from a fresh list: a delete leaves the other bodies' handles stale.
+        # SolidWorks 2013 deletes the body but returns nothing, so the bodies are counted instead.
+        s._delete_body(model, max(bodies, key=closeness))
+        left = s._bodies(model)
+        if len(left) >= len(bodies):
             raise SolidWorksError(f"{name}{side}: could not delete the frame's other sides.")
+        bodies = left
+    keep = bodies[0]
+    with contextlib.suppress(Exception):
+        keep.Name = f"{name}{side}"  # the web holes look for the frame's bodies by name
+    if side in clips:
+        web_holes(model, lines, side, f"{name}Web{side}")
 
 
-def jobs(parts: StairParts, post_file: str, frame_file: str = "") -> list[PartJob]:
-    """Every part to build, in order: the tread, each flight's stringers, the flight post, the platforms' frames."""
+def jobs(parts: StairParts, post_file: str, frame_file: str = "", knee_file: str = "",
+         clip_file: str = "") -> list[PartJob]:
+    """Every part to build, in order: the tread, each flight's stringers, the flight post, the platforms' frames
+    and supports, the stringer clips, and the shell pad."""
     where = parts.where
     first = where.places[0]
     turned = parts.turn
@@ -228,11 +255,20 @@ def jobs(parts: StairParts, post_file: str, frame_file: str = "") -> list[PartJo
     if posts:
         head = posts[0]
         out.append(PartJob(
-            "Stair Post.SLDPRT", "Flight post", lambda model: _post(model, parts, head, post_file),
+            "Stair Post.SLDPRT", "Flight post", lambda model, head=head: _post(model, parts, head, post_file),
             tuple(Placement(turned + p.phi - head.phi, (0.0, p.foot - head.foot, 0.0)) for p in posts),
         ))
     if frame_file or parts.platforms or parts.top_platform:
         out.extend(platform_jobs(parts, frame_file))
+        platforms = parts.platform_lines()
+        for k, lines in platforms:
+            out.extend(support_jobs(PartJob, k, lines, parts.shell_od, parts.turn, knee_file))
+        out.extend(clip_jobs(PartJob, platforms, parts.platforms, parts.turn, clip_file))
+        if platforms:
+            pad, pads = pad_job_placements(platforms, parts.shell_od, parts.turn)
+            out.append(PartJob("Stair Shell Pad.SLDPRT", "Shell pad",
+                               lambda model, pad=pad: build_pad(model, pad[0], pad[1], parts.shell_od, "EliteShellPad"),
+                               pads))
     return out
 
 
@@ -296,7 +332,9 @@ def build(app, parts: StairParts, folder: Path, name: str, progress=None) -> str
     folder.mkdir(parents=True, exist_ok=True)
     timings = []
     frame_file = platform_profile(app) if parts.platforms or parts.top_platform else ""
-    todo = jobs(parts, post_profile(app) if parts.posts else "", frame_file)
+    knee_file = angle_profile(app) if frame_file else ""
+    clip_file = clip_profile(app) if frame_file else ""
+    todo = jobs(parts, post_profile(app) if parts.posts else "", frame_file, knee_file, clip_file)
     project = Project(folder=folder, name=name, spec=TankSpec())
     items = [Item(job.file, "stair", job.label, {}, job.placements) for job in todo]
     # SolidWorks keeps one document per file name: a same-named part open from another folder would be overwritten.
