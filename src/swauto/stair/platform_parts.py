@@ -11,14 +11,17 @@ it, and each cuts its own bolt holes, so no part needs another. Shared files:
 * on a rolled platform the pieces at A and at every radial between are one piece turned about the tank axis; B's are
   their mirror image, so they have files of their own;
 * on a straight platform each support's pieces have their own files (their reach changes along the chords).
+
+Each is modelled at a seat its shape fixes (``parts_build``): a platform's pieces as if it were the first platform,
+the stringer clips on a radial line at angle 0 with the channel top at 0, the pad at angle 0 and height 0.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 from swauto.errors import SolidWorksError
-from swauto.project.items import Placement
 from swauto.stair import stair_sw as s
 from swauto.stair.brace_sw import CLIP_HEIGHT_IN as KNEE_CLIP_TALL_IN
 from swauto.stair.brace_sw import CLIP_OUT_IN as KNEE_CLIP_OUT_IN
@@ -87,12 +90,14 @@ def pad_centres(lines, shell_r: float) -> list[tuple[float, float]]:
     return centres
 
 
-def pad_job_placements(platforms: list, shell_r: float, turn: float) -> tuple[tuple[float, float],
-                                                                              tuple[Placement, ...]]:
-    """The one pad file: modelled at the first platform's first pad, placed at every pad of every platform."""
+def pad_job(job, platforms: list, shell_r: float, common: dict, place):
+    """The one shell pad piece (``job`` the PartJob class): modelled flat on the shell at angle 0 and height 0, and
+    put by ``place(turn, lift)`` at every pad of every platform (``platforms`` are (k, lines) on the ground-0
+    stair), its shell clips' and its knees'."""
     centres = [c for _k, lines in platforms for c in pad_centres(lines, shell_r)]
-    head = centres[0]
-    return head, tuple(Placement(turn + phi - head[0], (0.0, y - head[1], 0.0)) for phi, y in centres)
+    return job("Stair shell pad", "Shell pad", dict(common, piece="shell pad", shell_od=shell_r),
+               lambda model: build_pad(model, 0.0, 0.0, shell_r, "EliteShellPad"),
+               tuple(place(phi, y) for phi, y in centres))
 
 
 def support_groups(lines) -> list[tuple[str, list[int]]]:
@@ -248,24 +253,22 @@ def clip_sides(k: int, mid_platforms: int) -> tuple[str, ...]:
     return ("A", "B") if k <= mid_platforms else ("A",)
 
 
-def clip_jobs(job, platforms: list, mid_platforms: int, turn: float, profile: str) -> list:
-    """The stringer clips of the whole stair: one file per side and stringer (A In, A Out, B In, B Out), modelled at
-    the first platform that has it and turned about the tank axis and lifted to the rest; every platform's are the
-    same pieces."""
+def clip_jobs(job, platforms: list, mid_platforms: int, profile: str, common: dict, place) -> list:
+    """The stringer clips of the whole stair: one piece per side and stringer (A In, A Out, B In, B Out), modelled
+    on a radial line at angle 0 with the channel top at height 0, and put by ``place(turn, lift)`` at every
+    platform a flight meets on that side; ``platforms`` are (k, lines) on the ground-0 stair."""
     out = []
     for side in ("A", "B"):
-        mine = [(k, lines) for k, lines in platforms if side in clip_sides(k, mid_platforms)]
+        mine = [lines for k, lines in platforms if side in clip_sides(k, mid_platforms)]
         if not mine:
             continue
-        k0, head = mine[0]
-        angle0 = head.phi_a if side == "A" else head.phi_b
-        places = tuple(Placement(turn + (lines.phi_a if side == "A" else lines.phi_b) - angle0,
-                                 (0.0, lines.top - head.top, 0.0)) for _k, lines in mine)
+        seat = replace(mine[0], phi_a=0.0, phi_b=0.0, top=0.0, radials=())
+        places = tuple(place(lines.phi_a if side == "A" else lines.phi_b, lines.top) for lines in mine)
         for label in ("In", "Out"):
-            out.append(job(f"Stair Platform Clip {side} {label}.SLDPRT", f"Stringer clip {side} {label}",
-                           lambda model, head=head, side=side, label=label, k0=k0:
-                           build_stringer_clip(model, head, side, label, profile,
-                                               f"ElitePlatform{k0}Clip{side}{label}"),
+            out.append(job("Stair stringer clip", f"Stringer clip {side} {label}",
+                           dict(common, piece="stringer clip", side=side, stringer=label),
+                           lambda model, seat=seat, side=side, label=label:
+                           build_stringer_clip(model, seat, side, label, profile, f"EliteClip{side}{label}"),
                            places))
     return out
 
@@ -273,36 +276,35 @@ def clip_jobs(job, platforms: list, mid_platforms: int, turn: float, profile: st
 # ------------------------------------------------------------------------------------------------ the jobs
 
 
-def support_jobs(job, k: int, lines, shell_r: float, turn: float, knee_file: str) -> list:
+def support_jobs(job, k: int, seat, shell_r: float, knee_file: str, common: dict, place) -> list:
     """The PartJobs (``job`` the PartJob class) of platform ``k``'s tabs, shell clips, hangers, knees and knee
-    clips; the pads are one job for the whole stair (``pad_job_placements``)."""
-    supports = lines.supports()
-    ends = _channel_ends(lines)
-    knees = platform_knees(lines, shell_r)
+    clips, modelled on ``seat`` (its lines as if it were the first platform) and put by ``place(turn)``, the real
+    platform turned ``turn`` more; ``common`` is what shapes them all. The pads are one job for the whole stair
+    (``pad_job``)."""
+    supports = seat.supports()
+    ends = _channel_ends(seat)
+    knees = platform_knees(seat, shell_r)
     out = []
-    for tag, members in support_groups(lines):
+    for _tag, members in support_groups(seat):
         head = members[0]
-        angle0 = supports[head][1]
-        if lines.rolled:
-            places = tuple(Placement(turn + supports[i][1] - angle0) for i in members)
-        else:
-            places = (Placement(turn),)
-        suffix = f" {tag}" if tag else ""
-        stem = f"Stair Platform {k}"
+        label = supports[head][0]
+        places = tuple(place(supports[i][1] - supports[head][1]) for i in members)
+        at = f"at {label}" + (" and the radials between" if len(members) > 1 else "")
         end, (_label, frame, knee, back) = ends[head], knees[head]
-        name = f"ElitePlatform{k}{supports[head][0]}"
+        name = f"ElitePlatform{k}{label}"
+        params = dict(common, support=label, shell_od=shell_r)
         out += [
-            job(f"{stem} Tab{suffix}.SLDPRT", f"Platform {k} tab{suffix}",
+            job("Stair platform tab", f"Platform {k} tab {at}", dict(params, piece="tab"),
                 lambda model, end=end, name=name: build_tab(model, end, f"{name}Tab"), places),
-            job(f"{stem} Shell Clip{suffix}.SLDPRT", f"Platform {k} shell clip{suffix}",
+            job("Stair platform shell clip", f"Platform {k} shell clip {at}", dict(params, piece="shell clip"),
                 lambda model, end=end, name=name: build_shell_clip(model, end, shell_r, f"{name}ShellClip"), places),
-            job(f"{stem} Hanger{suffix}.SLDPRT", f"Platform {k} hanger{suffix}",
+            job("Stair platform hanger", f"Platform {k} hanger {at}", dict(params, piece="hanger"),
                 lambda model, frame=frame, knee=knee, back=back, name=name:
-                build_hanger(model, frame, knee, back, lines.top, f"{name}Hanger"), places),
-            job(f"{stem} Knee{suffix}.SLDPRT", f"Platform {k} knee brace{suffix}",
+                build_hanger(model, frame, knee, back, seat.top, f"{name}Hanger"), places),
+            job("Stair platform knee", f"Platform {k} knee brace {at}", dict(params, piece="knee"),
                 lambda model, frame=frame, knee=knee, name=name: build_knee(model, frame, knee, knee_file,
                                                                            f"{name}Knee"), places),
-            job(f"{stem} Knee Clip{suffix}.SLDPRT", f"Platform {k} knee clip{suffix}",
+            job("Stair platform knee clip", f"Platform {k} knee clip {at}", dict(params, piece="knee clip"),
                 lambda model, frame=frame, knee=knee, name=name: build_knee_clip(model, frame, knee,
                                                                                 f"{name}KneeClip"), places),
         ]

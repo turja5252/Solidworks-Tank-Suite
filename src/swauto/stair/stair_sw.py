@@ -1123,9 +1123,10 @@ def _handrail_posts(
 
 def build_flight_stringers(
     model, stair: StringerMock, shell_od: float, *, at: tuple[float, float] = (0.0, 0.0), suffix: str = "",
-    progress=None, foot_holes: bool = True,
+    progress=None, foot_holes: bool = True, sides: tuple[str, ...] = ("In", "Out"),
 ) -> None:
-    """Both stringers of one flight of ``stair.treads`` treads, turned and raised by ``at``.
+    """Both stringers of one flight of ``stair.treads`` treads (or only the ``sides`` named, "In" and "Out"),
+    turned and raised by ``at``.
 
     Rolls both blanks, rebuilds, then cuts both to the lisp outline before
     any holes: a missed connecting hole must not skip the other stringer or
@@ -1137,10 +1138,11 @@ def build_flight_stringers(
     layout = layout_stringer(flight)
     inner_dev, outer_dev = develop_both(flight)
     tank_face = shell_od + stair.gap_in
-    jobs = (
-        (inner_dev, tank_face, tank_face + THICKNESS_IN, f"EliteStringerIn{suffix}"),
-        (outer_dev, layout.outside_radius_in - THICKNESS_IN, layout.outside_radius_in, f"EliteStringerOut{suffix}"),
-    )
+    jobs = tuple(job for side, job in (
+        ("In", (inner_dev, tank_face, tank_face + THICKNESS_IN, f"EliteStringerIn{suffix}")),
+        ("Out", (outer_dev, layout.outside_radius_in - THICKNESS_IN, layout.outside_radius_in,
+                 f"EliteStringerOut{suffix}")),
+    ) if side in sides)
     for dev, r_in, r_out, nm in jobs:
         _stringer_blank(model, dev, r_in, r_out, nm, at)
         _progress(progress, f"{nm} rolled")
