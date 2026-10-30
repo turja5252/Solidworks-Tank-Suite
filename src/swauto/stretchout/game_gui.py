@@ -77,6 +77,7 @@ _ROOM_LOW_IN = 6.0  # and under it; inside, down to the lowest knee brace pad
 _MARGIN_IN = 24.0  # shell shown past the stair's ends
 _TITLE_H = 18  # pixels over each view for its name
 _GOOD = "#1a9e3a"
+_MEASURE = "#6a1b9a"
 _BAD = "#d40000"
 _WELD = "#c62828"
 _STRINGER = "#2f6f86"
@@ -111,8 +112,9 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
     ttk.Label(bar, textvariable=warn_var, foreground="#8a5a00", wraplength=700, justify="left").pack(side="left")
 
     state: dict = {"game": None, "sheet": None, "geo": None, "bands": {}, "drag": None, "zoom": 1.0,
-                   "pan": (0.0, 0.0), "pan_from": None, "tiles": [], "bin": None, "spot_of": {}, "said_of": {},
-                   "pads": {}, "devs": {}}
+                   "pan": (0.0, 0.0), "pan_from": None, "panning": False, "marks": [], "tiles": [], "bin": None,
+                   "spot_of": {}, "said_of": {}, "pads": {}, "devs": {}}
+    measure_var = tk.BooleanVar(value=False)
 
     def tell(text: str, good: bool | None = None) -> None:
         say_var.set(text)
@@ -288,6 +290,23 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
             draw_stair(band, geo, current, flags)
         canvas.tag_bind("placed", "<Enter>", on_hover)
         canvas.tag_bind("said", "<Enter>", on_hover_said)
+        draw_marks()
+
+    def draw_marks() -> None:
+        """The measuring tool's points and, with two, the line between them and what it measures."""
+        marks = state["marks"]
+        band = state["bands"].get(marks[0][0]) if marks else None
+        if band is None:
+            return
+        points = [to_px(band, x, y) for _side, x, y in marks]
+        for px, py in points:
+            canvas.create_line(px - 7, py, px + 7, py, fill=_MEASURE, width=2)
+            canvas.create_line(px, py - 7, px, py + 7, fill=_MEASURE, width=2)
+        if len(points) == 2:
+            canvas.create_line(*points[0], *points[1], fill=_MEASURE, width=2, dash=(6, 3))
+            (_s, x0, y0), (_s2, x1, y1) = marks
+            canvas.create_text((points[0][0] + points[1][0]) / 2.0, (points[0][1] + points[1][1]) / 2.0 - 10,
+                               text=measured(x1 - x0, y1 - y0), fill=_MEASURE, font=("TkDefaultFont", 10, "bold"))
 
     def draw_shell(band: dict, geo: dict) -> None:
         """The shell behind: its plates, weld seams, nozzles, FTCOs and anchor chairs, the degrees round it."""
@@ -557,6 +576,9 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         return box is not None and box[0] <= event.x <= box[2] and box[1] <= event.y <= box[3]
 
     def on_press(event) -> None:
+        if measure_var.get():
+            measure_at(event)
+            return
         for piece, box in state["tiles"]:
             if in_box(event, box):
                 state["drag"] = (piece, None)
@@ -569,8 +591,33 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
                 state["drag"] = (_piece_of(spot), spot)
                 tell(f"Moving the {spot.label().lower()}.")
                 return
+        # Empty space: dragging it moves the view, as the right button does.
+        state["panning"] = True
+        on_pan_start(event)
+
+    def measure_at(event) -> None:
+        """A point for the measuring tool, to the nearest 1/4 in on a view; a third starts a new measure."""
+        band = band_at(event)
+        if band is None:
+            tell("Measure: click two points on one of the views.")
+            return
+        x = _snap((event.x - band["ox"]) / band["scale"])
+        y = _snap((band["oy"] - event.y) / band["scale"])
+        marks = state["marks"]
+        if len(marks) >= 2 or (marks and marks[0][0] != band["side"]):
+            marks.clear()
+        marks.append((band["side"], x, y))
+        draw()
+        if len(marks) == 2:
+            (_s, x0, y0), (_s2, x1, y1) = marks
+            tell(f"Measured {measured(x1 - x0, y1 - y0)}. Click again for a new measure.", True)
+        else:
+            tell("Measure: now click the second point.")
 
     def on_motion(event) -> None:
+        if state["panning"]:
+            on_pan(event)
+            return
         drag = state["drag"]
         if drag is None:
             return
@@ -603,6 +650,9 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         tell(f"{where}: {reason}", ok)
 
     def on_release(event) -> None:
+        if state["panning"]:
+            state["panning"], state["pan_from"] = False, None
+            return
         drag, state["drag"] = state["drag"], None
         canvas.delete("ghost")
         if drag is None:
@@ -710,7 +760,13 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         state["pan"] = (min(0.0, max(pan_x, shown - total)) if total > shown else 0.0, pan_y)
         draw()
 
+    def on_measure() -> None:
+        state["marks"].clear()
+        draw()
+        tell("Measure: click two points on a view; they snap to 1/4 in." if measure_var.get() else HINT)
+
     scroll.configure(command=on_scroll)
+    ttk.Checkbutton(bar, text="Measure", variable=measure_var, command=on_measure).pack(side="right", padx=(6, 0))
     ttk.Button(bar, text="Undo", command=undo).pack(side="right")
     ttk.Button(bar, text="Start over", command=start_over).pack(side="right", padx=(0, 6))
     ttk.Button(bar, text="Auto place", command=auto).pack(side="right", padx=(0, 6))
@@ -725,12 +781,39 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
     frame.refresh = refresh  # type: ignore[attr-defined]
     frame.game_events = {  # type: ignore[attr-defined]
         "press": on_press, "motion": on_motion, "release": on_release, "wheel": on_wheel}
+    frame.measure = measure_var  # type: ignore[attr-defined]
     frame.game_state = state  # type: ignore[attr-defined]
     frame.lane_px = lane_px  # type: ignore[attr-defined]
     frame.platform_px = lambda side, spot: (  # type: ignore[attr-defined]
         to_px(state["bands"][side], *platform_point(spot, 0.0)))
     frame.said = say_var  # type: ignore[attr-defined]
     return frame
+
+
+def _snap(value: float) -> float:
+    """To the nearest 1/4 in."""
+    return round(value * 4.0) / 4.0
+
+
+def inches(value: float) -> str:
+    """A length to the nearest 1/16 in, as feet and inches from a foot up: 4'-2 1/4", or 7 1/2"."""
+    sixteenths = round(abs(value) * 16.0)
+    feet, rest = divmod(sixteenths, 192)
+    whole, part = divmod(rest, 16)
+    fraction = ""
+    if part:
+        top, bottom = part, 16
+        while top % 2 == 0:
+            top, bottom = top // 2, bottom // 2
+        fraction = f"{top}/{bottom}"
+    if feet:
+        return f"{feet}'-{whole} {fraction}\"" if fraction else f"{feet}'-{whole}\""
+    return (f"{whole} {fraction}" if whole and fraction else fraction or f"{whole}") + '"'
+
+
+def measured(across: float, up: float) -> str:
+    """What the measuring tool shows: straight between the points, across the shell's stretchout, and up."""
+    return f"{inches(math.hypot(across, up))} ({inches(across)} across, {inches(up)} up)"
 
 
 def _span(dev, x: float) -> tuple[float, float]:

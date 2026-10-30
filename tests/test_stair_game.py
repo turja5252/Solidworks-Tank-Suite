@@ -219,3 +219,47 @@ def test_a_cut_is_red_beside_a_piece_pinned_on_another_flight():
 def test_an_inside_post_is_red_while_the_handrail_is_outside():
     ok, reason = _game().try_drop(PIECE["Post (inside)"], 0, 12)
     assert not ok and "Handrail on" in reason
+
+
+def test_the_view_pans_when_empty_space_is_dragged_and_measures_between_two_points(tk_window):
+    """The user, 2026-10-30: every game view draggable, and a small measuring tool."""
+    import tkinter as tk
+    from tkinter import ttk
+
+    from swauto.stretchout.game_gui import inches, measured
+    from swauto.stretchout.gui import GAME_VIEW, build_stretchout_tab
+
+    book = ttk.Notebook(tk_window)
+    page = ttk.Frame(book)
+    book.add(page)
+    shared = {"spec": TANK, "nozzles": [], "cleanouts": [], "stairway": lambda: ARRANGEMENT}
+    build_stretchout_tab(page, tk.StringVar(master=tk_window), shared)
+    book.select(page)
+    tk_window.update()
+    (view,) = [w for w in _widgets(page) if isinstance(w, ttk.Combobox) and GAME_VIEW in w.cget("values")]
+    view.set(GAME_VIEW)
+    view.event_generate("<<ComboboxSelected>>")
+    tk_window.update()
+    frame = next(w for w in page.winfo_children() if hasattr(w, "game_events"))
+    press, motion, release = (frame.game_events[k] for k in ("press", "motion", "release"))
+    band = frame.game_state["bands"][OUTER]
+    x0, y0, x1, y1 = band["box"]
+    # A spot in the view with nothing on it: its top left corner.
+    start = _At(x0 + 4, y0 + 4)
+    before = frame.game_state["pan"]
+    press(start)
+    motion(_At(start.x + 30, start.y + 10))
+    release(_At(start.x + 30, start.y + 10))
+    after = frame.game_state["pan"]
+    assert (after[0] - before[0], after[1] - before[1]) == (30, 10)
+    # Measure: two clicks, snapped to 1/4 in, then what is between them.
+    frame.measure.set(True)
+    scale = band["scale"]
+    a = _At(x0 + 40, y1 - 40)
+    b = _At(a.x + 24 * scale, a.y - 10 * scale)  # 24 in across, 10 in up
+    press(a)
+    press(b)
+    (_s, ax, ay), (_s2, bx, by) = frame.game_state["marks"]
+    assert (bx - ax, by - ay) == (24.0, 10.0) and ax * 4 == round(ax * 4)
+    assert frame.said.get() == f"Measured {measured(24.0, 10.0)}. Click again for a new measure."
+    assert measured(24.0, 10.0) == '2\'-2" (2\'-0" across, 10" up)' and inches(0.0625) == '1/16"'
