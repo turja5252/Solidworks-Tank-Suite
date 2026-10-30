@@ -17,7 +17,25 @@ import math
 import tkinter as tk
 from tkinter import ttk
 
-from swauto.stair.attachments import CLIP, INNER, KNEE, OUTER, POST, RAIL_SPLIT, SPLICE, Rules, Shell, Spot
+from dataclasses import replace
+
+from swauto.errors import SolidWorksError
+from swauto.stair.attachments import (
+    CLIP,
+    INNER,
+    KNEE,
+    ON_PLATFORMS,
+    OUTER,
+    PLATFORM_POST,
+    POST,
+    RADIAL,
+    RAIL_SPLIT,
+    SPLICE,
+    Rules,
+    Shell,
+    Spot,
+    applied,
+)
 from swauto.stair.development import develop_both, tread_rect
 from swauto.stair.game import (
     TRAY,
@@ -33,7 +51,10 @@ from swauto.stair.game import (
     view_angle,
     view_x,
 )
-from swauto.stair.landings import PLATFORM, PLATFORM_KNEE_PAD, PLATFORM_PAD, shell_marks
+from swauto.stair.landings import PLATFORM, PLATFORM_KNEE_PAD, PLATFORM_PAD, platform_frame, shell_marks
+from swauto.stair.platform_sw import CHANNEL_IN, GRATING_IN, platform_knees
+from swauto.stair.post_sw import RAIL_TOP_IN, TOP_GAP_IN
+from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN
 from swauto.stair.stair_sw import stair_places
 from swauto.stretchout.model import (
     ANCHORS,
@@ -59,7 +80,8 @@ _GOOD = "#1a9e3a"
 _BAD = "#d40000"
 _WELD = "#c62828"
 _STRINGER = "#2f6f86"
-_COLORS = {POST: "#f2c500", CLIP: "#2f6fdb", KNEE: "#ef7d00", SPLICE: "#0f766e", RAIL_SPLIT: "#c2185b"}
+_COLORS = {POST: "#f2c500", CLIP: "#2f6fdb", KNEE: "#ef7d00", SPLICE: "#0f766e", RAIL_SPLIT: "#c2185b",
+           RADIAL: "#546e7a", PLATFORM_POST: "#f2c500"}
 _RAIL_COLORS = {"Top rail": "#e0b400", "Midrail": "#e0b400", "Grab rail": "#a0522d", "Pipe": "#a0522d"}
 _BEHIND = (PLATES, NOZZLES, FTCOS, ANCHORS)
 HINT = ("Pick a piece from the tray and drop it on a stringer: green goes, red says why not. Drag a piece to move "
@@ -159,9 +181,11 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
                 box = pad_box(arrangement, where, inner, spot)
                 if box is not None:
                     pads[spot.key()] = (spot.flight, box)
-        marks = [m for m in shell_marks(arrangement)[0] if m.kind in (PLATFORM, PLATFORM_PAD, PLATFORM_KNEE_PAD)]
+        placed = applied(arrangement, game.plan)  # the platforms with the plan's radials
+        count = arrangement.platforms + (1 if arrangement.top_platform else 0)
+        marks = [m for m in shell_marks(placed)[0] if m.kind in (PLATFORM, PLATFORM_PAD, PLATFORM_KNEE_PAD)]
         geo = {"arrangement": arrangement, "where": where, "devs": devs, "girth": girth, "pads": pads,
-               "marks": marks, "rooms": {}}
+               "marks": marks, "rooms": {}, "platforms": [platform_frame(placed, where, k)[0] for k in range(count)]}
         for side, dev in devs.items():
             low = _ROOM_LOW_IN
             if side == INNER:
@@ -324,6 +348,7 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
                 wide, tall = mark.size
                 poly(band, _rect(x - wide / 2.0, y - tall / 2.0, x + wide / 2.0, y + tall / 2.0), fill=fill,
                      outline=outline, tags=said(mark.label))
+        draw_platforms(band, geo, current)
         tread_fill, tread_outline = STYLE[TREADS]
         for k in range(len(geo["where"].offsets)):
             outline = [lane_point(geo, side, k, x, y) for x, y in dev.outline]
@@ -350,10 +375,62 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
                 poly(band, [lane_point(geo, side, k, *p) for p in corners], fill=_RAIL_COLORS[rail.name],
                      outline="#5b4500", tags=said(text))
             for spot in current.spots:
-                if spot.flight == k and side in _lanes_of(spot):
+                if spot.flight == k and spot.kind not in ON_PLATFORMS and side in _lanes_of(spot):
                     tag = f"spot{len(state['spot_of'])}"
                     draw_piece(band, spot, posts, tags=("placed", tag))
                     state["spot_of"][tag] = spot
+
+    def draw_platforms(band: dict, geo: dict, current) -> None:
+        """Each platform's knee braces (inside, to their pads), its rails between its outer posts (outside), and
+        its radials and posts as game pieces."""
+        side = band["side"]
+        arrangement, girth = geo["arrangement"], geo["girth"]
+        for k, lines in enumerate(geo["platforms"]):
+            floor = lines.top + GRATING_IN
+            if side == INNER:
+                try:
+                    knees = platform_knees(lines, arrangement.stair.shell_od_in)
+                except SolidWorksError:
+                    knees = []
+                for label, frame, knee, _back in knees:
+                    x = view_x(arrangement, frame.phi, girth)
+                    line(band, (x, knee.top[1]), (x, knee.bottom[1]), fill=_COLORS[KNEE], width=3,
+                         tags=said(f"Platform {k + 1}: knee brace {label}"))
+            posts = sorted(s.tread for s in current.of_kind(PLATFORM_POST, side) if s.flight == k)
+            if side == OUTER and len(posts) > 1:
+                ends = [view_x(arrangement, lines.phi_a + t / lines.r_mid, girth) for t in (posts[0], posts[-1])]
+                for above, name in ((RAIL_TOP_IN, "top rail"), (PLATFORM_MID_TOP_IN, "midrail")):
+                    line(band, (ends[0], floor + above), (ends[1], floor + above), fill=_RAIL_COLORS["Top rail"],
+                         width=3, tags=said(f"Platform {k + 1}: {name}"))
+            for spot in current.spots:
+                if spot.kind in ON_PLATFORMS and spot.flight == k and side in _lanes_of(spot):
+                    tag = f"spot{len(state['spot_of'])}"
+                    draw_platform_piece(band, spot, tags=("placed", tag))
+                    state["spot_of"][tag] = spot
+
+    def platform_point(spot: Spot, height: float) -> tuple[float, float] | None:
+        """Where a platform piece is in view inches: its angle along the platform, at ``height`` over its top."""
+        geo = state["geo"]
+        if geo is None or not 0 <= spot.flight < len(geo["platforms"]):
+            return None
+        lines = geo["platforms"][spot.flight]
+        return view_x(geo["arrangement"], lines.phi_a + spot.tread / lines.r_mid, geo["girth"]), lines.top + height
+
+    def draw_platform_piece(band: dict, spot: Spot, outline: str = "#222222", tags=()) -> None:
+        anchor = platform_point(spot, 0.0)
+        if anchor is None or not _inside(band, to_px(band, *anchor)):
+            return
+        cx, cy = to_px(band, *anchor)
+        if spot.kind == RADIAL:  # the radial channel's end, seen from outside: 4 in deep under the grating
+            low = to_px(band, anchor[0], anchor[1] - CHANNEL_IN)[1]
+            canvas.create_rectangle(cx - 4, min(cy, low - 6), cx + 4, max(low, cy + 6), fill=_COLORS[RADIAL],
+                                    outline=outline, width=2, tags=tags)
+        else:
+            top = to_px(band, anchor[0], anchor[1] + GRATING_IN + RAIL_TOP_IN - TOP_GAP_IN)
+            canvas.create_line(cx, cy, top[0], max(top[1], band["box"][1]), fill=_COLORS[POST], width=7, tags=tags)
+            canvas.create_line(cx, cy, top[0], max(top[1], band["box"][1]), fill=outline, width=1, tags=tags)
+        if spot.pinned:
+            canvas.create_oval(cx - 3, cy - 3, cx + 3, cy + 3, fill="#000000", outline="", tags=tags)
 
     def draw_tray() -> None:
         state["tiles"] = []
@@ -384,6 +461,10 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         elif kind == SPLICE:
             canvas.create_rectangle(x - 4 * k, y - 10 * k, x + 4 * k, y + 10 * k, fill=color, outline=outline,
                                     tags=tags)
+        elif kind == RADIAL:  # a channel end: web and two flanges
+            canvas.create_polygon(x - 5 * k, y - 10 * k, x + 5 * k, y - 10 * k, x + 5 * k, y - 7 * k, x - 2 * k,
+                                  y - 7 * k, x - 2 * k, y + 7 * k, x + 5 * k, y + 7 * k, x + 5 * k, y + 10 * k,
+                                  x - 5 * k, y + 10 * k, fill=color, outline=outline, tags=tags)
         else:
             canvas.create_polygon(x, y - 8 * k, x + 8 * k, y, x, y + 8 * k, x - 8 * k, y, fill=color, outline=outline,
                                   tags=tags)
@@ -438,8 +519,9 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
                 return band
         return None
 
-    def target(event, piece: Piece) -> tuple[dict, int, int] | None:
-        """Where the dragged piece would snap: its view, flight and tread, or None off the stringers."""
+    def target(event, piece: Piece) -> tuple[dict, int, int, Piece] | None:
+        """Where the dragged piece would snap: its view, its flight (or platform) and tread (or inches along the
+        platform), and the piece as it goes there (a post on a platform is a platform post); None off the stair."""
         band = band_at(event)
         game: Game | None = state["game"]
         geo = state["geo"]
@@ -450,6 +532,15 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         x_view = (event.x - band["ox"]) / band["scale"]
         height = (band["oy"] - event.y) / band["scale"]
         angle = view_angle(geo["arrangement"], x_view, geo["girth"])
+        for k, lines in enumerate(geo["platforms"]):
+            ends = sorted(view_x(geo["arrangement"], a, geo["girth"]) for a in (lines.phi_a, lines.phi_b))
+            if ends[0] - 4.0 <= x_view <= ends[1] + 4.0 and lines.top - 24.0 <= height <= lines.top + 54.0:
+                kind = {POST: PLATFORM_POST, PLATFORM_POST: PLATFORM_POST, RADIAL: RADIAL}.get(piece.kind)
+                if kind is None:
+                    return None
+                return band, k, round((angle - lines.phi_a) * lines.r_mid), replace(piece, kind=kind)
+        if piece.kind == RADIAL:
+            return None
         xs = [x for x, _y in dev.outline]
         for flight, (turn, lift) in enumerate(geo["where"].offsets):
             x = (angle - turn) * dev.radius_in
@@ -458,7 +549,8 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
             bottom, top = _span(dev, x)
             if bottom - geo["rooms"][side] - 4.0 <= height - lift <= max(top, edge_y(dev, x)) + _ROOM_TOP_IN + 4.0:
                 posts = tuple(s.tread for s in game.plan.of_kind(POST, piece.side) if s.flight == flight)
-                return band, flight, slot(dev, piece.kind, x, posts)
+                kind = POST if piece.kind == PLATFORM_POST else piece.kind
+                return band, flight, slot(dev, kind, x, posts), replace(piece, kind=kind)
         return None
 
     def in_box(event, box) -> bool:
@@ -494,15 +586,21 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
             icon(piece.kind, event.x, event.y, big=True, tags=("ghost",))
             tell(f"{piece.name} goes on {_where(piece)}.", None)
             return
-        band, flight, tread = found
+        band, flight, tread, piece = found
         ok, reason = state["game"].try_drop(piece, flight, tread, moving)
-        posts = tuple(s.tread for s in state["game"].plan.of_kind(POST, piece.side) if s.flight == flight)
         spot = Spot(piece.kind, flight, tread, piece.side)
-        draw_piece(band, spot, posts, outline=_GOOD if ok else _BAD, tags=("ghost",))
-        cx, cy = lane_px(band["side"], flight, *spot_xy(state["geo"]["devs"][band["side"]], spot, posts))
+        if piece.kind in ON_PLATFORMS:
+            draw_platform_piece(band, spot, outline=_GOOD if ok else _BAD, tags=("ghost",))
+            cx, cy = to_px(band, *platform_point(spot, 0.0))
+            where = f"Platform {flight + 1}, {tread} in along it"
+        else:
+            posts = tuple(s.tread for s in state["game"].plan.of_kind(POST, piece.side) if s.flight == flight)
+            draw_piece(band, spot, posts, outline=_GOOD if ok else _BAD, tags=("ghost",))
+            cx, cy = lane_px(band["side"], flight, *spot_xy(state["geo"]["devs"][band["side"]], spot, posts))
+            where = f"Flight {flight + 1}, tread {tread}"
         canvas.create_oval(cx - 14, cy - 14, cx + 14, cy + 14, outline=_GOOD if ok else _BAD, width=3,
                            tags=("ghost",))
-        tell(f"Flight {flight + 1}, tread {tread}: {reason}", ok)
+        tell(f"{where}: {reason}", ok)
 
     def on_release(event) -> None:
         drag, state["drag"] = state["drag"], None
@@ -513,6 +611,12 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         game: Game = state["game"]
         if in_box(event, state["bin"]) and moving is not None:
             game.throw_away(moving)
+            if moving.kind == RADIAL and any(s.flight == moving.flight and abs(s.tread - moving.tread) <= 1
+                                             for s in game.plan.of_kind(RADIAL)):
+                game.undo()  # the rules put it straight back: the bay would be too long without it
+                tell("That radial has to stay: without it a bay would pass the platform's radial spacing. "
+                     "Drag it along instead.", False)
+                return
             tell(f"Thrown away: {moving.label().lower()}.", True)
             changed()
             return
@@ -520,9 +624,11 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         if found is None:
             tell(f"Not placed: {piece.name.lower()} goes on {_where(piece)}.", None)
             return
-        _band, flight, tread = found
+        _band, flight, tread, piece = found
         ok, reason = game.drop(piece, flight, tread, moving)
-        tell(f"Placed at flight {flight + 1}, tread {tread}." if ok else f"Not there: {reason}", ok)
+        where = f"platform {flight + 1}, {tread} in along it" if piece.kind in ON_PLATFORMS else \
+            f"flight {flight + 1}, tread {tread}"
+        tell(f"Placed at {where}." if ok else f"Not there: {reason}", ok)
         if ok:
             changed()
 
@@ -621,6 +727,8 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         "press": on_press, "motion": on_motion, "release": on_release, "wheel": on_wheel}
     frame.game_state = state  # type: ignore[attr-defined]
     frame.lane_px = lane_px  # type: ignore[attr-defined]
+    frame.platform_px = lambda side, spot: (  # type: ignore[attr-defined]
+        to_px(state["bands"][side], *platform_point(spot, 0.0)))
     frame.said = say_var  # type: ignore[attr-defined]
     return frame
 
@@ -689,7 +797,7 @@ def _clip_line(a, b, box):
 
 
 def _lanes_of(spot: Spot) -> tuple[str, ...]:
-    if spot.kind in (POST, RAIL_SPLIT):
+    if spot.kind in (POST, RAIL_SPLIT, PLATFORM_POST):
         return (spot.side,)
     if spot.kind in (CLIP, KNEE):
         return (INNER,)
@@ -697,14 +805,18 @@ def _lanes_of(spot: Spot) -> tuple[str, ...]:
 
 
 def _piece_of(spot: Spot) -> Piece:
-    return next(p for p in TRAY if p.kind == spot.kind and (p.side == spot.side or not p.side))
+    kind = POST if spot.kind == PLATFORM_POST else spot.kind  # the tray's post goes on flights and platforms
+    return next(p for p in TRAY if p.kind == kind and (p.side == spot.side or not p.side))
 
 
 def _where(piece: Piece) -> str:
     if piece.kind == POST:
-        return f"the {'outside' if piece.side == OUTER else 'inside'} stringer, in a gap between treads"
+        return (f"the {'outside' if piece.side == OUTER else 'inside'} stringer, in a gap between treads, or a "
+                "platform's side")
     if piece.kind == RAIL_SPLIT:
         return f"the {'outside' if piece.side == OUTER else 'inside'} rail, between two posts"
     if piece.kind == SPLICE:
         return "either stringer, in a gap between two treads (both stringers are cut there)"
+    if piece.kind == RADIAL:
+        return "a platform, between its ends (it carries a knee brace and a shell clip)"
     return "the inside stringer, at a tread"

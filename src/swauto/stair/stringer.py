@@ -25,12 +25,58 @@ TOP_HOLE_DROP_IN = 2.25
 TOP_HOLE_BACK_IN = (2.1875, 4.6875)
 END_CUT_IN = 0.125
 MAX_TREADS = 200  # a 100 ft shell at 7.5 in rises is 160 treads
+PLATFORM_LENGTH_IN = 36.0  # along the centreline: the lisp launcher's "centerline arc" default
+PLATFORM_SPACING_IN = 40.0  # the most between a platform's radials, along its centreline (the user, 2026-10-30)
+
+
+@dataclass(frozen=True)
+class PlatformSpec:
+    """One platform's shape, as Stair Platform Top View.lsp's RADIALPLATFORM draws it: radial ends A and B, the
+    inner side C on the inner stringer by the shell, the outer side D.
+
+    ``length_in`` runs along the centreline, halfway between C and D. ``width_in`` is nominal, as the treads are:
+    36 is the stair's own platform, and more puts D further out (C never moves). ``rolled`` rolls C and D about the
+    tank axis; None takes the lisp's default, rolled when longer than 36 in. A long platform gets radials between
+    A and B, no more than ``spacing_in`` apart along the centreline, each with its knee brace and shell clip;
+    ``radials`` are where they are, in from A along the centreline (None: equal bays)."""
+
+    length_in: float = PLATFORM_LENGTH_IN
+    width_in: float = TREAD_PLATE_IN
+    rolled: bool | None = None
+    spacing_in: float = PLATFORM_SPACING_IN
+    radials: tuple[float, ...] | None = None
+
+    @property
+    def is_rolled(self) -> bool:
+        return self.length_in > PLATFORM_LENGTH_IN + 1e-9 if self.rolled is None else self.rolled
+
+    @property
+    def extra_in(self) -> float:
+        """How much further out D is than on the stair's own platform."""
+        return self.width_in - TREAD_PLATE_IN
+
+    def radial_positions(self) -> tuple[float, ...]:
+        """The radials between A and B, in from A along the centreline: where they were put, or equal bays."""
+        if self.radials is not None:
+            return tuple(sorted(self.radials))
+        bays = max(1, math.ceil(self.length_in / self.spacing_in - 1e-9))
+        return tuple(self.length_in * i / bays for i in range(1, bays))
+
+    def validate(self) -> None:
+        if not 12.0 <= self.length_in <= 1200.0:
+            raise ValueError("A platform's length must be 12 to 1200 in along its centreline.")
+        if not TREAD_PLATE_IN <= self.width_in <= 120.0:
+            raise ValueError(f"A platform's width must be {TREAD_PLATE_IN:g} to 120 in; it is never narrower than "
+                             "the stair's own platform.")
+        if not 12.0 <= self.spacing_in <= 240.0:
+            raise ValueError("The most between a platform's radials must be 12 to 240 in.")
 
 
 @dataclass(frozen=True)
 class StringerMock:
     """Lengths are inches. ``outside_face`` develops the outer fiber. ``tread_in`` is the tread
-    plate across the stair; the stringers stand 1/16 in clear of it each side."""
+    plate across the stair; the stringers stand 1/16 in clear of it each side. ``platform_specs`` are the
+    platforms' shapes, the mid ones from the bottom and then the top one; one not given is the stair's own."""
 
     shell_od_in: float = 120.0
     gap_in: float = 8.0
@@ -40,11 +86,16 @@ class StringerMock:
     plate_width_in: float = 9.0
     outside_face: bool = True
     tread_in: float = TREAD_PLATE_IN
+    platform_specs: tuple[PlatformSpec, ...] = ()
 
     @property
     def clear_in(self) -> float:
         """Between the stringers' walk faces."""
         return self.tread_in + CLEAR_IN - TREAD_PLATE_IN
+
+    def platform(self, k: int) -> PlatformSpec:
+        """The shape of platform ``k`` (0 the lowest; the top platform after the mid ones)."""
+        return self.platform_specs[k] if 0 <= k < len(self.platform_specs) else PlatformSpec()
 
     def validate(self) -> None:
         if self.shell_od_in <= 0:
@@ -59,6 +110,8 @@ class StringerMock:
             raise ValueError("Plate width must be greater than 1 in.")
         if not 12.0 <= self.tread_in <= TREAD_PLATE_IN:
             raise ValueError(f"Treads must be 12 to {TREAD_PLATE_IN:g} in across; the platforms are {TREAD_PLATE_IN:g} in.")
+        for spec in self.platform_specs:
+            spec.validate()
 
 
 @dataclass(frozen=True)

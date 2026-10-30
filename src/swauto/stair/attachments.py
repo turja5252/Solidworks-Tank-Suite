@@ -15,11 +15,16 @@ The order, so nothing waits on what comes after it:
    on a cut, beside a cross brace or, on the inner stringer, on an inner clip moves a tread up or down.
 5. Rail splits, each flight and side: in the middle of a bay between two posts, wherever the rail would run past
    its stock length (40 ft angle and flat bar outside, 20 ft pipe inside).
+6. Each platform's radials between its ends, wherever a bay would pass its radial spacing (the user, 2026-10-30),
+   each slid off the shell's welds by its knee brace pad and its shell clip pad, the bays a little unequal; and
+   its posts, near both ends and beside each radial, on each side that has the handrail.
 
 ``Spot``s the user pinned (dragged into place) stay where they are, and the rest re-flow round them; ``removed``
 are the keys of placed items the user threw away, which the rules then leave out (a knee brace or clip thrown
 off a piece leaves that piece without one). Treads are flight-local (1 the lowest of its flight) and flights are
-0-based; ``Spot.pan`` is the app's brace numbering.
+0-based; ``Spot.pan`` is the app's brace numbering. A platform's radials and posts are Spots too, their ``flight``
+the platform (0 the lowest, the top one after the mid ones) and their ``tread`` the whole inches along its
+centreline from its A end.
 """
 
 from __future__ import annotations
@@ -28,10 +33,19 @@ import math
 from dataclasses import dataclass, field, replace
 
 from swauto.stair.development import flight_treads
-from swauto.stair.landings import Mark, StairArrangement, clip_mark, knee_mark
+from swauto.stair.landings import (
+    Mark,
+    StairArrangement,
+    clip_mark,
+    knee_mark,
+    platform_frame,
+    platform_name,
+    platform_pad_marks,
+)
+from swauto.stair.post_sw import PLATFORM_POST_IN
 from swauto.stair.splitter import SplitSettings, choose_cuts
 from swauto.stair.stair_sw import StairPlaces, stair_places
-from swauto.stair.stringer import THICKNESS_IN
+from swauto.stair.stringer import THICKNESS_IN, PlatformSpec
 from swauto.stretchout.checks import _outlines_meet, crosses
 from swauto.stretchout.model import Item, Seam, Stretchout, _slot, build_stretchout, x_of_angle
 
@@ -40,7 +54,10 @@ CLIP = "inner clip"
 POST = "handrail post"
 SPLICE = "stringer splitter"
 RAIL_SPLIT = "handrail splitter"
-KINDS = (POST, CLIP, KNEE, SPLICE, RAIL_SPLIT)
+RADIAL = "platform radial"
+PLATFORM_POST = "platform post"
+KINDS = (POST, CLIP, KNEE, SPLICE, RAIL_SPLIT, RADIAL, PLATFORM_POST)
+ON_PLATFORMS = (RADIAL, PLATFORM_POST)
 OUTER = "outer"
 INNER = "inner"
 GROUND = "ground"  # the side of the extra inner clip at the foot of flight 1, kept apart from its piece's clip
@@ -50,6 +67,9 @@ SEAM_CLEAR_IN = 1.0  # a pad's edge to a weld seam's line; not in the lisp or th
 POST_EVERY = 4  # tread gaps between posts (the user)
 OUTER_RAIL_FT = 40.0  # stock lengths, Elite STWC (angle, flat bar) and STWE (inside pipe)
 INNER_RAIL_FT = 20.0
+RADIAL_CLEAR_IN = 6.0  # the least between a platform's radial and an end or another radial
+POST_BESIDE_IN = 4.0  # a platform post toward B from a radial, clear of the radial's coped end and its bolts
+POST_CLEAR_IN = 6.0  # the least between two platform posts
 
 
 @dataclass(frozen=True)
@@ -73,6 +93,8 @@ class Spot:
         where = f"flight {self.flight + 1}, tread {self.tread}"
         if self.kind == SPLICE:
             where = f"flight {self.flight + 1}, between treads {self.tread} and {self.tread + 1}"
+        elif self.kind in ON_PLATFORMS:
+            where = f"platform {self.flight + 1}, {self.tread} in along it from its A end"
         elif self.kind == RAIL_SPLIT:
             where = f"flight {self.flight + 1}, in the bay above the tread {self.tread} post"
         side = f"{self.side} " if self.side else ""
@@ -131,6 +153,10 @@ class _Context:
     def flights(self) -> int:
         return len(self.where.offsets)
 
+    @property
+    def platform_count(self) -> int:
+        return self.arrangement.platforms + (1 if self.arrangement.top_platform else 0)
+
 
 def plan(arrangement: StairArrangement, shell: Shell | None = None, rules: Rules = Rules(),
          pins: tuple[Spot, ...] = (), removed: tuple[tuple, ...] = ()) -> Plan:
@@ -142,9 +168,7 @@ def plan(arrangement: StairArrangement, shell: Shell | None = None, rules: Rules
     warnings: list[str] = []
     if shell is None:
         warnings.append("No tank: the pads are not checked against the shell's seams.")
-    pins = tuple(replace(p, pinned=True) for p in pins
-                 if 0 <= p.flight < ctx.flights and 1 <= p.tread <= ctx.per_flight  # a stair since made smaller
-                 and (p.kind not in (POST, RAIL_SPLIT) or p.side in ctx.rules.sides))  # a handrail side not asked for
+    pins = tuple(replace(p, pinned=True) for p in pins if _pin_fits(ctx, p))
     spots: list[Spot] = []
 
     cuts = _cuts(ctx, pins, warnings)
@@ -187,7 +211,18 @@ def plan(arrangement: StairArrangement, shell: Shell | None = None, rules: Rules
             posts = _posts(ctx, k, side, cuts, braces, clip_at, pins, warnings)
             spots += posts
             spots += _rail_splits(ctx, k, side, sorted(p.tread for p in posts), pins)
+    spots += _platform_spots(ctx, pins, warnings)
     return Plan(tuple(spots), tuple(cuts), tuple(warnings))
+
+
+def _pin_fits(ctx: _Context, pin: Spot) -> bool:
+    """A pin still on the stair (it may have been made smaller since), on a side that has the handrail."""
+    if pin.kind in ON_PLATFORMS:
+        return (0 <= pin.flight < ctx.platform_count
+                and 0 < pin.tread < ctx.arrangement.stair.platform(pin.flight).length_in
+                and (pin.kind == RADIAL or pin.side in ctx.rules.sides))
+    return (0 <= pin.flight < ctx.flights and 1 <= pin.tread <= ctx.per_flight
+            and (pin.kind not in (POST, RAIL_SPLIT) or pin.side in ctx.rules.sides))
 
 
 def check(arrangement: StairArrangement, current: Plan, spot: Spot, shell: Shell | None = None,
@@ -197,9 +232,11 @@ def check(arrangement: StairArrangement, current: Plan, spot: Spot, shell: Shell
     where = stair_places(arrangement.stair, arrangement.stair.shell_od_in, arrangement.platforms,
                          arrangement.ground_in)
     ctx = _Context(arrangement, where, shell, rules)
+    others = [s for s in current.spots if s.key() != spot.key()]
+    if spot.kind in ON_PLATFORMS:
+        return _platform_check(ctx, others, spot)
     if not 0 <= spot.flight < ctx.flights:
         return False, "That is not on the stair."
-    others = [s for s in current.spots if s.key() != spot.key()]
     cuts = list(current.cuts)
     if spot.kind == SPLICE:
         if not 1 <= spot.tread < ctx.per_flight:
@@ -256,7 +293,12 @@ def applied(arrangement: StairArrangement, result: Plan) -> StairArrangement:
     splits = arrangement.splits
     if result.cuts or splits is not None:
         splits = replace(splits or SplitSettings(), fixed=tuple(result.cuts))
-    return replace(arrangement, braces=tuple(sorted(s.pan(per_flight) for s in result.of_kind(KNEE))),
+    stair = arrangement.stair
+    count = arrangement.platforms + (1 if arrangement.top_platform else 0)
+    shapes = [replace(stair.platform(k), radials=tuple(sorted(float(s.tread) for s in result.of_kind(RADIAL)
+                                                               if s.flight == k))) for k in range(count)]
+    return replace(arrangement, stair=replace(stair, platform_specs=tuple(shapes)),
+                   braces=tuple(sorted(s.pan(per_flight) for s in result.of_kind(KNEE))),
                    clips=tuple(sorted(s.pan(per_flight) for s in result.of_kind(CLIP))), splits=splits)
 
 
@@ -356,6 +398,11 @@ def _pad_ok(ctx: _Context, spot: Spot, cuts: list[int]) -> tuple[bool, str]:
     mark = _mark(ctx, spot)
     if isinstance(mark, str):
         return False, mark.split(": ", 1)[-1]
+    return _mark_clear(ctx, mark)
+
+
+def _mark_clear(ctx: _Context, mark: Mark) -> tuple[bool, str]:
+    """A shell pad clear of the floor and the shell's top, every weld seam, and whatever else lands on the shell."""
     clear = ctx.rules.seam_clear_in
     angle, y = mark.center
     wide, tall = mark.size
@@ -506,3 +553,139 @@ def rail_step_in(where: StairPlaces, side: str) -> float:
     radius = r_a - THICKNESS_IN if side == INNER else r_a + layout.clear_in + THICKNESS_IN
     sweep = where.places[1].phi - where.places[0].phi if len(where.places) > 1 else 0.0
     return math.hypot(sweep * radius, where.flight.rise_in)
+
+
+# --------------------------------------------------------------------------------------------- the platforms
+
+
+def _platform_spots(ctx: _Context, pins: tuple[Spot, ...], warnings: list[str]) -> list[Spot]:
+    """Each platform's radials, then its posts on each side that has the handrail."""
+    spots: list[Spot] = []
+    for k in range(ctx.platform_count):
+        spec = ctx.arrangement.stair.platform(k)
+        radials = _platform_radials(ctx, k, spec, pins, warnings)
+        spots += radials
+        for side in ctx.rules.sides:
+            spots += _platform_posts(ctx, k, spec, side, [s.tread for s in radials], pins)
+    return spots
+
+
+def _platform_radials(ctx: _Context, k: int, spec: PlatformSpec, pins: tuple[Spot, ...],
+                      warnings: list[str]) -> list[Spot]:
+    """Radials between the platform's ends and the pinned ones wherever a bay would pass the radial spacing: as
+    equal as the bays go, each slid to the nearest whole inch whose knee brace and shell clip pads are clear,
+    keeping every bay within the spacing. The ends' pads cannot move; a warning says when one is not clear."""
+    name = platform_name(ctx.arrangement, k)
+    pinned = sorted({p.tread for p in pins if p.kind == RADIAL and p.flight == k})
+    spots = [Spot(RADIAL, k, t, pinned=True) for t in pinned]
+    for t in pinned:
+        ctx.pads += _radial_pads(ctx, k, t)
+    fixed = [0.0, *pinned, spec.length_in]
+    for low, high in zip(fixed, fixed[1:], strict=False):
+        bays = max(1, math.ceil((high - low) / spec.spacing_in - 1e-9))
+        last = low
+        for i in range(1, bays):
+            want = low + (high - low) * i / bays
+            found = None
+            reason = ""
+            for t in _slides(round(want), spec.spacing_in / 2.0):
+                if (t - last < RADIAL_CLEAR_IN or high - t < RADIAL_CLEAR_IN or t - last > spec.spacing_in
+                        or high - t > (bays - i) * spec.spacing_in):
+                    continue
+                ok, why = _radial_clear(ctx, k, t)
+                if ok:
+                    found = t
+                    break
+                reason = reason or why
+            if found is None:
+                found = round(want)
+                warnings.append(f"{name}: no place near {found} in along it keeps a radial's pads clear ({reason}).")
+            ctx.pads += _radial_pads(ctx, k, found)
+            spots.append(Spot(RADIAL, k, found))
+            last = found
+    lines, _last = platform_frame(ctx.arrangement, ctx.where, k)
+    marks, _notes = platform_pad_marks(replace(lines, radials=()), ctx.arrangement.stair.shell_od_in, name)
+    for mark in marks:
+        ok, why = _mark_clear(ctx, mark)
+        if not ok:
+            warnings.append(f"{mark.label}: {why}.")
+        ctx.pads.append(_pad_outline(ctx, mark, 0.0))
+    return sorted(spots, key=lambda s: s.tread)
+
+
+def _slides(start: int, reach: float):
+    """``start``, then a whole inch either side of it, then two, out to ``reach``."""
+    yield start
+    for step in range(1, int(reach) + 1):
+        yield start + step
+        yield start - step
+
+
+def _radial_marks(ctx: _Context, k: int, along: float) -> list[Mark]:
+    """The knee brace pad and the shell clip pad of a radial ``along`` inches from platform ``k``'s A end."""
+    lines, _last = platform_frame(ctx.arrangement, ctx.where, k)
+    lines = replace(lines, radials=(lines.phi_a + along / lines.r_mid,))
+    marks, _notes = platform_pad_marks(lines, ctx.arrangement.stair.shell_od_in, platform_name(ctx.arrangement, k))
+    return [m for m in marks if m.label.endswith(" R1")]
+
+
+def _radial_clear(ctx: _Context, k: int, along: float) -> tuple[bool, str]:
+    marks = _radial_marks(ctx, k, along)
+    if len(marks) < 2:
+        return False, "the shell leaves no room for its knee brace or shell clip"
+    for mark in marks:
+        ok, why = _mark_clear(ctx, mark)
+        if not ok:
+            part = "knee brace" if "knee" in mark.label else "shell clip"
+            return False, why.replace("its shell pad", f"its {part} pad")
+    return True, ""
+
+
+def _radial_pads(ctx: _Context, k: int, along: float) -> list[Item]:
+    return [_pad_outline(ctx, mark, 0.0) for mark in _radial_marks(ctx, k, along)]
+
+
+def _platform_posts(ctx: _Context, k: int, spec: PlatformSpec, side: str, radials: list[int],
+                    pins: tuple[Spot, ...]) -> list[Spot]:
+    """Posts on the platform's ``side``: the pinned ones, and by the rules near both ends and beside each radial,
+    any of those near a pinned one left out, and any the user threw away."""
+    pinned = sorted(p.tread for p in pins if p.kind == PLATFORM_POST and p.flight == k and p.side == side)
+    gone = {key[2] for key in ctx.removed if key[0] == PLATFORM_POST and key[1] == k and key[3] == side}
+    spots = [Spot(PLATFORM_POST, k, t, side, pinned=True) for t in pinned]
+    wanted = [PLATFORM_POST_IN, *(r + POST_BESIDE_IN for r in radials), spec.length_in - PLATFORM_POST_IN]
+    for t in sorted({round(w) for w in wanted}):
+        if t not in gone and all(abs(t - p) >= POST_CLEAR_IN for p in pinned):
+            spots.append(Spot(PLATFORM_POST, k, t, side))
+    return sorted(spots, key=lambda s: s.tread)
+
+
+def _platform_check(ctx: _Context, others: list[Spot], spot: Spot) -> tuple[bool, str]:
+    """Green or red for a radial or a post dropped on a platform, the rest of the plan as it stands."""
+    if not 0 <= spot.flight < ctx.platform_count:
+        return False, "That is not on a platform."
+    spec = ctx.arrangement.stair.platform(spot.flight)
+    mine = [s for s in others if s.flight == spot.flight and s.kind in ON_PLATFORMS]
+    if spot.kind == PLATFORM_POST:
+        if spot.side not in ctx.rules.sides:
+            return False, f"The handrail is not on the {spot.side} side: set Handrail on, on the Stairway tab."
+        if not 1 <= spot.tread <= spec.length_in - 1:
+            return False, "A platform post stands on the platform, not past its ends."
+        if any(-1 <= spot.tread - s.tread < POST_BESIDE_IN - 1 for s in mine if s.kind == RADIAL):
+            return False, "A radial channel meets the side there: stand the post a few inches toward the B end."
+        if any(abs(spot.tread - s.tread) < POST_CLEAR_IN for s in mine if s.kind == PLATFORM_POST
+               and s.side == spot.side):
+            return False, "Another post is right there."
+        return True, "The post fits here."
+    if not RADIAL_CLEAR_IN <= spot.tread <= spec.length_in - RADIAL_CLEAR_IN:
+        return False, f"A radial goes between the platform's ends, at least {RADIAL_CLEAR_IN:g} in in from them."
+    if any(abs(spot.tread - s.tread) < RADIAL_CLEAR_IN for s in mine if s.kind == RADIAL and s.pinned):
+        return False, "Another radial is right there."
+    ctx.pads = [p for p in (_pad_item(ctx, s) for s in others if s.kind in (KNEE, CLIP)) if p is not None]
+    for s in others:
+        if s.kind == RADIAL and s.key() != spot.key() and not (s.flight == spot.flight and not s.pinned):
+            ctx.pads += _radial_pads(ctx, s.flight, s.tread)
+    ok, why = _radial_clear(ctx, spot.flight, spot.tread)
+    if not ok:
+        return False, why[0].upper() + why[1:] + "."
+    return True, "Its knee brace and shell clip pads are clear here; the other radials re-flow round it."
+

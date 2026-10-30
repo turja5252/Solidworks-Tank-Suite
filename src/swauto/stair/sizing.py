@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 
-from swauto.stair.development import END_EXT_IN, MAX_PLATFORMS, flight_step, flight_treads
+from swauto.stair.development import END_EXT_IN, MAX_PLATFORMS, flight_treads, flight_turns
 from swauto.stair.stringer import THICKNESS_IN, TREAD_DEPTH_IN, StringerMock
 
 AUTO_RISE_IN = 7.5  # the lisp's default rise; a tread count picked from the height keeps every rise at or under it
@@ -86,11 +86,11 @@ def end_angles(stair: StringerMock, platforms: int = 0) -> tuple[float, float]:
     end on: the foot of the first flight and the top of the last. Both stringers of a flight stop on the
     same radial line, 1/8 in past the end treads on the inner one (``development.outer_end_ext_in``)."""
     per_flight = flight_treads(stair.treads, platforms)
-    turn, _lift = flight_step(replace(stair, treads=per_flight))
+    turns = flight_turns(replace(stair, treads=per_flight), platforms)
     inner_face = stair.shell_od_in + stair.gap_in + THICKNESS_IN
     step = stair.run_in / (inner_face + stair.clear_in / 2.0)
     cap = (TREAD_DEPTH_IN / 2.0 + END_EXT_IN) / inner_face
-    return step - cap, platforms * turn + per_flight * step + cap
+    return step - cap, turns[platforms] + per_flight * step + cap
 
 
 def world_angle(angle: float, turn: float = 0.0, ccw: bool = False) -> float:

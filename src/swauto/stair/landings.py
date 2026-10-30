@@ -116,29 +116,52 @@ def shell_marks(arrangement: StairArrangement) -> tuple[list[Mark], list[str]]:
             found = mark_of(where, arrangement.platforms, index)
             (notes if isinstance(found, str) else marks).append(found)
 
-    platforms = arrangement.platforms + (1 if arrangement.top_platform else 0)
-    for k in range(1, platforms + 1):
-        last = places[k * per_flight - 1]
-        lines = platform_lines(phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_a + CLEAR_IN)
-        name = "Top platform" if k > arrangement.platforms else f"Platform {k}"
+    for k in range(arrangement.platforms + (1 if arrangement.top_platform else 0)):
+        lines, last = platform_frame(arrangement, where, k)
+        name = platform_name(arrangement, k)
         marks.append(Mark(PLATFORM, f"{name} (after tread {last.index})",
                           _box(lines.phi_a, lines.phi_b, lines.top - CHANNEL_IN, lines.top)))
-        if lines.r_in - shell_r < TAB_OUT_IN + SHELL_PAD_THK_IN + 0.5:
-            notes.append(f"{name}: no room for its shell clips.")
-        else:
-            for label, angle, y in shell_pads(lines, shell_r):
-                marks.append(Mark(PLATFORM_PAD, f"{name} shell clip pad {label}", center=(angle, y),
-                                  size=(PAD_WIDE_IN, SHELL_PAD_TALL_IN)))
-        try:
-            knees = platform_knees(lines, shell_r)
-        except SolidWorksError as exc:
-            notes.append(f"{name}: {exc}")
-            continue
-        for label, frame, knee, _back in knees:
-            t, y = knee_pad(knee)
-            angle = frame.phi + math.atan2(t, shell_r + PAD_THK_IN)
-            marks.append(Mark(PLATFORM_KNEE_PAD, f"{name} knee brace pad {label}", center=(angle, y),
-                              size=(PAD_WIDE_IN, PAD_TALL_IN)))
+        found, said = platform_pad_marks(lines, shell_r, name)
+        marks += found
+        notes += said
+    return marks, notes
+
+
+def platform_frame(arrangement: StairArrangement, where, k: int):
+    """Platform ``k``'s plan lines (0 the lowest, the top one after the mid ones), from ``stair_places``, and the
+    tread it follows."""
+    last = where.places[(k + 1) * where.per_flight - 1]
+    r_a = where.layout.inner_face_in
+    lines = platform_lines(phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_a + CLEAR_IN,
+                           spec=arrangement.stair.platform(k))
+    return lines, last
+
+
+def platform_name(arrangement: StairArrangement, k: int) -> str:
+    return "Top platform" if k >= arrangement.platforms else f"Platform {k + 1}"
+
+
+def platform_pad_marks(lines, shell_r: float, name: str) -> tuple[list[Mark], list[str]]:
+    """The shell pads of a platform's supports (both ends and every radial between): a shell clip pad by each on
+    the inner side and a knee brace pad under each on the outer side, and notes where the shell leaves no room."""
+    marks: list[Mark] = []
+    notes: list[str] = []
+    if lines.r_in - shell_r < TAB_OUT_IN + SHELL_PAD_THK_IN + 0.5:
+        notes.append(f"{name}: no room for its shell clips.")
+    else:
+        for label, angle, y in shell_pads(lines, shell_r):
+            marks.append(Mark(PLATFORM_PAD, f"{name} shell clip pad {label}", center=(angle, y),
+                              size=(PAD_WIDE_IN, SHELL_PAD_TALL_IN)))
+    try:
+        knees = platform_knees(lines, shell_r)
+    except SolidWorksError as exc:
+        notes.append(f"{name}: {exc}")
+        return marks, notes
+    for label, frame, knee, _back in knees:
+        t, y = knee_pad(knee)
+        angle = frame.phi + math.atan2(t, shell_r + PAD_THK_IN)
+        marks.append(Mark(PLATFORM_KNEE_PAD, f"{name} knee brace pad {label}", center=(angle, y),
+                          size=(PAD_WIDE_IN, PAD_TALL_IN)))
     return marks, notes
 
 
@@ -170,6 +193,31 @@ def clip_mark(where, platforms: int, index: int) -> Mark | str:
     place = where.places[index - 1]
     angle, y = clip_pad(clip_phi(place.phi, r_a, _pitch(where.places, index, r_a)), place.y1, shell_r)
     return Mark(CLIP_PAD, f"Inner clip pad, tread {index}", center=(angle, y), size=(PAD_WIDE_IN, CLIP_PAD_TALL_IN))
+
+
+STRAIGHT_CLEAR_IN = 1.0  # the least between a straight inner side and the shell
+
+
+def platform_problems(arrangement: StairArrangement) -> list[str]:
+    """What the platforms' shapes run into: straight sides on a platform long enough that its inner side bows in
+    toward the shell between its ends, to within ``STRAIGHT_CLEAR_IN`` of it."""
+    stair = arrangement.stair
+    shell_r = stair.shell_od_in
+    where = stair_places(stair, shell_r, arrangement.platforms, arrangement.ground_in)
+    r_a = where.layout.inner_face_in
+    problems = []
+    for k in range(1, arrangement.platforms + (1 if arrangement.top_platform else 0) + 1):
+        last = where.places[k * where.per_flight - 1]
+        spec = stair.platform(k - 1)
+        lines = platform_lines(phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=r_a + CLEAR_IN, spec=spec)
+        if lines.rolled:
+            continue
+        clear = lines.r_in * math.cos((lines.phi_b - lines.phi_a) / 2.0) - shell_r  # at the straight side's middle
+        if clear < STRAIGHT_CLEAR_IN:
+            name = "The top platform" if k > arrangement.platforms else f"Platform {k}"
+            problems.append(f"{name}: straight sides {spec.length_in:g} in long come within {clear:.2f} in of the "
+                            "shell at the inner side's middle; roll them.")
+    return problems
 
 
 def _box(a0: float, a1: float, y0: float, y1: float) -> tuple[tuple[float, float], ...]:

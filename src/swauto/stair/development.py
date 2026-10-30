@@ -41,13 +41,14 @@ from swauto.stair.stringer import (
     TOP_HOLE_DROP_IN,
     TREAD_DEPTH_IN,
     TREAD_MARK_IN,
+    PlatformSpec,
     StringerMock,
 )
 
 DROP_IN = 5.25
 END_EXT_IN = 0.125
 SLOT_LENGTH_IN = 1.625
-PLATFORM_CLEAR_IN = 36.0
+PLATFORM_CLEAR_IN = 36.0  # the stair's own platform, along its centreline
 
 Point = tuple[float, float]
 
@@ -239,33 +240,52 @@ def stair_plan(
 ) -> tuple[list[float], list[tuple[float, float]]]:
     """Plan angles: every tread centerline, and each platform's two radial sides (mid ones, then the top one)."""
     per_flight = flight_treads(stair.treads, platforms)
-    turn, _lift = flight_step(replace(stair, treads=per_flight))
+    turns = flight_turns(replace(stair, treads=per_flight), platforms)
     inner_face = stair.shell_od_in + stair.gap_in + THICKNESS_IN
     step = stair.run_in / (inner_face + stair.clear_in / 2.0)
     cap = (TREAD_DEPTH_IN / 2.0 + END_EXT_IN) / inner_face
-    treads = [k * turn + i * step for k in range(platforms + 1) for i in range(1, per_flight + 1)]
+    treads = [turns[k] + i * step for k in range(platforms + 1) for i in range(1, per_flight + 1)]
     spans = []
     for k in range(platforms + (1 if top_platform else 0)):
-        side_a = k * turn + per_flight * step + cap
-        spans.append((side_a, side_a + PLATFORM_CLEAR_IN / (inner_face + CLEAR_IN / 2.0)))
+        side_a = turns[k] + per_flight * step + cap
+        spec = stair.platform(k)
+        spans.append((side_a, side_a + spec.length_in / platform_centreline(inner_face, spec)))
     return treads, spans
 
 
-def flight_step(stair: StringerMock, clear_in: float = PLATFORM_CLEAR_IN) -> tuple[float, float]:
-    """Turn (radians) and lift (inches) from one flight to the next over a mid platform.
+def platform_centreline(inner_face: float, spec: PlatformSpec) -> float:
+    """The radius a platform's length is along: halfway between its sides, the inner one on the inner stringer
+    (``inner_face`` its walk face) and the outer one as far out as the stair's own platform's, or further."""
+    return inner_face + (CLEAR_IN + spec.extra_in) / 2.0
+
+
+def flight_step(stair: StringerMock, spec: PlatformSpec | None = None) -> tuple[float, float]:
+    """Turn (radians) and lift (inches) from one flight to the next over a mid platform of shape ``spec`` (the
+    stair's own when None).
 
     ``stair.treads`` is the treads in one flight. The flight below stops 1/8 in
-    past its top tread, the platform runs ``clear_in`` along the walk centerline
-    from there, and the next flight starts on the far side with its first tread
-    level with the platform, as the lisp shares that tread between flights. The
-    treads step along the flight's own walk centerline; a platform is always the
-    full width, lined up on the inner stringer, so it runs along the full stair's.
+    past its top tread, the platform runs its length along its centreline from
+    there, and the next flight starts on the far side with its first tread level
+    with the platform, as the lisp shares that tread between flights. The treads
+    step along the flight's own walk centerline; a platform is lined up on the
+    inner stringer and at least the full stair's width, so its centreline is
+    the full stair's, or further out on a wider one.
     """
+    spec = spec or PlatformSpec()
     inner_face = stair.shell_od_in + stair.gap_in + THICKNESS_IN
     step = stair.run_in / (inner_face + stair.clear_in / 2.0)
     cap = (TREAD_DEPTH_IN / 2.0 + END_EXT_IN) / inner_face
-    turn = (stair.treads - 1) * step + 2.0 * cap + clear_in / (inner_face + CLEAR_IN / 2.0)
+    turn = (stair.treads - 1) * step + 2.0 * cap + spec.length_in / platform_centreline(inner_face, spec)
     return turn, (stair.treads - 1) * stair.rise_in
+
+
+def flight_turns(flight: StringerMock, platforms: int) -> tuple[float, ...]:
+    """How far round each flight starts from the first, over the mid platforms between (``flight.treads`` is one
+    flight's): each platform turns the stair by its own length."""
+    turns = [0.0]
+    for k in range(platforms):
+        turns.append(turns[-1] + flight_step(flight, flight.platform(k))[0])
+    return tuple(turns)
 
 
 def connecting_holes(dev: DevelopedStringer, flight: int) -> tuple[Point, ...]:

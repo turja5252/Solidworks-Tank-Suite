@@ -63,9 +63,9 @@ from swauto.stair.brace_sw import (
     _set_turn,
     _stair_parts,
 )
-from swauto.stair.development import END_EXT_IN, PLATFORM_CLEAR_IN
+from swauto.stair.development import END_EXT_IN
 from swauto.stair.inner_clip_sw import _angle_between, _hand, _leg_axes, _member
-from swauto.stair.stringer import CLEAR_IN, THICKNESS_IN, TREAD_DEPTH_IN, TREAD_MARK_IN
+from swauto.stair.stringer import CLEAR_IN, THICKNESS_IN, TREAD_DEPTH_IN, TREAD_MARK_IN, PlatformSpec
 from swauto.stair.stringer_sw import _create_circle, _names, _rename_new
 from swauto.tank.shell import _clear_selection, _close_sketch
 
@@ -101,9 +101,10 @@ HANGER_BOLT_DOWN_IN = 3.5  # below the channel bottom
 
 @dataclass(frozen=True)
 class _Lines:
-    """Plan lines of one platform: radial sides A and B, the walk faces of a full-width stair's
-    stringers (the frame's inside), the channel top, and the outer stringer's walk face, which is
-    further in when the treads are narrower than the platform."""
+    """Plan lines of one platform: radial sides A and B; the walk faces of a full-width stair's stringers, the
+    frame's inside (the outer one further out on a wider platform); the channel top; the outer stringer's walk
+    face, which is further in when the treads are narrower than the platform or the platform wider than the
+    stair; whether the sides C and D are rolled about the tank axis; and the radials between A and B."""
 
     phi_a: float
     phi_b: float
@@ -111,6 +112,8 @@ class _Lines:
     r_b: float
     top: float
     stringer_b: float
+    rolled: bool = False
+    radials: tuple[float, ...] = ()
 
     @property
     def r_in(self) -> float:
@@ -120,15 +123,35 @@ class _Lines:
     def r_out(self) -> float:
         return self.r_b + THICKNESS_IN
 
+    @property
+    def r_mid(self) -> float:
+        """The centreline the platform's length runs along."""
+        return (self.r_a + self.r_b) / 2.0
 
-def platform_lines(*, phi: float, tread_top: float, r_a: float, r_b: float, stringer_b: float | None = None) -> _Lines:
+    def supports(self) -> list[tuple[str, float, float]]:
+        """Each radial channel with a knee brace under the outer side and a shell clip on the inner one: its
+        label, the angle of its web's back, and the way into the platform from it (+1 toward B)."""
+        between = [(f"R{i}", angle, 1.0) for i, angle in enumerate(self.radials, start=1)]
+        return [("A", self.phi_a, 1.0), *between, ("B", self.phi_b, -1.0)]
+
+
+def platform_lines(
+    *, phi: float, tread_top: float, r_a: float, r_b: float, stringer_b: float | None = None,
+    spec: PlatformSpec | None = None,
+) -> _Lines:
     """A sits on the inner stringer's end, half a tread plus 1/8 in past the tread centerline at ``phi``.
 
-    ``r_b`` is the platform's outer walk face; ``stringer_b`` the outer stringer's, if not the same."""
+    ``r_b`` is the stair's own platform's outer walk face; ``stringer_b`` the outer stringer's, if not the same.
+    ``spec`` is the platform's shape (the stair's own when None): its length along the centreline sets B, a
+    wider one puts the outer side further out, and its radials sit along the centreline between A and B."""
+    spec = spec or PlatformSpec()
+    stringer = r_b if stringer_b is None else stringer_b
+    r_b = r_b + spec.extra_in
     phi_a = phi + (TREAD_DEPTH_IN / 2.0 + END_EXT_IN) / r_a
+    r_mid = (r_a + r_b) / 2.0
     return _Lines(
-        phi_a, phi_a + PLATFORM_CLEAR_IN / ((r_a + r_b) / 2.0), r_a, r_b, tread_top - GRATING_IN,
-        r_b if stringer_b is None else stringer_b,
+        phi_a, phi_a + spec.length_in / r_mid, r_a, r_b, tread_top - GRATING_IN, stringer, spec.is_rolled,
+        tuple(phi_a + along / r_mid for along in spec.radial_positions()),
     )
 
 
@@ -197,7 +220,7 @@ def place_mid_platform(
     outer = 2.0 * r_out * math.sin((phi_b - phi_a) / 2.0)
     note = (
         f"Mid platform after tread {tread_index}: C4x5.4 frame mitered at all four corners, "
-        f"{PLATFORM_CLEAR_IN:g} in clear along the walk centerline. Outside lengths: two radial sides "
+        f"{(phi_b - phi_a) * lines.r_mid:g} in along its centreline. Outside lengths: two radial sides "
         f"{radial:.3f} in, inner side {inner:.3f} in, outer side {outer:.3f} in. "
         f"Channel tops {GRATING_IN:g} in below the top of tread {tread_index} for the grating."
     )
@@ -534,20 +557,16 @@ def add_platform_knee_braces(
 
 
 def platform_knees(lines: _Lines, shell_r: float) -> list[tuple[str, _Frame, _Knee, float]]:
-    """The knee brace at each end of a platform's outer channel: end label, radial frame, knee, and the outer
-    channel back's radius on that line. Raises when the shell leaves no room."""
-    half = (lines.phi_b - lines.phi_a) / 2.0
-    mid = lines.phi_a + half
-    outer_chord = lines.r_out * math.cos(half)  # the outer channel's back, from the axis along the bisector
+    """The knee brace under a platform's outer channel at each support (``_Lines.supports``: both ends and every
+    radial between): label, radial frame, knee, and the outer channel back's radius on that line. Raises when
+    the shell leaves no room."""
     r_mid_plate = lines.r_out - HANGER_IN_FROM_OUTSIDE_IN - HANGER_WIDE_IN / 2.0
-    set_in = HANGER_FROM_END_IN + HANGER_THK_IN
+    set_in = HANGER_FROM_END_IN + HANGER_THK_IN  # the hanger stands just past the radial's web, as at A
     knees = []
-    for label, knee_phi, side in (
-        ("A", lines.phi_a + set_in / r_mid_plate, 1.0),
-        ("B", lines.phi_b - set_in / r_mid_plate, -1.0),
-    ):
+    for label, angle, side in lines.supports():
+        knee_phi = angle + side * set_in / r_mid_plate
         frame = _Frame(phi=knee_phi, y_top=lines.top, r_a=lines.r_a, r_b=lines.r_b)
-        back = outer_chord / math.cos(knee_phi - mid)  # outer channel back on this radial line
+        back = _outer_back(lines, knee_phi)
         r1 = back - HANGER_IN_FROM_OUTSIDE_IN - HANGER_WIDE_IN / 2.0
         y1 = lines.top - CHANNEL_IN - HANGER_BOLT_DOWN_IN
         r2 = shell_r + CLIP_BOLT_OUT_IN
@@ -558,11 +577,21 @@ def platform_knees(lines: _Lines, shell_r: float) -> list[tuple[str, _Frame, _Kn
     return knees
 
 
+def _outer_back(lines: _Lines, phi: float) -> float:
+    """The outer channel's back, from the axis along the radial line at ``phi``: its arc when rolled, else the
+    straight line between the outer corners."""
+    if lines.rolled:
+        return lines.r_out
+    half = (lines.phi_b - lines.phi_a) / 2.0
+    return lines.r_out * math.cos(half) / math.cos(phi - (lines.phi_a + half))
+
+
 def shell_pads(lines: _Lines, shell_r: float) -> list[tuple[str, float, float]]:
-    """The shell pad at each end of a platform's inner channel: end label, plan angle (taken near the
-    platform's own angles) and middle height. Each pad is 4 in wide by SHELL_PAD_TALL_IN, full-radius ends."""
+    """The shell pad by each support on a platform's inner channel (both ends and every radial between): label,
+    plan angle (taken near the platform's own angles) and middle height. Each pad is 4 in wide by
+    SHELL_PAD_TALL_IN, full-radius ends."""
     pads = []
-    for end, label in zip(_channel_ends(lines), ("A", "B"), strict=True):
+    for end, (label, _angle, _side) in zip(_channel_ends(lines), lines.supports(), strict=True):
         qx, qz = _pad_point(end, shell_r)
         phi_q = lines.phi_a + math.remainder(math.atan2(-qx, qz) - lines.phi_a, 2.0 * math.pi)
         pads.append((label, phi_q, end.top - CHANNEL_IN / 2.0))
@@ -612,17 +641,28 @@ class _ChannelEnd:
 
 
 def _channel_ends(lines: _Lines) -> list[_ChannelEnd]:
+    """The inner channel's back at each support (``_Lines.supports``), looking into the platform from it: on the
+    straight line between the inner corners, or on the arc when rolled."""
     a = (-lines.r_in * math.sin(lines.phi_a), lines.r_in * math.cos(lines.phi_a))
     b = (-lines.r_in * math.sin(lines.phi_b), lines.r_in * math.cos(lines.phi_b))
     length = math.hypot(b[0] - a[0], b[1] - a[1])
-    along = ((b[0] - a[0]) / length, (b[1] - a[1]) / length)
-    inward = (-along[1], along[0])
-    if inward[0] * -a[0] + inward[1] * -a[1] < 0:
-        inward = (-inward[0], -inward[1])
-    return [
-        _ChannelEnd(a, along, inward, lines.top),
-        _ChannelEnd(b, (-along[0], -along[1]), inward, lines.top),
-    ]
+    chord = ((b[0] - a[0]) / length, (b[1] - a[1]) / length)
+    ends = []
+    for _label, angle, side in lines.supports():
+        ray = (-math.sin(angle), math.cos(angle))
+        if lines.rolled:
+            origin = (lines.r_in * ray[0], lines.r_in * ray[1])
+            along = (-side * math.cos(angle), -side * math.sin(angle))  # the arc's tangent toward the platform
+        else:
+            # Where the radial line meets the straight inner side.
+            reach = (a[0] * chord[1] - a[1] * chord[0]) / (ray[0] * chord[1] - ray[1] * chord[0])
+            origin = (reach * ray[0], reach * ray[1])
+            along = (side * chord[0], side * chord[1])
+        inward = (-along[1], along[0])
+        if inward[0] * -origin[0] + inward[1] * -origin[1] < 0:
+            inward = (-inward[0], -inward[1])
+        ends.append(_ChannelEnd(origin, along, inward, lines.top))
+    return ends
 
 
 def add_platform_shell_clips(
@@ -637,7 +677,7 @@ def add_platform_shell_clips(
         raise SolidWorksError(f"The {lines.r_in - shell_r:.2f} in gap leaves no room for the platform's shell clips.")
     name = f"ElitePlatform{tread_index:02d}Shell"
     missed = []
-    for end, label in zip(_channel_ends(lines), ("A", "B")):
+    for end, (label, _angle, _side) in zip(_channel_ends(lines), lines.supports(), strict=True):
         tag = f"{name}{label}"
         _shell_tab(model, end, f"{tag}Tab")
         _shell_clip_and_pad(model, end, shell_r, tag)

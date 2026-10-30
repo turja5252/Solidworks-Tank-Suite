@@ -331,3 +331,26 @@ def test_the_3d_view_draws_the_tabs_plan_and_survives_a_stale_game(tk_window):
     frame = next(w for w in page.winfo_children() if hasattr(w, "view_state"))
     labels = {f.label for f in frame.view_state["faces"]}
     assert any(label.startswith("Outer post") for label in labels)
+
+
+def test_the_platform_shapes_are_read_into_the_stair(tk_window):
+    from swauto.stair.stringer import PlatformSpec
+    from swauto.stair.stringer_gui import SIDES_STRAIGHT
+
+    page = ttk.Frame(tk_window)
+    shared: dict = {}
+    build_stringer_tab(page, tk.StringVar(master=tk_window), shared)
+    _type(_entry(page, "Shell height"), "480")
+    _type(_entry(page, "Mid platforms"), "1")
+    _type(_entry(page, "Mid platforms: length"), "96")
+    _box(page, "Top platform").invoke()
+    _type(_entry(page, "Top platform: length"), "48")
+    stair = shared["stairway"]().stair
+    assert stair.platform(0) == PlatformSpec(96.0) and stair.platform(0).is_rolled
+    assert stair.platform(1) == PlatformSpec(48.0)
+    assert shared["stairway_inputs"]()["platform_length"] == "96"
+    # Straight sides that long would bow the inner side into the shell: refused, saying why.
+    sides = next(w for w in _widgets(page) if isinstance(w, ttk.Combobox) and SIDES_STRAIGHT in w.cget("values"))
+    sides.set(SIDES_STRAIGHT)
+    _type(_entry(page, "Mid platforms: length"), "110")
+    assert any("roll them" in str(w.cget("text")) for w in _widgets(page) if isinstance(w, ttk.Label))

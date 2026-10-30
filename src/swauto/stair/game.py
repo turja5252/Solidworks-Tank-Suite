@@ -22,7 +22,9 @@ from swauto.stair.attachments import (
     KNEE,
     NO_CUTS,
     OUTER,
+    PLATFORM_POST,
     POST,
+    RADIAL,
     RAIL_SPLIT,
     SPLICE,
     Plan,
@@ -54,7 +56,7 @@ class Piece:
 
     def lanes(self) -> tuple[str, ...]:
         """The stringers it can go on."""
-        if self.kind in (POST, RAIL_SPLIT):
+        if self.kind in (POST, RAIL_SPLIT, PLATFORM_POST):
             return (self.side,)
         if self.kind in (CLIP, KNEE):
             return (INNER,)  # the clip and the knee brace go to the shell, by the inner stringer
@@ -69,6 +71,7 @@ TRAY = (
     Piece("Stringer splitter", SPLICE),
     Piece("Rail splitter (outside)", RAIL_SPLIT, OUTER),
     Piece("Rail splitter (inside)", RAIL_SPLIT, INNER),
+    Piece("Platform radial", RADIAL),
 )
 
 

@@ -30,6 +30,7 @@ from swauto.stair.development import (
     develop_both,
     flight_step,
     flight_treads,
+    flight_turns,
 )
 from swauto.stair.splitter import (
     GAP_IN,
@@ -373,12 +374,13 @@ def stair_places(stair: StringerMock, shell_od: float, platforms: int = 0, groun
     per_flight = flight_treads(stair.treads, platforms)
     flight = replace(stair, shell_od_in=shell_od, treads=per_flight, outside_face=True)
     layout = layout_stringer(flight)
-    turn, lift = flight_step(flight)
+    _turn, lift = flight_step(flight)
+    turns = flight_turns(flight, platforms)
     # The ground is tread zero's walking surface (the lisp's Height/Angle pick), so tread i stands
     # i rises up and the top tread's surface is at the stair's height. The layout centres each
     # 2-1/2 in tread on its rise; every flight comes down half a tread to put the surfaces there.
     ground = ground_in - TREAD_MARK_IN / 2.0
-    offsets = tuple((k * turn, ground + k * lift) for k in range(platforms + 1))
+    offsets = tuple((turns[k], ground + k * lift) for k in range(platforms + 1))
     places = tuple(
         _moved_place(place, k * per_flight + place.index, *offsets[k])
         for k in range(platforms + 1)

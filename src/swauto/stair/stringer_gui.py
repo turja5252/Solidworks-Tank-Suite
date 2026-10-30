@@ -33,11 +33,18 @@ from swauto.stair.brace_sw import (
     remove_cross_brace,
     stair_flight_tops,
 )
-from swauto.stair.development import MAX_PLATFORMS, develop_both, flight_step, flight_treads, stair_plan
+from swauto.stair.development import (
+    MAX_PLATFORMS,
+    develop_both,
+    flight_treads,
+    flight_turns,
+    platform_centreline,
+    stair_plan,
+)
 from swauto.stair.game import Choice, Game
 from swauto.stair.grab_sw import GRAB_TOP_IN, GrabRail
 from swauto.stair.inner_clip_sw import add_inner_clip, clip_angle_profile
-from swauto.stair.landings import StairArrangement
+from swauto.stair.landings import StairArrangement, platform_problems
 from swauto.stair.post_sw import PLATFORM_POST_IN, RAIL_TOP_IN, flight_picks, read_post_treads
 from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN, check_platform_mid_top
 from swauto.stair.splitter import LIMIT as SPLIT_LIMIT
@@ -67,10 +74,14 @@ from swauto.stair.sizing import (
 )
 from swauto.stair.stringer import (
     CLEAR_IN,
+    PLATFORM_LENGTH_IN,
+    PLATFORM_SPACING_IN,
     THICKNESS_IN,
     TREAD_DEPTH_IN,
     TREAD_MARK_IN,
+    TREAD_PLATE_IN,
     TREAD_WIDTHS_IN,
+    PlatformSpec,
     StringerLayout,
     StringerMock,
     layout_stringer,
@@ -89,6 +100,11 @@ CLOCKWISE = "cw"
 COUNTERCLOCKWISE = "ccw"
 START = "start"
 END = "end"
+SIDES_AUTO = "Auto (rolled over 36 in)"
+SIDES_STRAIGHT = "Straight"
+SIDES_ROLLED = "Rolled"
+PLATFORM_SIDES = (SIDES_AUTO, SIDES_STRAIGHT, SIDES_ROLLED)
+_SIDES = {SIDES_AUTO: None, SIDES_STRAIGHT: False, SIDES_ROLLED: True}
 
 
 def _tank_od_radius_in(shared: dict | None) -> float | None:
@@ -483,11 +499,34 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     ttk.Label(platform_options, text="Mid platforms").pack(side="left")
     ttk.Entry(platform_options, textvariable=platforms_var, width=4).pack(side="left", padx=(6, 0))
     ttk.Checkbutton(platform_options, text="Top platform", variable=top_platform_var).pack(side="left", padx=(12, 0))
+    plat_len_var = tk.StringVar(value=_fmt_num(PLATFORM_LENGTH_IN))
+    plat_width_var = tk.StringVar(value=_fmt_num(TREAD_PLATE_IN))
+    plat_sides_var = tk.StringVar(value=SIDES_AUTO)
+    plat_spacing_var = tk.StringVar(value=_fmt_num(PLATFORM_SPACING_IN))
+    top_len_var = tk.StringVar(value=_fmt_num(PLATFORM_LENGTH_IN))
+    top_width_var = tk.StringVar(value=_fmt_num(TREAD_PLATE_IN))
+    top_sides_var = tk.StringVar(value=SIDES_AUTO)
+    shape_options = ttk.Frame(top)
+    shape_options.grid(row=12, column=0, columnspan=8, sticky="w", pady=(4, 0))
+    for row, (title, length_var, width_var, sides_var) in enumerate((
+        ("Mid platforms", plat_len_var, plat_width_var, plat_sides_var),
+        ("Top platform", top_len_var, top_width_var, top_sides_var),
+    )):
+        ttk.Label(shape_options, text=f"{title}: length").grid(row=row, column=0, sticky="w")
+        ttk.Entry(shape_options, textvariable=length_var, width=10).grid(row=row, column=1, sticky="w", padx=(6, 0))
+        ttk.Label(shape_options, text="width").grid(row=row, column=2, sticky="w", padx=(8, 0))
+        ttk.Entry(shape_options, textvariable=width_var, width=10).grid(row=row, column=3, sticky="w", padx=(6, 0))
+        ttk.Label(shape_options, text="sides").grid(row=row, column=4, sticky="w", padx=(8, 0))
+        ttk.Combobox(shape_options, textvariable=sides_var, values=PLATFORM_SIDES, width=22, state="readonly").grid(
+            row=row, column=5, sticky="w", padx=(6, 0))
+    ttk.Label(shape_options, text="radials at most").grid(row=0, column=6, sticky="w", padx=(12, 0))
+    ttk.Entry(shape_options, textvariable=plat_spacing_var, width=5).grid(row=0, column=7, sticky="w", padx=(6, 0))
+    ttk.Label(shape_options, text="in apart").grid(row=0, column=8, sticky="w", padx=(4, 0))
     posts_var = tk.StringVar(value="")
     post_in_out_var = tk.StringVar(value=_fmt_num(PLATFORM_POST_IN))
     post_in_inner_var = tk.StringVar(value=_fmt_num(PLATFORM_POST_IN))
     post_options = ttk.Frame(top)
-    post_options.grid(row=12, column=0, columnspan=8, sticky="w", pady=(4, 0))
+    post_options.grid(row=13, column=0, columnspan=8, sticky="w", pady=(4, 0))
     ttk.Label(post_options, text="Posts at flight treads").pack(side="left")
     ttk.Entry(post_options, textvariable=posts_var, width=8).pack(side="left", padx=(6, 0))
     ttk.Label(post_options, text="Platform posts in from the ends: outer").pack(side="left", padx=(12, 0))
@@ -506,7 +545,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     grab_low_var = tk.StringVar(value="0")
     grab_high_var = tk.StringVar(value="0")
     grab_options = ttk.Frame(top)
-    grab_options.grid(row=13, column=0, columnspan=8, sticky="w", pady=(4, 0))
+    grab_options.grid(row=14, column=0, columnspan=8, sticky="w", pady=(4, 0))
     ttk.Checkbutton(grab_options, text="Grab rail", variable=grab_var).pack(side="left")
     ttk.Label(grab_options, text="pipe top").pack(side="left", padx=(6, 0))
     ttk.Entry(grab_options, textvariable=grab_top_var, width=5).pack(side="left", padx=(6, 0))
@@ -521,7 +560,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     split_plate_var = tk.StringVar(value="")
     split_row_var = tk.StringVar(value="")
     split_options = ttk.Frame(top)
-    split_options.grid(row=14, column=0, columnspan=8, sticky="w", pady=(4, 0))
+    split_options.grid(row=15, column=0, columnspan=8, sticky="w", pady=(4, 0))
     ttk.Checkbutton(split_options, text="Split stringers", variable=split_var).pack(side="left")
     ttk.Radiobutton(split_options, text="Max span", variable=split_mode_var, value=SPLIT_LIMIT).pack(
         side="left", padx=(10, 0)
@@ -540,7 +579,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     rules_var = tk.BooleanVar(value=False)
     rail_side_var = tk.StringVar(value=RAIL_SIDES[0])
     rules_options = ttk.Frame(top)
-    rules_options.grid(row=15, column=0, columnspan=8, sticky="w", pady=(4, 0))
+    rules_options.grid(row=16, column=0, columnspan=8, sticky="w", pady=(4, 0))
     ttk.Checkbutton(rules_options, text="Place by the rules", variable=rules_var).pack(side="left")
     ttk.Label(rules_options, text="handrail on").pack(side="left", padx=(10, 0))
     ttk.Combobox(rules_options, textvariable=rail_side_var, values=RAIL_SIDES, width=8, state="readonly").pack(
@@ -600,6 +639,15 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "tying each end of its inner channel to the shell, and an L3x3x3/8 knee brace from a hanger "
             "plate under each end of its outer channel down to a clip and pad on the shell. Top platform puts the same frame past "
             "the top tread. Brace tread numbers count every pan, the extra one at each platform too.\n"
+            "Mid platforms / Top platform: each platform's length along its centreline (halfway between its "
+            "inner and outer sides) and its width, 36 being the stair's own platform; wider puts the outer side "
+            "further out, never the inner one. Mid lengths and widths take one value per platform from the "
+            "bottom, like 36, 96, the last one repeating. Sides: Rolled rolls the inner and outer channels "
+            "about the tank (the lisp's RADIALPLATFORM), Straight keeps them straight, Auto rolls them on a "
+            "platform longer than 36 in. A long platform gets radial channels between its ends, no more than the "
+            "radial spacing apart along its centreline, each with a knee brace and a shell clip. A straight "
+            "platform long enough to bow its inner side into the shell is refused. The SolidWorks build makes "
+            "the 36 in straight platform today; the other shapes show in the previews.\n"
             "Posts at flight treads: tread numbers in one flight, like 2, 4, repeated in every flight. Each "
             "gets an L2x2x1/4 handrail post on the outside of the outer stringer just in front of it, "
             "standing on the tread below (so not tread 1), its top cut along the rail 3/4 in under the "
@@ -645,7 +693,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         ),
         justify="left",
         wraplength=640,
-    ).grid(row=16, column=0, columnspan=8, sticky="w", pady=(0, 4))
+    ).grid(row=17, column=0, columnspan=8, sticky="w", pady=(0, 4))
 
     summary_var = tk.StringVar(value="")
     ttk.Label(top, textvariable=summary_var, justify="left", wraplength=640).grid(
@@ -654,9 +702,9 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
 
     ttk.Label(
         top, text="Plan from above, 0° at 12 o'clock and clockwise: red ends, the dashed arrow climbs, teal splices"
-    ).grid(row=18, column=0, columnspan=8, sticky="w")
+    ).grid(row=19, column=0, columnspan=8, sticky="w")
     plan = tk.Canvas(top, width=_PLAN, height=_PLAN, background="#f4f1ea", highlightthickness=1)
-    plan.grid(row=19, column=0, columnspan=8, sticky="w")
+    plan.grid(row=20, column=0, columnspan=8, sticky="w")
 
     def tab_inputs() -> dict[str, object]:
         """Everything on the tab, for the run log."""
@@ -668,6 +716,10 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "plate_width": plate_var.get(), "pan_wall": wall_var.get(), "include_shell": include_shell.get(),
             "braces": braces_var.get(), "knee_braces": knee_var.get(), "inner_clips": inner_var.get(),
             "mid_platforms": platforms_var.get(), "top_platform": top_platform_var.get(), "posts": posts_var.get(),
+            "platform_length": plat_len_var.get(), "platform_width": plat_width_var.get(),
+            "platform_sides": plat_sides_var.get(), "platform_spacing": plat_spacing_var.get(),
+            "top_platform_length": top_len_var.get(), "top_platform_width": top_width_var.get(),
+            "top_platform_sides": top_sides_var.get(),
             "post_in_outer": post_in_out_var.get(), "post_in_inner": post_in_inner_var.get(),
             "top_rail": top_rail_var.get(), "mid_rail": mid_rail_var.get(), "mid_top": mid_top_var.get(),
             "grab_rail": grab_var.get(), "grab_top": grab_top_var.get(), "grab_low": grab_low_var.get(),
@@ -694,6 +746,9 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "climbs": hand_var, "orientation": orient_var, "orientation_at": orient_end_var, "plate_width": plate_var,
             "pan_wall": wall_var, "include_shell": include_shell, "braces": braces_var, "knee_braces": knee_var,
             "inner_clips": inner_var, "mid_platforms": platforms_var, "top_platform": top_platform_var,
+            "platform_length": plat_len_var, "platform_width": plat_width_var, "platform_sides": plat_sides_var,
+            "platform_spacing": plat_spacing_var, "top_platform_length": top_len_var,
+            "top_platform_width": top_width_var, "top_platform_sides": top_sides_var,
             "posts": posts_var, "post_in_outer": post_in_out_var, "post_in_inner": post_in_inner_var,
             "top_rail": top_rail_var, "mid_rail": mid_rail_var, "mid_top": mid_top_var, "grab_rail": grab_var,
             "grab_top": grab_top_var, "grab_low": grab_low_var, "grab_high": grab_high_var, "split": split_var,
@@ -783,6 +838,10 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             raise ValueError("Gap cannot be negative.")
         if plate <= 0:
             raise ValueError("Plate width must be greater than zero.")
+        try:
+            count = int(float(platforms_var.get().strip() or "0"))
+        except ValueError:
+            count = 0  # read_platforms says what is wrong with it
         return StringerMock(
             shell_od_in=diameter / 2.0,
             gap_in=gap,
@@ -792,7 +851,33 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             plate_width_in=plate,
             outside_face=True,
             tread_in=float(tread_var.get()),
+            platform_specs=read_platform_specs(max(0, min(count, MAX_PLATFORMS)), bool(top_platform_var.get())),
         )
+
+    def read_platform_specs(count: int, top_platform: bool) -> tuple[PlatformSpec, ...]:
+        """The platforms' shapes: the mid ones' lengths and widths one per platform from the bottom (the last
+        repeating), then the top one's; one radial spacing for all."""
+        def numbers(var: tk.StringVar, what: str) -> list[float]:
+            try:
+                values = [float(token) for token in var.get().replace(",", " ").split()]
+            except ValueError as exc:
+                raise ValueError(f"{what} must be inches, one per platform, like 36, 96.") from exc
+            if not values:
+                raise ValueError(f"{what} is empty.")
+            return values
+
+        lengths = numbers(plat_len_var, "Mid platform lengths")
+        widths = numbers(plat_width_var, "Mid platform widths")
+        spacing = numbers(plat_spacing_var, "The radial spacing")[0]
+        specs = [PlatformSpec(lengths[min(k, len(lengths) - 1)], widths[min(k, len(widths) - 1)],
+                              _SIDES[plat_sides_var.get()], spacing) for k in range(count)]
+        if top_platform:
+            specs.append(PlatformSpec(numbers(top_len_var, "The top platform's length")[0],
+                                      numbers(top_width_var, "The top platform's width")[0],
+                                      _SIDES[top_sides_var.get()], spacing))
+        for spec in specs:
+            spec.validate()
+        return tuple(specs)
 
     def read_platforms(treads: int) -> int:
         text = platforms_var.get().strip() or "0"
@@ -836,6 +921,9 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             read_wall()
             current.validate()
             platforms = read_platforms(current.treads)
+            problems = platform_problems(StairArrangement(current, platforms, bool(top_platform_var.get())))
+            if problems:
+                raise ValueError(" ".join(problems))
             drawn = layout_stringer(current)
             treads_at, spans = stair_plan(current, platforms, bool(top_platform_var.get()))
             turn, ends = read_turn(current, platforms)
@@ -882,7 +970,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
                if ruled is not None else "")
         )
         _draw_plan(plan, drawn, treads_at, spans, ends=ends, turn=turn, ccw=ccw,
-                   splices=splitters[1] if splitters else ())
+                   splices=splitters[1] if splitters else (), shapes=[current.platform(k) for k in range(len(spans))])
         if not state["busy"]:
             status_var.set("Stringer ready.")
 
@@ -947,6 +1035,11 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             current.validate()
             wall = read_wall()
             platforms = read_platforms(current.treads)
+            if any(spec.length_in != PLATFORM_LENGTH_IN or spec.width_in != TREAD_PLATE_IN or spec.is_rolled
+                   for spec in current.platform_specs):
+                raise ValueError("The SolidWorks build makes the stair's own platform today: 36 in long, 36 wide, "
+                                 "straight. Longer, wider and rolled platforms show in the previews; their build "
+                                 "is next.")
             per_flight = flight_treads(current.treads, platforms)
             by_rules = bool(rules_var.get())
             braces = () if by_rules else read_braces(per_flight * (platforms + 1))
@@ -1191,7 +1284,8 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     treads_var.trace_add("write", on_treads)
     for var in (
         diameter_var, gap_var, slope_var, plate_var, wall_var, top_platform_var, tread_var, hand_var, orient_var,
-        orient_end_var,
+        orient_end_var, plat_len_var, plat_width_var, plat_sides_var, plat_spacing_var, top_len_var, top_width_var,
+        top_sides_var,
         # the splitters, and what their cuts keep off
         split_var, split_mode_var, split_span_var, split_count_var, split_plate_var, split_row_var, posts_var,
         braces_var, knee_var, inner_var, rules_var, rail_side_var,
@@ -1443,7 +1537,7 @@ def _splitters(stair: StringerMock, platforms: int, splits: SplitSettings):
             return f"Splitters: a flight of {flight.treads} treads cannot make {wanted} pieces.", []
         return (f"Splitters: a {splits.max_span_ft:g} ft max span needs {wanted} pieces a flight, more than its "
                 f"{flight.treads} treads; the stringers stay whole."), []
-    turn, _lift = flight_step(flight)
+    turns = flight_turns(flight, platforms)
     arcs = []
     notes: list[str] = []
     found = {}
@@ -1453,8 +1547,8 @@ def _splitters(stair: StringerMock, platforms: int, splits: SplitSettings):
             problems = clashes(dev, [joint], splits.avoid)
             notes.extend(problems)
             xs = [x for x, _y in joint.plate]
-            arcs.extend((dev.radius_in + radius, k * turn + min(xs) / dev.radius_in,
-                         k * turn + max(xs) / dev.radius_in, bool(problems)) for k in range(platforms + 1))
+            arcs.extend((dev.radius_in + radius, turns[k] + min(xs) / dev.radius_in,
+                         turns[k] + max(xs) / dev.radius_in, bool(problems)) for k in range(platforms + 1))
     if not found["inner"]:
         if splits.mode == SPLIT_SEGMENTS:
             return "Splitters: none, Segments is 1; each flight's stringers are one piece.", arcs
@@ -1472,15 +1566,17 @@ def _splitters(stair: StringerMock, platforms: int, splits: SplitSettings):
 
 def _draw_plan(
     canvas: tk.Canvas, layout: StringerLayout, treads_at: list[float], spans: list[tuple[float, float]],
-    *, ends: tuple[float, float] = (0.0, 0.0), turn: float = 0.0, ccw: bool = False, splices=(),
+    *, ends: tuple[float, float] = (0.0, 0.0), turn: float = 0.0, ccw: bool = False, splices=(), shapes=(),
 ) -> None:
     """Shell, stringer faces, a line per tread, each platform's outline, the climb and both ends, over the whole
     stair, where it lands on the tank: the clockwise build's angles mirrored for ``ccw``, then turned. ``splices``
-    are the splitters' plates, from ``_splitters``."""
+    are the splitters' plates, from ``_splitters``; ``shapes`` each platform's ``PlatformSpec`` (the stair's own
+    when missing)."""
     canvas.delete("all")
     sweep = max([treads_at[-1]] + [b for _a, b in spans]) if treads_at else layout.sweep_rad
-    label_r = _platform_out(layout) + 8.0
-    radii = (layout.shell_od_in, layout.inner_face_in, layout.outside_radius_in, _platform_out(layout), label_r)
+    widest = max([_platform_out(layout, spec) for spec in shapes] or [_platform_out(layout)])
+    label_r = widest + 8.0
+    radii = (layout.shell_od_in, layout.inner_face_in, layout.outside_radius_in, widest, label_r)
 
     def world(angle: float) -> float:
         return world_angle(angle, turn, ccw)
@@ -1492,13 +1588,14 @@ def _draw_plan(
     ]
     _paint(
         canvas, _PLAN, _PLAN, points,
-        lambda locate: _plan_marks(canvas, layout, sweep, treads_at, spans, locate, world, ends, label_r, splices),
+        lambda locate: _plan_marks(canvas, layout, sweep, treads_at, spans, locate, world, ends, label_r, splices,
+                                   shapes),
     )
 
 
 def _plan_marks(
     canvas: tk.Canvas, layout: StringerLayout, sweep: float, treads_at, spans, locate, world, ends, label_r: float,
-    splices=(),
+    splices=(), shapes=(),
 ) -> None:
     def at(radius: float, angle: float) -> tuple[float, float]:
         return locate(*plan_xy(radius, world(angle)))
@@ -1514,20 +1611,26 @@ def _plan_marks(
 
     for angle in treads_at:
         canvas.create_line(*at(layout.inner_face_in, angle), *at(layout.outside_radius_in, angle), fill="#243038")
-    for side_a, side_b in spans:
-        corners = (
-            at(layout.inner_face_in, side_a), at(_platform_out(layout), side_a),
-            at(_platform_out(layout), side_b), at(layout.inner_face_in, side_b),
-        )
-        canvas.create_polygon(*[v for corner in corners for v in corner], outline="#b5651d", fill="", width=2)
+    for k, (side_a, side_b) in enumerate(spans):
+        spec = shapes[k] if k < len(shapes) else PlatformSpec()
+        inner, outer = layout.inner_face_in - THICKNESS_IN, _platform_out(layout, spec)
+        steps = 16 if spec.is_rolled else 1  # rolled sides follow the tank; straight ones run corner to corner
+        outline = [at(outer, side_a + (side_b - side_a) * i / steps) for i in range(steps + 1)]
+        outline += [at(inner, side_b - (side_b - side_a) * i / steps) for i in range(steps + 1)]
+        canvas.create_polygon(*[v for corner in outline for v in corner], outline="#b5651d", fill="", width=2)
+        middle = platform_centreline(layout.inner_face_in, spec)
+        for along in spec.radial_positions():
+            angle = side_a + along / middle
+            canvas.create_line(*at(inner, angle), *at(outer, angle), fill="#b5651d", width=1)
     for radius, start, end, bad in splices:
         canvas.create_line(*[v for step in range(9) for v in at(radius, start + (end - start) * step / 8)],
                            fill="#d40000" if bad else "#0f766e", width=5)
 
 
-def _platform_out(layout: StringerLayout) -> float:
-    """A platform's outer edge: always full width from the inner stringer, past narrower treads."""
-    return layout.inner_face_in + CLEAR_IN + THICKNESS_IN
+def _platform_out(layout: StringerLayout, spec: PlatformSpec | None = None) -> float:
+    """A platform's outer edge: full width from the inner stringer, past narrower treads, and out by as much as
+    ``spec`` is wider than the stair's own."""
+    return layout.inner_face_in + CLEAR_IN + THICKNESS_IN + (spec.extra_in if spec is not None else 0.0)
 
 
 def _paint(canvas: tk.Canvas, width: int, height: int, points: list[tuple[float, float]], draw) -> None:

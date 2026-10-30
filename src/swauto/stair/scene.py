@@ -13,13 +13,25 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from swauto.stair.attachments import CLIP, INNER, KNEE, OUTER, POST, RAIL_SPLIT, Plan, Shell, build_angle
+from swauto.errors import SolidWorksError
+from swauto.stair.attachments import (
+    CLIP,
+    INNER,
+    KNEE,
+    OUTER,
+    PLATFORM_POST,
+    POST,
+    RAIL_SPLIT,
+    Plan,
+    Shell,
+    build_angle,
+)
 from swauto.stair.development import develop_both
 from swauto.stair.grab_sw import BRACKET_IN, BRACKET_OVERALL_IN, GRAB_TOP_IN, PIPE_OD_IN
-from swauto.stair.landings import StairArrangement, clip_mark, knee_mark
-from swauto.stair.platform_sw import CHANNEL_IN, platform_lines
+from swauto.stair.landings import StairArrangement, clip_mark, knee_mark, platform_frame
+from swauto.stair.platform_sw import CHANNEL_IN, GRATING_IN, _outer_back, platform_knees, platform_lines, shell_pads
 from swauto.stair.post_sw import RAIL_TOP_IN, TOP_GAP_IN, _post_side, post_layout
-from swauto.stair.rail_sw import BAR_IN, BAR_THK_IN, MID_TOP_IN
+from swauto.stair.rail_sw import BAR_IN, BAR_THK_IN, MID_TOP_IN, PLATFORM_MID_TOP_IN
 from swauto.stair.splitter import joints
 from swauto.stair.stair_sw import InnerRail, stair_places
 from swauto.stair.stringer import CLEAR_IN, THICKNESS_IN, TREAD_DEPTH_IN
@@ -96,9 +108,9 @@ def scene(arrangement: StairArrangement, plan: Plan | None = None, shell_height_
     platforms = arrangement.platforms + (1 if arrangement.top_platform else 0)
     for k in range(1, platforms + 1):
         level = where.places[k * where.per_flight - 1]
-        lines = platform_lines(phi=level.phi, tread_top=level.y1, r_a=r_a, r_b=r_a + CLEAR_IN)
-        faces += _block(lines.phi_a, lines.phi_b, r_a, r_a + CLEAR_IN, lines.top - CHANNEL_IN, lines.top, PLATFORM,
-                        f"Platform after tread {level.index}")
+        lines = platform_lines(phi=level.phi, tread_top=level.y1, r_a=r_a, r_b=r_a + CLEAR_IN,
+                               spec=stair.platform(k - 1))
+        faces += _platform(lines, stair.shell_od_in, f"Platform after tread {level.index}")
 
     if plan is not None:
         faces += _attachments(arrangement, where, plan, r_a, r_b, rails)
@@ -208,7 +220,51 @@ def _attachments(arrangement, where, plan: Plan, r_a: float, r_b: float, rails: 
             at = r if side == OUTER else pipe_r
             faces += _block(phi - 1.0 / at, phi + 1.0 / at, at - 1.5, at + 1.5, y - 3.0, y + 1.0, SPLIT_COLOR,
                             spot.label())
+    faces += _platform_handrails(arrangement, where, plan, rails)
     return faces
+
+
+def _platform_handrails(arrangement, where, plan: Plan, rails: Rails) -> list[Face]:
+    """Each platform's posts, on the outer side's back and on the inner side's tank face, and its top rail and
+    midrail along the outer side from its first post to its last."""
+    faces: list[Face] = []
+    for k in range(arrangement.platforms + (1 if arrangement.top_platform else 0)):
+        lines, _last = platform_frame(arrangement, where, k)
+        floor = lines.top + GRATING_IN
+        for side in (OUTER, INNER):
+            posts = sorted(s.tread for s in plan.of_kind(PLATFORM_POST, side) if s.flight == k)
+            angles = [lines.phi_a + t / lines.r_mid for t in posts]
+            for t, angle in zip(posts, angles, strict=True):
+                back = _side_back(lines, angle, side)
+                r0, r1 = (back, back + 2.0) if side == OUTER else (back - 2.0, back)
+                tall = RAIL_TOP_IN - TOP_GAP_IN if side == OUTER else INNER_PIPE_TOP_IN
+                faces += _block(angle, angle + 2.0 / back, r0, r1, lines.top - CHANNEL_IN, floor + tall, POST_COLOR,
+                                f"Platform {k + 1}: {side} post {t} in along it")
+            if side != OUTER or len(angles) < 2:
+                continue
+            span = (angles[0], angles[-1] + 2.0 / lines.r_out)
+
+            def out(angle, lines=lines):  # just outside the outer side's back, where the posts are
+                return _side_back(lines, angle, OUTER) + 1.0
+
+            if rails.top:
+                faces += _tube(*span, out, 2.0, 2.0, lambda _a, floor=floor: floor + RAIL_TOP_IN, RAIL,
+                               f"Platform {k + 1}: top rail")
+            if rails.mid:
+                faces += _tube(*span, out, BAR_THK_IN, BAR_IN, lambda _a, floor=floor: floor + PLATFORM_MID_TOP_IN,
+                               RAIL, f"Platform {k + 1}: midrail")
+    return faces
+
+
+def _side_back(lines, angle: float, side: str) -> float:
+    """A platform side's back on the radial line at ``angle``: the outer side's, or the inner one's (its tank
+    face); on the arc when rolled, else on the straight line between the corners."""
+    if side == OUTER:
+        return _outer_back(lines, angle)
+    if lines.rolled:
+        return lines.r_in
+    half = (lines.phi_b - lines.phi_a) / 2.0
+    return lines.r_in * math.cos(half) / math.cos(angle - (lines.phi_a + half))
 
 
 # ------------------------------------------------------------------------------------------------ shapes
@@ -261,6 +317,47 @@ def _block(a0: float, a1: float, r0: float, r1: float, y0: float, y1: float, col
     return faces
 
 
+def _platform(lines, shell_r: float, label: str) -> list[Face]:
+    """The deck between the platform's sides, rolled or straight, a dark rib along each radial between its ends,
+    and at every support the knee brace under the outer side and the shell clip off the inner one, each to its pad
+    on the shell."""
+    y0, y1 = lines.top - CHANNEL_IN, lines.top
+    if lines.rolled:
+        faces = _block(lines.phi_a, lines.phi_b, lines.r_in, lines.r_out, y0, y1, PLATFORM, label)
+    else:
+        corners = [(lines.r_in, lines.phi_a), (lines.r_out, lines.phi_a), (lines.r_out, lines.phi_b),
+                   (lines.r_in, lines.phi_b)]
+        faces = _prism([_xyz(r, a, 0.0) for r, a in corners], y0, y1, PLATFORM, label)
+    for angle in lines.radials:
+        faces += _block(angle, angle + 1.5 / lines.r_mid, lines.r_in, lines.r_out, y1, y1 + 0.2, STRINGER,
+                        f"{label}: radial channel")
+    try:
+        knees = platform_knees(lines, shell_r)
+    except SolidWorksError:
+        knees = []  # no room between the platform and the shell; the stretchout says so
+    for name, frame, knee, _back in knees:
+        (r1, k1), (r2, k2) = knee.top, knee.bottom
+        faces += _strut((r1, frame.phi, k1), (r2, frame.phi, k2), KNEE_COLOR, f"{label}: knee brace {name}")
+        faces += _block(frame.phi - 2.0 / shell_r, frame.phi + 2.0 / shell_r, shell_r, shell_r + 0.6, k2 - 3.0,
+                        k2 + 3.0, KNEE_COLOR, f"{label}: knee brace pad {name}")
+    for name, angle, y in shell_pads(lines, shell_r):
+        faces += _strut((lines.r_in, angle, y), (shell_r + 0.6, angle, y), CLIP_COLOR, f"{label}: shell clip {name}")
+        faces += _block(angle - 2.0 / shell_r, angle + 2.0 / shell_r, shell_r, shell_r + 0.6, y - 3.0, y + 3.0,
+                        CLIP_COLOR, f"{label}: shell clip pad {name}")
+    return faces
+
+
+def _prism(base: list[Point3], y0: float, y1: float, color: str, label: str) -> list[Face]:
+    """A straight-sided slab on the plan outline ``base`` (points at any height), from ``y0`` up to ``y1``."""
+    low = [(x, y0, z) for x, _y, z in base]
+    high = [(x, y1, z) for x, _y, z in base]
+    faces = [Face(tuple(low), color, label), Face(tuple(high), color, label)]
+    for i in range(len(base)):
+        j = (i + 1) % len(base)
+        faces.append(Face((low[i], low[j], high[j], high[i]), color, label))
+    return faces
+
+
 def _strut(a: tuple[float, float, float], b: tuple[float, float, float], color: str, label: str) -> list[Face]:
     """A thin bar between two (r, angle, y) points."""
     p, q = _xyz(*a), _xyz(*b)
@@ -268,20 +365,21 @@ def _strut(a: tuple[float, float, float], b: tuple[float, float, float], color: 
     return [Face((p, q, tuple(q[i] + up[i] for i in range(3)), tuple(p[i] + up[i] for i in range(3))), color, label)]
 
 
-def _tube(a0: float, a1: float, r: float, wide: float, tall: float, top_at, color: str, label: str) -> list[Face]:
-    """A rail ``wide`` across the radius and ``tall``, centred on radius ``r`` from angle ``a0`` to ``a1``, its top
-    at ``top_at(angle)`` inches up."""
+def _tube(a0: float, a1: float, r, wide: float, tall: float, top_at, color: str, label: str) -> list[Face]:
+    """A rail ``wide`` across the radius and ``tall``, centred on radius ``r`` (a number, or a function of the
+    angle) from angle ``a0`` to ``a1``, its top at ``top_at(angle)`` inches up."""
     faces = []
-    r0, r1 = r - wide / 2.0, r + wide / 2.0
+    radius = r if callable(r) else (lambda _angle: r)
     angles = _steps(a0, a1)
     for p, q in zip(angles, angles[1:], strict=False):
         hp, hq = top_at(p), top_at(q)
-        for side in (r0, r1):
-            faces.append(Face((_xyz(side, p, hp - tall), _xyz(side, q, hq - tall), _xyz(side, q, hq),
-                               _xyz(side, p, hp)), color, label))
+        (p0, p1), (q0, q1) = ((radius(a) - wide / 2.0, radius(a) + wide / 2.0) for a in (p, q))
+        for side_p, side_q in ((p0, q0), (p1, q1)):
+            faces.append(Face((_xyz(side_p, p, hp - tall), _xyz(side_q, q, hq - tall), _xyz(side_q, q, hq),
+                               _xyz(side_p, p, hp)), color, label))
         for drop in (0.0, tall):
-            faces.append(Face((_xyz(r0, p, hp - drop), _xyz(r1, p, hp - drop), _xyz(r1, q, hq - drop),
-                               _xyz(r0, q, hq - drop)), color, label))
+            faces.append(Face((_xyz(p0, p, hp - drop), _xyz(p1, p, hp - drop), _xyz(q1, q, hq - drop),
+                               _xyz(q0, q, hq - drop)), color, label))
     return faces
 
 

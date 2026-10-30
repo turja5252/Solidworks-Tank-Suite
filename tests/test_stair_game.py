@@ -26,7 +26,10 @@ def _game() -> Game:
 
 
 def test_the_tray_has_every_piece():
-    assert {p.kind for p in TRAY} == {POST, CLIP, KNEE, SPLICE, RAIL_SPLIT}
+    from swauto.stair.attachments import RADIAL
+
+    # A post goes on a flight or on a platform's side, so platform posts have no piece of their own.
+    assert {p.kind for p in TRAY} == {POST, CLIP, KNEE, SPLICE, RAIL_SPLIT, RADIAL}
 
 
 def test_a_good_drop_pins_and_a_bad_one_says_why():
