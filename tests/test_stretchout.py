@@ -142,12 +142,32 @@ def test_the_stringer_sheet_shows_each_flights_pieces_plates_and_holes():
     parts = [item for item in sheet.items if item.layer == PIECES]
     assert [item.label for item in parts[:2]] == ["INNER Flight 1 Part 1", "INNER Flight 1 Part 2"]
     assert len(parts) == 8 and len([item for item in sheet.items if item.layer == SPLICES]) == 4
-    assert "7/16 in holes 20, 13/16 in holes 4, slotted holes 0" in parts[0].info  # 10 treads, splice, ends
+    # 10 treads and the splice; no connecting holes at the foot, on the ground (flight 2's foot has them)
+    assert "7/16 in holes 20, 13/16 in holes 2, slotted holes 0" in parts[0].info
+    flight2 = next(item for item in parts if item.label == "INNER Flight 2 Part 1")
+    assert "13/16 in holes 4, slotted holes 0" in flight2.info
     outer = next(item for item in parts if item.label == "OUTER Flight 2 Part 2")
     assert "13/16 in holes 2, slotted holes 2" in outer.info
     assert any(item.layer == HOLES for item in sheet.items)
     whole = build_stringer_sheet(StairArrangement(stair, platforms=1))
     assert len([item for item in whole.items if item.layer == PIECES]) == 4  # not split: one piece a stringer
+
+
+def test_the_stringer_sheet_shows_the_treads_and_washers_and_checks_each_splice():
+    from swauto.stair.splitter import SplitSettings
+    from swauto.stretchout.stringers import TREAD_MARKS, WASHERS, build_stringer_sheet, sheet_clashes
+
+    stair = StringerMock(shell_od_in=300.0, gap_in=8.0, treads=16, rise_in=7.5, run_in=10.5)
+    clear = StairArrangement(stair, splits=SplitSettings())
+    sheet = build_stringer_sheet(clear)
+    assert len([item for item in sheet.items if item.layer == TREAD_MARKS]) == 32  # 16 a stringer
+    washers = [item.label for item in sheet.items if item.layer == WASHERS]
+    assert len(washers) == 8 + 64 and sum("splice bolt washer" in label for label in washers) == 8  # four a splice
+    assert sheet_clashes(clear, sheet) == []
+    tall = StairArrangement(stair, splits=SplitSettings(plate_height_in=6.5))
+    found = sheet_clashes(tall, build_stringer_sheet(tall))
+    assert {clash.label for clash in found} == {f"{side} Flight 1 splice over tread 8" for side in ("INNER", "OUTER")}
+    assert all(clash.problem == "the plate is on a tread 9 bolt's washer." for clash in found)
 
 
 def test_the_tab_switches_to_the_developed_stringers(tk_window):
@@ -162,7 +182,7 @@ def test_the_tab_switches_to_the_developed_stringers(tk_window):
     build_stretchout_tab(page, tk.StringVar(master=tk_window), shared)
     book.select(page)
     tk_window.update()
-    (view,) = [w for w in _all(page) if isinstance(w, ttk.Combobox)]
+    (view,) = [w for w in _all(page) if isinstance(w, ttk.Combobox) and STRINGER_VIEW in w.cget("values")]
     view.set(STRINGER_VIEW)
     view.event_generate("<<ComboboxSelected>>")
     tk_window.update()
@@ -170,7 +190,92 @@ def test_the_tab_switches_to_the_developed_stringers(tk_window):
     assert len(tk_window.nametowidget(canvas).find_all()) > 10
 
 
+def test_the_sheets_marks_sit_on_their_own_pieces_in_every_flight():
+    from swauto.stair.splitter import SPLICE_WASHER_OD_IN, TREAD_WASHER_OD_IN, SplitSettings
+    from swauto.stretchout.stringers import HOLES, PIECES, TREAD_MARKS, WASHERS, build_stringer_sheet, sheet_clashes
+
+    stair = StringerMock(shell_od_in=300.0, gap_in=8.0, treads=33, rise_in=7.5, run_in=10.5)  # two flights of 17
+    sheet = build_stringer_sheet(StairArrangement(stair, platforms=1, splits=SplitSettings()))
+    for side in ("INNER", "OUTER"):
+        for flight in (1, 2):
+            prefix = f"{side} Flight {flight} "
+            boxes = [item.box for item in sheet.items if item.layer == PIECES and item.label.startswith(prefix)]
+            x0, y0 = min(b[0] for b in boxes) - 1e-6, min(b[1] for b in boxes) - 1e-6
+            x1, y1 = max(b[2] for b in boxes) + 1e-6, max(b[3] for b in boxes) + 1e-6
+            marks = [item for item in sheet.items if item.layer in (TREAD_MARKS, WASHERS)
+                     and item.label.startswith(prefix)]
+            assert len(marks) == 17 + 17 * 2 + 4  # end walls, tread bolt washers, splice washers
+            for item in marks:
+                assert x0 <= item.box[0] and item.box[2] <= x1 and y0 <= item.box[1] and item.box[3] <= y1
+                if item.layer == WASHERS:
+                    size = SPLICE_WASHER_OD_IN if "splice" in item.label else TREAD_WASHER_OD_IN
+                    assert item.box[2] - item.box[0] == pytest.approx(size)
+            # Each washer is round its own hole, and each end wall holds its tread's two bolts.
+            holes = {kind: [_mid(item.box) for item in sheet.items if item.layer == HOLES
+                            and item.label.startswith(prefix) and item.label.endswith(kind)]
+                     for kind in ("tread bolt", "splice bolt")}
+            for item in marks:
+                if item.layer == WASHERS:
+                    kind = "splice bolt" if "splice" in item.label else "tread bolt"
+                    assert min(math.dist(_mid(item.box), hole) for hole in holes[kind]) < 1e-6
+                else:
+                    inside = [h for h in holes["tread bolt"] if item.box[0] < h[0] < item.box[2]
+                              and item.box[1] < h[1] < item.box[3]]
+                    assert len(inside) == 2
+    tall = StairArrangement(stair, platforms=1, splits=SplitSettings(plate_height_in=6.5))
+    found = sheet_clashes(tall, build_stringer_sheet(tall))
+    assert {clash.label for clash in found} == {f"{side} Flight {flight} splice over tread 9"
+                                                for side in ("INNER", "OUTER") for flight in (1, 2)}
+    assert {clash.problem for clash in found} == {"the plate is on a tread 10 bolt's washer."}
+
+
+def test_the_tabs_stringer_sheet_lists_the_splice_checks(tk_window):
+    from swauto.stair.splitter import SplitSettings
+    from swauto.stretchout.gui import STRINGER_VIEW
+
+    tank = _tank()
+    for splits, expected in ((SplitSettings(), "Every splice clears"),
+                             (SplitSettings(plate_height_in=6.5), "the plate is on a tread")):
+        book = ttk.Notebook(tk_window)
+        page = ttk.Frame(book)
+        book.add(page)
+        shared = {"spec": tank, "nozzles": [], "cleanouts": [], "stairway": lambda s=splits: _stair(tank, splits=s)}
+        build_stretchout_tab(page, tk.StringVar(master=tk_window), shared)
+        (view,) = [w for w in _all(page) if isinstance(w, ttk.Combobox) and STRINGER_VIEW in w.cget("values")]
+        view.set(STRINGER_VIEW)
+        view.event_generate("<<ComboboxSelected>>")
+        tk_window.update()
+        (listing,) = [w for w in _all(page) if isinstance(w, tk.Listbox)]
+        assert any(expected in line for line in listing.get(0, "end"))
+        book.destroy()
+
+
+def _mid(box) -> tuple[float, float]:
+    return ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
+
+
 def _all(widget):
     for child in widget.winfo_children():
         yield child
         yield from _all(child)
+
+
+def test_the_stringer_sheet_saves_as_a_dxf_for_burning():
+    from swauto.stair.splitter import SplitSettings
+    from swauto.stretchout.dxf import round_hole, to_dxf
+    from swauto.stretchout.stringers import HOLES, PIECES, SPLICES, build_stringer_sheet
+
+    stair = StringerMock(shell_od_in=300.0, gap_in=8.0, treads=16, rise_in=7.5, run_in=10.5)
+    sheet = build_stringer_sheet(StairArrangement(stair, splits=SplitSettings()))
+    text = to_dxf(sheet)
+    lines = text.splitlines()
+    pairs = list(zip(lines[::2], lines[1::2], strict=True))  # group code, value
+    entities = [value for code, value in pairs if code == "0"]
+    holes = [item for item in sheet.items if item.layer == HOLES]
+    round_ones = [item for item in holes if round_hole(item) is not None]
+    assert entities.count("CIRCLE") == len(round_ones) > 0
+    polylines = len([i for i in sheet.items if i.layer in (PIECES, SPLICES)]) + len(holes) - len(round_ones)
+    assert entities.count("POLYLINE") == entities.count("SEQEND") == polylines
+    assert entities[-1] == "EOF" and ("8", "SPLICE-PLATES") in pairs
+    center, radius = round_hole(round_ones[0])
+    assert any(radius == pytest.approx(r, abs=1e-3) for r in (13 / 32, 7 / 32))  # 13/16 and 7/16 holes

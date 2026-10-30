@@ -122,12 +122,11 @@ def add_cross_brace(model, tread_index: int, profile: str, progress=None) -> Bra
 
 def remove_cross_brace(model, tread_index: int) -> int:
     """Delete the brace under this tread and everything it added. Returns the count."""
-    prefix = f"EliteBrace{tread_index:02d}"
     doomed = []
     inside = False
     for feature in s.iter_features(model):
         name = s._feature_name(feature)
-        if name.startswith(prefix):
+        if brace_feature(name, tread_index):
             inside = True
             doomed.append(name)
         elif name.startswith("EliteBrace"):
@@ -139,6 +138,13 @@ def remove_cross_brace(model, tread_index: int) -> int:
             s._delete_named(model, (name,))
     s._rebuild(model)
     return len(doomed)
+
+
+def brace_feature(name: str, tread_index: int) -> bool:
+    """The feature is one of the brace's under this tread: its name goes on past the tread number with no more
+    digits, so brace 10's are not brace 100's."""
+    prefix = f"EliteBrace{tread_index:02d}"
+    return name.startswith(prefix) and not name[len(prefix):len(prefix) + 1].isdigit()
 
 
 def _progress(callback, text: str) -> None:

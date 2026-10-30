@@ -1,6 +1,8 @@
 """The Stretchout tab: the shell unrolled with the nozzles, FTCOs and the stair on it, and what clashes;
 or the developed stringers laid flat with their splitter pieces, splice plates and holes.
 
+The Stair game view (``game_gui``) places the posts, clips, knee braces and splitters by hand or by the rules,
+and the 3D view (``view3d_gui``) shows the stair as it would be built.
 It reads the other tabs as they stand (``shared["spec"]``, ``shared["nozzles"]``,
 ``shared["cleanouts"]`` and ``shared["stairway"]``) each time it is shown or refreshed, so it
 needs no SolidWorks. The wheel zooms at the pointer, dragging pans, Fit shows it all, and the
@@ -14,13 +16,19 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from swauto.stretchout.checks import Clash, clearance, find_clashes
+from swauto.stretchout.dxf import to_dxf
+from swauto.stretchout.game_gui import build_game
+from swauto.stretchout.view3d_gui import build_view3d
 from swauto.stretchout.model import LAYERS, PLATES, Item, Stretchout, build_stretchout
-from swauto.stretchout.stringers import SHEET_LAYERS, build_stringer_sheet
+from swauto.stretchout.stringers import SHEET_LAYERS, build_stringer_sheet, sheet_clashes
+from swauto.stretchout.stringers import SPLICES as SHEET_SPLICES
 from swauto.stretchout.svg import CLASH, COURSE_FILLS, STYLE, THICK, to_svg
 from swauto.tank.spec import TankSpec
 
 SHELL_VIEW = "Shell"
 STRINGER_VIEW = "Stringers (developed)"
+GAME_VIEW = "Stair game"
+VIEW_3D = "Stair in 3D"
 _SEAM = "#5f574a"
 _MARGIN = 36
 _SHELL_HINT = (
@@ -55,6 +63,9 @@ def build_stretchout_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: di
     clash_list.pack(fill="both", expand=True)
     notes_var = tk.StringVar(value="")
     ttk.Label(side, textvariable=notes_var, wraplength=320, justify="left").pack(anchor="w", pady=(6, 0))
+    game = build_game(parent, shared, status_var)
+    view3d = build_view3d(parent, shared, status_var)
+    panels = {GAME_VIEW: game, VIEW_3D: view3d}
     info_var = tk.StringVar(value=_SHELL_HINT)
     ttk.Label(parent, textvariable=info_var, padding=(8, 0, 8, 6), wraplength=1000, justify="left").grid(
         row=2, column=0, sticky="ew"
@@ -80,6 +91,20 @@ def build_stretchout_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: di
             return None, f"Stairway not drawn: {exc}"
 
     def refresh() -> None:
+        for name, panel in panels.items():
+            if name != view_var.get():
+                panel.grid_remove()
+        panel = panels.get(view_var.get())
+        if panel is not None:
+            body.grid_remove()
+            toggles.pack_forget()
+            panel.grid(row=1, column=0, sticky="nsew", padx=8, pady=6)
+            info_var.set("")
+            panel.refresh()
+            return
+        body.grid()
+        if not toggles.winfo_manager():
+            toggles.pack(side="left", padx=(12, 0))
         sheet = view_var.get() == STRINGER_VIEW
         info_var.set(_SHEET_HINT if sheet else _SHELL_HINT)
         show_toggles(SHEET_LAYERS if sheet else LAYERS)
@@ -102,7 +127,12 @@ def build_stretchout_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: di
                     )
                 except ValueError as exc:
                     notes.append(f"Cannot lay out the shell: {exc}")
-        clashes = find_clashes(out) if out is not None and out.wraps else []
+        if out is None:
+            clashes = []
+        elif out.wraps:
+            clashes = find_clashes(out)
+        else:
+            clashes = sheet_clashes(stair, out) if stair is not None else []
         state["out"], state["clashes"] = out, clashes
         state["bad"] = {clash.label for clash in clashes}
         clash_list.delete(0, "end")
@@ -110,6 +140,8 @@ def build_stretchout_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: di
             clash_list.insert("end", clash.text)
         if out is not None and out.wraps and not clashes:
             clash_list.insert("end", "Nothing crosses a seam or sits on anything else.")
+        elif out is not None and not clashes and any(item.layer == SHEET_SPLICES for item in out.items):
+            clash_list.insert("end", "Every splice clears the treads and their bolts, and the posts, braces and clips.")
         notes_var.set("\n".join(notes + (list(out.notes) if out is not None else [])))
         if out is not None:
             status_var.set(f"Stretchout: {len(out.items)} items, {len(clashes)} to look at.")
@@ -274,11 +306,36 @@ def build_stretchout_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: di
             return
         status_var.set(f"Picture saved: {path}")
 
+    def save_dxf() -> None:
+        out: Stretchout | None = state["out"]
+        if out is None or out.wraps:
+            messagebox.showinfo("Stretchout", "Show the Stringers (developed) view first: the DXF is of its pieces, "
+                                "splice plates and holes, for burning.")
+            return
+        project = shared.get("project")
+        folder = str(getattr(project, "folder", "") or "")
+        name = str(getattr(project, "name", "") or "Tank")
+        path = filedialog.asksaveasfilename(
+            title="Save the stringers for burning", defaultextension=".dxf", initialdir=folder or None,
+            initialfile=f"{name} stringers.dxf", filetypes=[("DXF drawing", "*.dxf")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="ascii", newline="\r\n") as handle:
+                handle.write(to_dxf(out))
+        except OSError as exc:
+            messagebox.showerror("Stretchout", f"Could not save {path}:\n{exc}")
+            return
+        status_var.set(f"DXF saved: {path}")
+
     ttk.Button(buttons, text="Refresh", command=refresh).pack(side="left")
     ttk.Button(buttons, text="Fit", command=fit).pack(side="left", padx=(6, 0))
     ttk.Button(buttons, text="Save picture…", command=save_picture).pack(side="left", padx=(6, 0))
+    ttk.Button(buttons, text="Save DXF…", command=save_dxf).pack(side="left", padx=(6, 0))
     ttk.Label(buttons, text="View").pack(side="left", padx=(12, 0))
-    view_box = ttk.Combobox(buttons, textvariable=view_var, values=(SHELL_VIEW, STRINGER_VIEW), width=20,
+    view_box = ttk.Combobox(buttons, textvariable=view_var, values=(SHELL_VIEW, STRINGER_VIEW, GAME_VIEW, VIEW_3D),
+                            width=20,
                             state="readonly")
     view_box.pack(side="left", padx=(4, 0))
     view_box.bind("<<ComboboxSelected>>", lambda _event: refresh())

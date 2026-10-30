@@ -675,8 +675,9 @@ def _shell_tab(model, end: _ChannelEnd, name: str) -> None:
 
 
 def _pad_point(end: _ChannelEnd, shell_r: float) -> tuple[float, float]:
-    """Where the tab's face toward the platform middle, carried out to the shell, meets the shell OD."""
-    c = TAB_FROM_END_IN + TAB_THK_IN
+    """Where the shell clip's mid-plane, carried out to the shell, meets the shell OD: the pad is centred on the
+    clip, as the knee brace pads are. (Centred on the tab's face it sat half the clip's thickness off.)"""
+    c = TAB_FROM_END_IN + TAB_THK_IN + SHELL_CLIP_THK_IN / 2.0
     px, pz = end.world(c, 0.0, 0.0)[0], end.world(c, 0.0, 0.0)[2]
     b = px * end.inward[0] + pz * end.inward[1]
     k = px * px + pz * pz - shell_r * shell_r
@@ -712,7 +713,7 @@ def _shell_clip_and_pad(model, end: _ChannelEnd, shell_r: float, tag: str) -> No
         CHANNEL_IN + 0.1, f"{tag}ShellClip",
     )
 
-    # The pad sits flat on the shell where the tab's line meets it, centered on that line.
+    # The pad sits flat on the shell where the clip's mid-plane meets it, centered on the clip.
     plane = _tangent_plane(model, phi_q, shell_r, f"{tag}Pad")
     y_mid = end.top - CHANNEL_IN / 2.0
 

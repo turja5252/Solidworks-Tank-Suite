@@ -26,7 +26,7 @@ from swauto.params import rename_feature
 from swauto.stair import stair_sw as s
 from swauto.stair.brace_sw import BraceResult, _progress
 from swauto.stair.platform_sw import _travel, _world
-from swauto.stair.post_sw import PLATFORM_POST_IN, RAIL_TOP_IN, Post
+from swauto.stair.post_sw import PLATFORM_POST_IN, RAIL_TOP_IN, Post, _post_side
 from swauto.stair.rail_sw import (
     MID_TOP_IN,
     PLATFORM_MID_TOP_IN,
@@ -37,7 +37,6 @@ from swauto.stair.rail_sw import (
     _plane_through,
     _trim,
 )
-from swauto.stair.stringer import THICKNESS_IN
 from swauto.stair.stringer_sw import _names, _rename_new, _select_feature
 from swauto.tank.shell import _clear_selection, _close_sketch, _open_sketch
 
@@ -94,23 +93,29 @@ class _Pipe:
 def add_grab_rails(
     model, places, per_flight: int, posts: list[Post], *, r_a: float, r_b: float, platforms: int,
     top_platform: bool, post_in: float = PLATFORM_POST_IN, mid_top: float = PLATFORM_MID_TOP_IN,
-    grab: GrabRail = GrabRail(), platform_b: float | None = None, progress=None,
+    grab: GrabRail = GrabRail(), platform_b: float | None = None, progress=None, inner: bool = False,
 ) -> BraceResult:
     """The pipe along every flight with its two caps, and a PC #34 to it from each flight post.
 
     ``places`` are every pan, lowest first; ``posts`` are the flight posts (``post_sw.post_layout``);
     ``post_in`` and ``mid_top`` place the platform midrail miters the pipe stops at. ``r_b`` is the
-    outer stringer's walk face, ``platform_b`` the platform's when the treads are narrower.
+    outer stringer's walk face, ``platform_b`` the platform's when the treads are narrower. ``inner`` runs
+    the inside handrail's pipe instead, on the inner stringer's posts (Elite STWE): over the treads from each
+    flight's first tread's front edge to its top tread's, the inside platforms having no rail yet.
     """
-    face_r = r_b + THICKNESS_IN  # the flight posts' walk side
-    radius = face_r - BRACKET_OVERALL_IN + BRACKET_IN / 2.0  # over the middle of the PC #34's upright
+    way, face_r = _post_side(r_a if inner else r_b, inner)  # the flight posts' walk side: against the stringer
+    radius = face_r - way * (BRACKET_OVERALL_IN - BRACKET_IN / 2.0)  # over the middle of the PC #34's upright
     pb = r_b if platform_b is None else platform_b
-    flights = _flights(places, per_flight, r_b)
-    landings = len(flights) - 1 + (1 if top_platform else 0)
-    pipes: list[tuple[_Pipe, float, float]] = []
+    flights = _flights(places, per_flight, r_a if inner else r_b)
+    landings = 0 if inner else len(flights) - 1 + (1 if top_platform else 0)
+    prefix = "EliteGrabIn" if inner else "EliteGrab"
+    pipes: list[tuple[_Pipe, float, float] | None] = []
     for k, flight in enumerate(flights):
-        name = f"EliteGrabF{k + 1}"
-        if k == 0:
+        name = f"{prefix}F{k + 1}"
+        if not any((post.index - 1) // per_flight == k for post in posts):
+            pipes.append(None)  # nothing would hold it: the rules or the game left this flight without posts
+            continue
+        if k == 0 or inner:
             low = flight.front(flight.first)
         else:
             low = _miter_phi(flights[k - 1], flight, face_r, r_a, pb, post_in, mid_top, "B")
@@ -131,8 +136,8 @@ def add_grab_rails(
     master_post = None
     master_body = None
     for post in posts:
-        name = f"EliteGrabBracket{post.index:02d}"
-        pipe, lo, hi = pipes[min(len(pipes) - 1, (post.index - 1) // per_flight)]
+        name = f"{prefix}Bracket{post.index:02d}"
+        pipe, lo, hi = pipes[min(len(pipes) - 1, (post.index - 1) // per_flight)]  # its flight has posts
         phi = post.phi + math.atan2(BRACKET_AT_IN, radius)
         reach = (BRACKET_IN / 2.0 + PIPE_OD_IN) / radius
         if not lo + reach <= phi <= hi - reach:
@@ -148,7 +153,7 @@ def add_grab_rails(
             )
         if not copied:
             before = s._body_names(model)
-            _bracket(model, post, pipe, phi, face_r, name)
+            _bracket(model, post, pipe, phi, face_r, name, way)
             made = [body for body in s._bodies(model) if str(body.Name) not in before]
             if len(made) == 1:
                 with contextlib.suppress(Exception):
@@ -158,9 +163,12 @@ def add_grab_rails(
         _progress(progress, f"{name} {'copied' if copied else 'placed'}")
     with contextlib.suppress(Exception):
         s._hide_construction(model)
+    where = ("inner posts, rolled to a helix on each flight from its first tread's front edge to its top tread's"
+             if inner else "outer posts, rolled to a helix on each flight, from tread 1 and the midrail miters at the "
+             "platforms")
     note = (
-        f"Grab rail: 1-1/2 in Sch 40 pipe {grab.top:g} in over the stringer's top edge on the walk side of the "
-        f"outer posts, rolled to a helix on each flight, from tread 1 and the midrail miters at the platforms, "
+        f"{'Inside handrail' if inner else 'Grab rail'}: 1-1/2 in Sch 40 pipe {grab.top:g} in over the stringer's "
+        f"top edge on the walk side of the {where}, "
         f"1-5/8 in round caps on both ends, and a PC #34 3/4 x 3/4 bracket under it from each flight post."
         + (f" No bracket at post(s) {', '.join(skipped)}: the pipe does not reach them." if skipped else "")
     )
@@ -240,9 +248,11 @@ def _cap(model, pipe: _Pipe, phi: float, way: float, name: str) -> None:
     _extrude_mid(model, _sketch_through(model, middle, normal, name, draw), CAP_THK_IN, name)
 
 
-def _bracket(model, post: Post, pipe: _Pipe, phi: float, face_r: float, name: str) -> None:
+def _bracket(model, post: Post, pipe: _Pipe, phi: float, face_r: float, name: str, way: float = 1.0) -> None:
     """PC #34 hanging under the pipe at ``post``: its foot's end on the walk side of the post's flat leg,
-    its upright under the pipe at ``phi``, cut back along the pipe's slope to sit tight under it."""
+    its upright under the pipe at ``phi``, cut back along the pipe's slope to sit tight under it. ``way`` is
+    the side of the stringer the post is on (+1 outside it, -1 on the inner stringer's tank face); the bracket
+    reaches the other way, over the treads."""
     under = pipe.center_y(phi) - PIPE_OD_IN / 2.0 / math.cos(pipe.alpha)  # the pipe's underside over the upright
     bend = under - (BRACKET_OVERALL_IN - BRACKET_OUTSIDE_R_IN)  # the bend's center; the upright runs straight above it
     top = under + BRACKET_IN  # past the underside on the uphill face, to be cut back
@@ -258,7 +268,8 @@ def _bracket(model, post: Post, pipe: _Pipe, phi: float, face_r: float, name: st
     )
 
     def draw(manager, to_sketch):
-        _draw_section(manager, outline, name, lambda u, v: to_sketch(_world(post.phi, face_r - u, BRACKET_AT_IN, v)))
+        _draw_section(manager, outline, name,
+                      lambda u, v: to_sketch(_world(post.phi, face_r - way * u, BRACKET_AT_IN, v)))
 
     bodies0 = s._body_names(model)
     sketch = _sketch_through(model, _world(post.phi, face_r, BRACKET_AT_IN, bend), _travel(post.phi), name, draw)

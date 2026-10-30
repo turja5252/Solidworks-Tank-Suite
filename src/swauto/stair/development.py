@@ -268,6 +268,12 @@ def flight_step(stair: StringerMock, clear_in: float = PLATFORM_CLEAR_IN) -> tup
     return turn, (stair.treads - 1) * stair.rise_in
 
 
+def connecting_holes(dev: DevelopedStringer, flight: int) -> tuple[Point, ...]:
+    """The end holes a flight's stringer gets: both ends' above the ground, only the top end's on the first flight,
+    whose foot stands on the ground (Elite STWB: the holes are for the platform connection)."""
+    return dev.end_holes[:2] if flight == 0 else dev.end_holes
+
+
 def tread_rect(center: Point) -> tuple[Point, Point, Point, Point]:
     cx, cy = center
     hd = TREAD_DEPTH_IN / 2.0

@@ -31,7 +31,18 @@ from swauto.stair.development import (
     flight_step,
     flight_treads,
 )
-from swauto.stair.splitter import GAP_IN, Joint, SplitSettings, bottom_x, joints, top_x
+from swauto.stair.splitter import (
+    GAP_IN,
+    RELIEF_IN,
+    Joint,
+    Relief,
+    SplitSettings,
+    clashes,
+    cut_span,
+    joints,
+    relief_cutter,
+    reliefs,
+)
 from swauto.stair.stringer import (
     BOLT_DIA_IN,
     BOLT_FROM_FRONT_IN,
@@ -101,7 +112,7 @@ def create_stair(
     top_platform: bool = False, posts: tuple[int, ...] = (), platform_post_in: float | None = None,
     top_rail: bool = False, mid_rail: bool = False, platform_mid_top: float | None = None,
     grab: GrabRail | None = None, ground_in: float = 0.0, shell_height_in: float | None = None,
-    splits: SplitSettings | None = None,
+    splits: SplitSettings | None = None, inner_rail: InnerRail | None = None, rail_splits: tuple = (),
 ) -> StairResult:
     """New part, then the stair. ``shell`` adds the tank; the stringers do not change.
 
@@ -112,17 +123,18 @@ def create_stair(
     ``top_rail`` and ``mid_rail`` run the outer top rail and midrail along the posts,
     the midrail ``platform_mid_top`` over each platform's grating. ``grab`` runs the
     outer grab rail on the flight posts. ``ground_in`` is the stair's ground on Y,
-    the floor being 0; the shell is ``shell_height_in`` tall when given.
+    the floor being 0; the shell is ``shell_height_in`` tall when given. ``inner_rail`` adds the inside
+    handrail, and ``rail_splits`` ((side, pan of the post below the bay), ...) split the rails into pieces.
     """
     flight_treads(stair.treads, platforms)
     profiles = _platform_profiles(app) if platforms or top_platform else None
-    post_file = _post_profile(app) if posts else None
+    post_file = _post_profile(app) if posts or inner_rail is not None else None
     if shell:
         return create_stair_on_tank(
             app, stair, wall_in, progress=progress, platforms=platforms, top_platform=top_platform, profiles=profiles,
             posts=posts, post_profile=post_file, platform_post_in=platform_post_in, top_rail=top_rail,
             mid_rail=mid_rail, platform_mid_top=platform_mid_top, grab=grab, ground_in=ground_in,
-            shell_height_in=shell_height_in, splits=splits,
+            shell_height_in=shell_height_in, splits=splits, inner_rail=inner_rail, rail_splits=rail_splits,
         )
     stair.validate()
     if wall_in <= 0 or wall_in >= TREAD_MARK_IN or wall_in * 2 >= TREAD_DEPTH_IN:
@@ -132,7 +144,7 @@ def create_stair(
         model, stair.shell_od_in, stair, wall_in, progress=progress, platforms=platforms,
         top_platform=top_platform, profiles=profiles, posts=posts, post_profile=post_file,
         platform_post_in=platform_post_in, top_rail=top_rail, mid_rail=mid_rail, platform_mid_top=platform_mid_top,
-        grab=grab, ground_in=ground_in, splits=splits,
+        grab=grab, ground_in=ground_in, splits=splits, inner_rail=inner_rail, rail_splits=rail_splits,
     )
 
 
@@ -141,7 +153,8 @@ def create_stair_on_tank(
     profiles: tuple[str, str, str] | None = None, posts: tuple[int, ...] = (), post_profile: str | None = None,
     platform_post_in: float | None = None, top_rail: bool = False, mid_rail: bool = False,
     platform_mid_top: float | None = None, grab: GrabRail | None = None, ground_in: float = 0.0,
-    shell_height_in: float | None = None, splits: SplitSettings | None = None,
+    shell_height_in: float | None = None, splits: SplitSettings | None = None, inner_rail: InnerRail | None = None,
+    rail_splits: tuple = (),
 ) -> StairResult:
     """New part with the shell at the Stringer tab's OD radius, then the stair. The shell is one course of
     ``shell_height_in`` when given, so the stair can be checked against its top."""
@@ -150,7 +163,7 @@ def create_stair_on_tank(
         raise ValueError("Pan wall must be greater than zero and thinner than the tread.")
     if profiles is None and (platforms or top_platform):
         profiles = _platform_profiles(app)
-    if post_profile is None and posts:
+    if post_profile is None and (posts or inner_rail is not None):
         post_profile = _post_profile(app)
     tank = TankSpec(diameter_in=2.0 * stair.shell_od_in, diameter_basis=WALL_OD)
     if shell_height_in:
@@ -167,7 +180,7 @@ def create_stair_on_tank(
         model, shell_od, stair, wall_in, progress=progress, platforms=platforms, top_platform=top_platform,
         profiles=profiles, posts=posts, post_profile=post_profile, platform_post_in=platform_post_in,
         top_rail=top_rail, mid_rail=mid_rail, platform_mid_top=platform_mid_top, grab=grab, ground_in=ground_in,
-        splits=splits,
+        splits=splits, inner_rail=inner_rail, rail_splits=rail_splits,
     )
 
 
@@ -218,6 +231,8 @@ def build_stair_on_model(
     grab: GrabRail | None = None,
     ground_in: float = 0.0,
     splits: SplitSettings | None = None,
+    inner_rail: InnerRail | None = None,
+    rail_splits: tuple = (),
 ) -> StairResult:
     """Stringers (unless already there), then tread by tread: pan, inner bolts, outer bolts.
 
@@ -240,7 +255,8 @@ def build_stair_on_model(
     try:
         if stringers:
             for k, at in enumerate(offsets):
-                build_flight_stringers(model, flight, shell_od, at=at, suffix=flight_suffix(k), progress=progress)
+                build_flight_stringers(model, flight, shell_od, at=at, suffix=flight_suffix(k), progress=progress,
+                                       foot_holes=k > 0)
             freeze_note = _freeze_stringers(model)
         else:
             freeze_note = ""
@@ -288,6 +304,17 @@ def build_stair_on_model(
                 model, layout, places, per_flight, posts, post_profile, platforms, top_platform,
                 platform_post_in, top_rail, mid_rail, platform_mid_top, grab, progress,
             )
+        if inner_rail is not None and any(inner_rail.posts):
+            if post_profile is None:
+                raise SolidWorksError("Handrail posts need the L2x2 angle weldment profile.")
+            post_note = (post_note + " " + _inner_handrail(
+                model, layout, places, per_flight, inner_rail, post_profile, platforms, top_platform, progress,
+            )).strip()
+        if rail_splits and post_profile is not None:
+            post_note = (post_note + " " + _rail_splits(
+                model, layout, places, per_flight, rail_splits, posts, inner_rail, post_profile,
+                top_rail or mid_rail, grab, progress,
+            )).strip()
     except (BuildStopped, SolidWorksError):
         with contextlib.suppress(Exception):
             _hide_construction(model)
@@ -380,12 +407,14 @@ def split_joints(flight: StringerMock, splits: SplitSettings) -> dict[str, list[
 
 def split_stringers(model, layout, flight: StringerMock, offsets, splits: SplitSettings, progress=None) -> str:
     """Cut every flight's stringers into the splitter's pieces, each joint spliced by a plate on the stringer's
-    back face, with the four 13/16 holes through plate and stringer.
+    back face, with the four 13/16 holes through plate and stringer, and the inner stringer's 1 in rounds. The
+    plates' holes go in before their trims and round, the order in which they still flatten.
 
-    The cut is a level 1/4 in slab through the stringer's own band at the joint; the plate starts as a slab
-    over its extent and is trimmed to the stringer's top and bottom edges by the same helical cuts that shape
-    the stringer, swept through the plate's band. Run it before platforms, posts and clips: those cuts take
-    whatever is in the band.
+    The cut is a level 1/4 in slab through the stringer's own band at the joint, as wide as the stringer is
+    there; the plate starts as a rolled sheet-metal blank over its extent, like the stringer's, so it flattens,
+    and is trimmed to the stringer's top and bottom edges by the same helical cuts that shape the stringer,
+    swept through the plate's band. Each round is cut from the one piece or plate it belongs to. Run it before
+    platforms, posts and clips: those cuts take whatever is in the band.
     """
     inner_dev, outer_dev = develop_both(flight)
     tank_face = flight.shell_od_in + flight.gap_in
@@ -396,6 +425,7 @@ def split_stringers(model, layout, flight: StringerMock, offsets, splits: SplitS
     )
     made = 0
     missed = []
+    round_count = [0, 0]  # cut, wanted; not "rounds": the holes below use that name
     for k, at in enumerate(offsets):
         turn, lift = at
         for dev, r_in, r_out, side, plate_band in sides:
@@ -406,31 +436,35 @@ def split_stringers(model, layout, flight: StringerMock, offsets, splits: SplitS
             radius = dev.radius_in
             for joint in cuts:
                 tag = f"{name}T{joint.tread:02d}"
-                low = turn + (top_x(dev, joint.y_cut) - _SPLIT_MARGIN_IN) / radius
-                high = turn + (bottom_x(dev, joint.y_cut) + _SPLIT_MARGIN_IN) / radius
-                _sector_cut(model, (r_in - 0.03, r_out + 0.03), low, high, lift + joint.y_cut - GAP_IN / 2.0,
+                x0, x1 = cut_span(dev, joint)
+                _sector_cut(model, (r_in - 0.03, r_out + 0.03), turn + (x0 - _SPLIT_MARGIN_IN) / radius,
+                            turn + (x1 + _SPLIT_MARGIN_IN) / radius, lift + joint.y_cut - GAP_IN / 2.0,
                             lift + joint.y_cut + GAP_IN / 2.0, f"{tag}Cut")
+                count = len(_stringer_pieces(model, f"{tag}Cut", (r_in, r_out)))
+                if count != 2:
+                    missed.append(f"{tag} (the cut left {count} stringer piece{'s' if count != 1 else ''}, not 2)")
                 _progress(progress, f"{tag} cut")
+                # The stringer's rounds go in before the plate, so nothing else is behind them yet.
+                for index, relief in enumerate((r for r in reliefs(dev, joint) if r.piece != "plate"), start=1):
+                    round_count[1] += 1
+
+                    def half(cut=f"{tag}Cut", band=(r_in, r_out), which=relief.piece):
+                        found = _stringer_pieces(model, cut, band)
+                        return (found[0] if which == "lower" else found[1]) if len(found) == 2 else None
+
+                    round_count[0] += int(_relief_cut(model, dev, relief, at, dev.radius_in, True, half,
+                                                      f"{tag}Round{index}"))
+                    _progress(progress, f"{tag} round {index}")
                 xs = [x for x, _y in joint.plate]
                 ys = [y for _x, y in joint.plate]
-                base = _offset_from(model, _plane(model, "Top"), lift + min(ys), f"{tag}PlatePln")
-                sketch = _sector_sketch(model, base, plate_band, turn + (min(xs) - _SPLIT_MARGIN_IN) / radius,
-                                        turn + (max(xs) + _SPLIT_MARGIN_IN) / radius, f"{tag}Plate")
-                _extrude(model, sketch, max(ys) - min(ys), f"{tag}Plate", merge=False)
+                # Rolled the way the stringer blank is, so the plate is sheet metal and flattens for burning.
+                _rolled_blank(model, plate_band[0], plate_band[1], turn + (min(xs) - _SPLIT_MARGIN_IN) / radius,
+                              turn + (max(xs) + _SPLIT_MARGIN_IN) / radius, lift + min(ys), lift + max(ys),
+                              f"{tag}Plate")
                 _progress(progress, f"{tag} splice placed")
-            # Trim this side's plates in the flight to the stringer's edges: only plates are in their band yet.
-            g = _stringer_geometry(layout, dev, r_in, r_out)
-            far = g["phi_end"]
-            helix = ((plate_band[0] + plate_band[1]) / 2.0, g["rise_per_rad"] * far, far / (2.0 * math.pi))
-            band = (plate_band[0] - 0.03, plate_band[1] + 0.03)
-            span = 30.0
-            _cut_sweep(model, helix, band, lift + g["top_at_zero"], lift + g["top_at_zero"] + span,
-                       f"{name}PlateTop", turn)
-            _cut_sweep(model, helix, band, lift + g["bottom_at_zero"] - span, lift + g["bottom_at_zero"],
-                       f"{name}PlateBottom", turn)
-            _rebuild(model)
-            _progress(progress, f"{name} splices trimmed")
-            # One small jig a hole: the holes in a row are too far apart for one flat jig on a curved face.
+            # One small jig a hole: the holes in a row are too far apart for one flat jig on a curved face. The
+            # holes go in before the plates are trimmed and rounded: in the other order SolidWorks 2013 would
+            # not flatten the plates.
             rounds = replace(dev, slotted=False)
             outward = abs(dev.radius_in - r_out) <= abs(dev.radius_in - r_in)
             for joint in cuts:
@@ -446,11 +480,161 @@ def split_stringers(model, layout, flight: StringerMock, offsets, splits: SplitS
                 if hit < len(joint.holes):
                     missed.append(f"{tag} ({len(joint.holes) - hit} of {len(joint.holes)} holes)")
                 _progress(progress, f"{tag} holes {'cut' if hit == len(joint.holes) else 'missed'}")
+            # Trim this side's plates in the flight to the stringer's edges: only plates are in their band yet.
+            g = _stringer_geometry(layout, dev, r_in, r_out)
+            far = g["phi_end"]
+            helix = ((plate_band[0] + plate_band[1]) / 2.0, g["rise_per_rad"] * far, far / (2.0 * math.pi))
+            span = 30.0
+
+            def plates(names=tuple(f"{name}T{joint.tread:02d}Plate" for joint in cuts)):
+                return [body for feature in names for body in _bodies_made_by(model, feature)]
+
+            for label, y0, y1 in (("Top", lift + g["top_at_zero"], lift + g["top_at_zero"] + span),
+                                  ("Bottom", lift + g["bottom_at_zero"] - span, lift + g["bottom_at_zero"])):
+                # Scoped to the plates, past both their faces: a trim that ran into the stringer shaved it, and one
+                # that stopped on the face they share left the plates unflattenable (SolidWorks 2013).
+                before = _names(model)
+                try:
+                    _cut_sweep(model, helix, (plate_band[0] - 0.03, plate_band[1] + 0.03), y0, y1,
+                               f"{name}Plate{label}", turn, scope=plates)
+                except SolidWorksError:
+                    _discard_since(model, before)
+                    _cut_sweep(model, helix, _plate_trim_band(plate_band, (r_in, r_out)), y0, y1,
+                               f"{name}Plate{label}", turn)
+            _rebuild(model)
+            _keep_bent_view(model)  # the plates show bent, like the stringers, until Flatten is clicked
+            _progress(progress, f"{name} splices trimmed")
+            for joint in cuts:
+                tag = f"{name}T{joint.tread:02d}"
+                for relief in (r for r in reliefs(dev, joint) if r.piece == "plate"):
+                    round_count[1] += 1
+
+                    def plate(feature=f"{tag}Plate"):
+                        found = _bodies_made_by(model, feature)
+                        return found[0] if len(found) == 1 else None
+
+                    # The jig goes on the plate's far side; the stringer is on its near side.
+                    round_count[0] += int(_relief_cut(model, dev, relief, at, plate_band[0], False, plate,
+                                                      f"{tag}PlateRound"))
+                    _progress(progress, f"{tag} plate round")
     note = (
         f"Stringers split at {made} joint{'s' if made != 1 else ''}: a 1/4 in level cut, a {SPLICE_THK_IN:g} in "
-        "splice plate on the stringer's back face, and four 13/16 holes through both."
+        "splice plate on the stringer's back face, and four 13/16 holes through both"
+        + (f"; {round_count[0]} of {round_count[1]} inner stringer 1 in rounds cut" if round_count[1] else "") + "."
     )
-    return note + (f" Holes missed: {'; '.join(missed)}." if missed else "") if made else ""
+    checks = [text for dev in (inner_dev, outer_dev)
+              for text in clashes(dev, joints(dev, flight.rise_in, flight.treads, splits), splits.avoid)]
+    if not made:
+        return ""
+    return (note + (f" Missed: {'; '.join(missed)}." if missed else "")
+            + (f" Check: {' '.join(checks)}" if checks else ""))
+
+
+def _plate_trim_band(plate_band: tuple[float, float], stringer: tuple[float, float]) -> tuple[float, float]:
+    """The radii the plates' trims cut through: past the plate's free face, but stopping at the face it shares with
+    the stringer. Run into the stringer, the trim shaved it along its top and bottom edges, and the shaved piece and
+    plate no longer flattened (SolidWorks 2013)."""
+    if plate_band[1] <= stringer[0] + 1e-6:  # the plate is inside the stringer, toward the tank
+        return plate_band[0] - 0.03, plate_band[1]
+    return plate_band[0], plate_band[1] + 0.03
+
+
+def _stringer_pieces(model, cut: str, band: tuple[float, float]) -> list:
+    """The stringer bodies the cut feature ``cut`` left, lowest first: two when it split the stringer."""
+    found = []
+    for body in _bodies_made_by(model, cut):
+        with contextlib.suppress(Exception):
+            box = _box_in(body)
+            radii = [math.hypot(x, z) for x in (box[0], box[3]) for z in (box[2], box[5])]
+            if min(radii) - 1.0 <= band[1] and max(radii) + 1.0 >= band[0]:
+                found.append((box[1], body))
+    return [body for _y, body in sorted(found, key=lambda item: item[0])]
+
+
+def _bodies_made_by(model, feature_name: str) -> list:
+    """Bodies with ``feature_name`` in their history. A body a cut splits off lists only that cut."""
+    found = []
+    for body in _bodies(model):
+        with contextlib.suppress(Exception):
+            features = com_value(body.GetFeatures)
+            if any(str(com_value(f.Name) or "") == feature_name for f in features or ()):
+                found.append(body)
+    return found
+
+
+def _relief_cut(model, dev: DevelopedStringer, relief: Relief, at: tuple[float, float], face_r: float,
+                outward: bool, find, name: str) -> bool:
+    """Cut one 1 in round from the body ``find()`` gives, alone: a jig against its face at ``face_r`` (on the
+    outward side or the inward one), the round's sliver sketched on the jig, cut one way scoped to the body, the
+    jig deleted. The body is looked up just before the cut, as rebuilds can leave an older handle stale. True
+    once the body has the round's 1 in face. A miss does not raise."""
+    radius = dev.radius_in
+    turn, lift = at
+    points = [(x + turn * radius, y + lift) for x, y in (*relief_cutter(relief), relief.middle)]
+    phis = [x / radius for x, _y in points]
+    phi = (min(phis) + max(phis)) / 2.0
+    half_along = (max(phis) - min(phis)) / 2.0 * radius + 0.6
+    ys = [y for _x, y in points]
+    y_mid, half_y = (min(ys) + max(ys)) / 2.0, (max(ys) - min(ys)) / 2.0 + 0.6
+    jig_thick = 0.5
+    r0, r1 = (face_r, face_r + jig_thick) if outward else (face_r - jig_thick, face_r)
+    center = (-((r0 + r1) / 2.0) * math.sin(phi), y_mid, ((r0 + r1) / 2.0) * math.cos(phi))
+
+    def on_face(x: float, y: float) -> tuple[float, float, float]:
+        return (-face_r * math.sin(x / radius) * _INCH, y * _INCH, face_r * math.cos(x / radius) * _INCH)
+
+    before_all = _names(model)
+    try:
+        base = _offset_from(model, _plane(model, "Top"), y_mid - half_y, f"{name}JigPln")
+        sketch = _sketch_on(model, base, f"{name}JigSk", lambda: _plan_rect(model, phi, r0, r1, half_along))
+        _extrude(model, sketch, half_y * 2.0, f"{name}Jig", merge=False)
+        _rebuild(model)
+        jig = _body_near(model, center, max_height=half_y * 2.0 + 0.4, max_dist=1.5)
+        face = _face_at_radius(jig, face_r) if jig is not None else None
+        if face is None or not _select_face(model, face):
+            raise SolidWorksError(f"{name}: no jig face to sketch the round on.")
+        before = _names(model)
+        manager = model.SketchManager
+        with contextlib.suppress(Exception):
+            manager.AddToDB = True
+        with contextlib.suppress(Exception):
+            manager.DisplayWhenAdded = False
+        manager.InsertSketch(True)
+        try:
+            data = [float(v) for v in com_value(com_value(com_value(model.GetActiveSketch2).ModelToSketchTransform)
+                                                          .ArrayData)]
+            *path, m = (_to_sketch(data, on_face(x, y)) for x, y in points)
+            # Out past the edges and round the corner, then the arc from the end back to the start.
+            drawn = (all(manager.CreateLine(a[0], a[1], 0.0, b[0], b[1], 0.0) is not None
+                         for a, b in zip(path, path[1:], strict=False))
+                     and manager.Create3PointArc(path[-1][0], path[-1][1], 0.0, path[0][0], path[0][1], 0.0,
+                                                 m[0], m[1], 0.0) is not None)
+            if not drawn:
+                raise SolidWorksError(f"{name}: the round's sketch did not draw.")
+        except Exception:
+            _recover(model)
+            raise
+        _close_sketch(model)
+        round_sketch = _rename_new(model, before, f"{name}Sk", "round sketch")
+        body = find()
+        if body is None:
+            raise SolidWorksError(f"{name}: no body to round.")
+        feature = _cut_one_way_in(model, round_sketch, jig_thick + THICKNESS_IN + 0.35, body)
+        if feature is None:
+            raise SolidWorksError(f"{name}: the round was not cut.")
+        with contextlib.suppress(Exception):
+            rename_feature(feature, name)
+        _rebuild(model)
+        jig = _body_near(model, center, max_height=half_y * 2.0 + 0.4, max_dist=1.5)
+        if jig is not None:
+            _delete_body(model, jig)
+        _rebuild(model)
+    except Exception:
+        _discard_since(model, before_all)
+        return False
+    probe = on_face(relief.center[0] + turn * radius, relief.center[1] + lift)
+    return any(_has_hole_axis(piece, probe, RELIEF_IN * _INCH, 0.1 * _INCH) is True
+               for piece in _bodies_made_by(model, name))
 
 
 CCW_MIRROR = "EliteStairCCW"
@@ -762,6 +946,72 @@ def _platforms(
     return note + (f" Missed: {'; '.join(missed)}." if missed else "")
 
 
+@dataclass(frozen=True)
+class InnerRail:
+    """The inside handrail, Elite STWE: L2x2 posts on the inner stringer's tank face at these treads of each
+    flight (``post_sw.flight_picks``), carrying a 1-1/2 in pipe on PC #34s ``top`` over the stringer's top edge,
+    the posts' tops cut ``post_sw.TOP_GAP_IN`` under the rail line ``post_top`` over it."""
+
+    posts: tuple = ()
+    top: float = 34.0
+    post_top: float = 31.6875  # STWE: 3'-2 3/4" posts at Elite's 8-1/2 in rise
+
+
+def _inner_handrail(
+    model, layout, places, per_flight: int, rail: InnerRail, profile: str, platforms: int, top_platform: bool,
+    progress,
+) -> str:
+    """The inside handrail's posts and pipe; a pipe that will not go is noted, the posts stay."""
+    from swauto.stair.grab_sw import GrabRail, add_grab_rails
+    from swauto.stair.post_sw import add_handrail_posts, post_layout
+
+    r_a = layout.inner_face_in
+    posts = post_layout(places, per_flight, rail.posts, r_a, rail_top=rail.post_top)
+    note = add_handrail_posts(model, posts, r_b=r_a, profile=profile, progress=progress, inner=True).note
+    try:
+        note += " " + add_grab_rails(
+            model, places, per_flight, posts, r_a=r_a, r_b=r_a + layout.clear_in, platforms=platforms,
+            top_platform=top_platform, grab=GrabRail(top=rail.top), progress=progress, inner=True,
+        ).note
+    except SolidWorksError as exc:
+        note += f" Inside handrail pipe stopped: {exc}"
+    return note
+
+
+def _rail_splits(
+    model, layout, places, per_flight: int, wanted, posts, inner_rail: InnerRail | None, profile: str, rails: bool,
+    grab: GrabRail | None, progress,
+) -> str:
+    """Each wanted split, (side, pan of the post below its bay), between that post and the next one up its flight.
+    One whose posts are not there is noted."""
+    from swauto.stair.post_sw import post_layout
+    from swauto.stair.rail_split_sw import add_rail_splits
+
+    r_a = layout.inner_face_in
+    r_b = r_a + layout.clear_in
+    laid = {"outer": post_layout(places, per_flight, posts, r_b) if posts else []}
+    if inner_rail is not None:
+        laid["inner"] = post_layout(places, per_flight, inner_rail.posts, r_a, rail_top=inner_rail.post_top)
+    pairs, lost = [], []
+    for side, pan in wanted:
+        mine = sorted(laid.get(side, []), key=lambda p: p.index)
+        low = next((p for p in mine if p.index == pan), None)
+        high = next((p for p in mine if p.index > pan and (p.index - 1) // per_flight == (pan - 1) // per_flight),
+                    None)
+        if low is None or high is None:
+            lost.append(f"{side} at tread {pan}")
+            continue
+        pairs.append((side, low, high))
+    note = add_rail_splits(
+        model, places, per_flight, pairs, r_a=r_a, r_b=r_b, profile=profile, rails=rails,
+        outer_pipe_top=grab.top if grab is not None else None,
+        inner_pipe_top=inner_rail.top if inner_rail is not None else None, progress=progress,
+    ).note if pairs else ""
+    if lost:
+        note += f" No posts either side for the handrail split(s) {', '.join(lost)}."
+    return note.strip()
+
+
 def _handrail_posts(
     model, layout, places, per_flight: int, posts: tuple[int, ...], profile: str, platforms: int,
     top_platform: bool, post_in: float | None, top_rail: bool, mid_rail: bool, mid_top: float | None,
@@ -854,14 +1104,15 @@ def _handrail_posts(
 
 def build_flight_stringers(
     model, stair: StringerMock, shell_od: float, *, at: tuple[float, float] = (0.0, 0.0), suffix: str = "",
-    progress=None,
+    progress=None, foot_holes: bool = True,
 ) -> None:
     """Both stringers of one flight of ``stair.treads`` treads, turned and raised by ``at``.
 
     Rolls both blanks, rebuilds, then cuts both to the lisp outline before
     any holes: a missed connecting hole must not skip the other stringer or
     the treads. Flat patterns stay suppressed so the stringers show bent
-    until Flatten is clicked. Names end in ``suffix`` for flights above the first.
+    until Flatten is clicked. Names end in ``suffix`` for flights above the first. Without ``foot_holes`` the
+    stringers' feet get no connecting holes: the first flight stands on the ground.
     """
     flight = replace(stair, shell_od_in=shell_od, outside_face=True)
     layout = layout_stringer(flight)
@@ -879,7 +1130,7 @@ def build_flight_stringers(
         _stringer_form(model, layout, dev, r_in, r_out, nm, progress, at)
     _keep_bent_view(model)
     for dev, r_in, r_out, nm in jobs:
-        _stringer_holes(model, dev, r_in, r_out, nm, progress, at)
+        _stringer_holes(model, dev, r_in, r_out, nm, progress, at, foot=foot_holes)
 
 
 def _stringer_geometry(layout, dev: DevelopedStringer, r_in: float, r_out: float):
@@ -922,13 +1173,22 @@ def _stringer_blank(
     """
     radius = dev.radius_in
     p4, _p_start, _p_end, p2, _p3, _l2, _l3, p5 = dev.outline
-    phi_a, phi_b = at[0] + p4[0] / radius, at[0] + p2[0] / radius
+    _rolled_blank(model, r_in, r_out, at[0] + p4[0] / radius, at[0] + p2[0] / radius, at[1] + p5[1], at[1] + p2[1],
+                  name)
+
+
+def _rolled_blank(
+    model, r_in: float, r_out: float, phi_a: float, phi_b: float, y_low: float, y_high: float, name: str
+) -> None:
+    """A 3/8 in sheet-metal wall rolled between arcs at ``r_out`` from ``phi_a`` to ``phi_b``, ``y_low`` to
+    ``y_high``, its thickness in from the arcs to ``r_in``: ``_stringer_blank``'s roll, which the splice plates
+    share so they flatten too. The feature and its body are named ``name``."""
     tried = []
     for side in (0, 1, 0, 1):
         before = _names(model)
         before_bodies = _body_names(model)
-        low = _arc_sketch(model, at[1] + p5[1], r_out, phi_a, phi_b, f"{name}LowArc")
-        high = _arc_sketch(model, at[1] + p2[1], r_out, phi_a, phi_b, f"{name}HighArc")
+        low = _arc_sketch(model, y_low, r_out, phi_a, phi_b, f"{name}LowArc")
+        high = _arc_sketch(model, y_high, r_out, phi_a, phi_b, f"{name}HighArc")
         _clear_selection(model)
         if not (
             _select_feature(model, low, "SKETCH", mark=1, append=False)
@@ -1097,12 +1357,12 @@ def _cut_end_angle(model, r_in: float, r_out: float, near_phi: float):
 
 def _stringer_holes(
     model, dev: DevelopedStringer, r_in: float, r_out: float, name: str, progress=None,
-    at: tuple[float, float] = (0.0, 0.0),
+    at: tuple[float, float] = (0.0, 0.0), foot: bool = True,
 ) -> None:
-    """Connecting holes after both stringers are formed. A miss does not abort."""
+    """Connecting holes after both stringers are formed, at the foot too with ``foot``. A miss does not abort."""
     before = _names(model)
     try:
-        hole_ok = _end_holes(model, dev, r_in, r_out, name, at)
+        hole_ok = _end_holes(model, dev, r_in, r_out, name, at, foot=foot)
     except Exception:
         _discard_since(model, before)
         hole_ok = False
@@ -1244,14 +1504,16 @@ def _discard_since(model, before: set[str]) -> None:
 
 
 def _cut_sweep(
-    model, helix_spec, band: tuple[float, float], y_bottom: float, y_top: float, name: str, start_phi: float = 0.0
+    model, helix_spec, band: tuple[float, float], y_bottom: float, y_top: float, name: str, start_phi: float = 0.0,
+    scope=None,
 ) -> None:
     """Helical cut: a rectangle swept along a trim helix through the plate band.
 
     The rectangle is on the Right plane for the first flight, or on a radial
     plane at ``start_phi`` where the helix of a higher flight starts. A helix
     sweep is a screw about the tank axis, so a rectangle drawn at a higher
-    flight's height is cut at that height all the way along.
+    flight's height is cut at that height all the way along. ``scope()``, when
+    given, finds the only bodies to cut (selected with mark 8, auto-select off).
     One rebuild-and-retry only if the cut feature comes back empty.
     """
     r_mid, height_in, revolutions = helix_spec
@@ -1295,7 +1557,7 @@ def _cut_sweep(
             errors.append(f"attempt {attempt}: profile {format_com_error(exc)}")
             continue
         stuck = False
-        for method_name, args in methods:
+        for method_name, args in (_scoped(methods) if scope is not None else methods):
             method = getattr(model.FeatureManager, method_name, None)
             if method is None:
                 continue
@@ -1303,6 +1565,9 @@ def _cut_sweep(
             if not _select_feature(model, profile, "SKETCH", mark=1, append=False):
                 continue
             if not _select_feature(model, helix, "REFERENCECURVES", mark=4, append=True):
+                continue
+            if scope is not None and not _select_scope(model, scope()):
+                errors.append(f"{method_name} attempt={attempt}: no bodies to scope to")
                 continue
             try:
                 feature = method(*args)
@@ -1320,6 +1585,20 @@ def _cut_sweep(
             return
     _discard_since(model, baseline)
     raise SolidWorksError(f"{name}: edge trim failed ({'; '.join(errors[-4:]) or 'no sweep-cut method'}).")
+
+
+def _scoped(methods):
+    """The sweep-cut calls with auto-select off, so the cut takes only the bodies selected with mark 8: in both
+    InsertCutSwept4 and InsertCutSwept3 the feature scope and auto-select flags come at index 12 and 13."""
+    return tuple((name, args[:12] + (True, False) + args[14:]) for name, args in methods)
+
+
+def _select_scope(model, bodies) -> bool:
+    if not bodies:
+        return False
+    data = model.SelectionManager.CreateSelectData
+    data.Mark = 8  # feature scope bodies go in with mark 8
+    return all(body.Select2(True, data) for body in bodies)
 
 
 def _check_radial_sketch(model, phi: float, name: str) -> None:
@@ -1474,7 +1753,8 @@ def _band_faces(model, band: tuple[float, float]) -> int:
 
 
 def _end_holes(
-    model, dev: DevelopedStringer, r_in: float, r_out: float, name: str, at: tuple[float, float] = (0.0, 0.0)
+    model, dev: DevelopedStringer, r_in: float, r_out: float, name: str, at: tuple[float, float] = (0.0, 0.0),
+    foot: bool = True,
 ) -> bool:
     """Connecting holes sketched the way tread bolts are, then the jig is deleted.
 
@@ -1482,15 +1762,17 @@ def _end_holes(
     a temporary plate sits against the walk-side face. The holes are sketched
     on that face and cut both ways through the plate and the stringer. Only
     the temporary body is deleted; the cut feature stays in the stringer.
-    Inner ends are two 13/16 rounds. Outer ends are two 1-5/8 horizontal slots.
-    A miss does not raise.
+    Inner ends are two 13/16 rounds. Outer ends are two 1-5/8 horizontal slots. Without ``foot``, the top end
+    only. A miss does not raise.
     """
     # Walk-side face is the development radius: outer face of the inner
     # stringer, inner face of the outer stringer. The jig sits on the tread side.
     face_r = dev.radius_in
     outward = abs(face_r - r_out) <= abs(face_r - r_in)
     ok = True
-    for label, pair in (("Top", dev.end_holes[:2]), ("Bot", dev.end_holes[2:])):
+    for label, pair in (("Top", dev.end_holes[:2]), ("Bot", dev.end_holes[2:]) if foot else ("Bot", ())):
+        if not pair:
+            continue
         before = _names(model)
         try:
             if not _end_hole_pair(model, dev, face_r, outward, pair, f"{name}{label}Holes", at):
@@ -2018,6 +2300,34 @@ def _cut_both_ways(model, sketch, depth_in: float):
     except Exception:
         return None
     return feature if feature not in (None, False) else None
+
+
+def _cut_one_way_in(model, sketch, depth_in: float, body):
+    """A blind cut of ``depth_in`` scoped to ``body`` alone, one way from the sketch: away from it first, then the
+    other way if that misses. Not both ways at once: on a rolled sheet-metal body a cut both ways leaves faces
+    that stop it flattening (SolidWorks 2013), and a normal cut is refused on the jig's face."""
+    for flip in (False, True):
+        # Argument 2 would cut away everything outside the profile; argument 3 is the direction (nozzle_sw._cut).
+        args = (
+            True, False, flip, 0, 0, depth_in * _INCH, 0.0,
+            False, False, False, False, 0.0, 0.0, False, False, False, False,
+            False, True, False, True,
+            True, False, 0, 0.0, False,
+        )
+        _clear_selection(model)
+        if not _select_feature(model, sketch, "SKETCH", mark=0, append=False):
+            raise SolidWorksError("Could not select the round's sketch.")
+        data = model.SelectionManager.CreateSelectData
+        data.Mark = 8  # feature scope bodies go in with mark 8
+        if not body.Select2(True, data):
+            raise SolidWorksError("Could not select the body to cut.")
+        try:
+            feature = model.FeatureManager.FeatureCut3(*args)
+        except Exception:
+            feature = None
+        if feature not in (None, False):
+            return feature
+    return None
 
 
 def _to_sketch(data, point):

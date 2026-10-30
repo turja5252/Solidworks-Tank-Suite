@@ -57,6 +57,7 @@ class StairArrangement:
     knees: bool = True
     inner_clips: bool = True
     splits: SplitSettings | None = None
+    clips: tuple[int, ...] | None = None  # the inner clips' pans when they are not the braces' (the rules)
 
     def world(self, angle: float) -> float:
         """A plan angle of the clockwise build, where it lands on the tank."""
@@ -105,33 +106,15 @@ def shell_marks(arrangement: StairArrangement) -> tuple[list[Mark], list[str]]:
                 plate = tuple((turn + x / dev.radius_in, lift + y) for x, y in joint.plate)
                 marks.append(Mark(SPLICE, f"{side} stringer{flight} splice over tread {joint.tread}", plate))
 
-    tops = {k * per_flight for k in range(1, arrangement.platforms + 2)}
-    for index in arrangement.braces:
-        if not 1 <= index <= len(places):
-            notes.append(f"There is no tread {index} for a brace.")
-            continue
-        place = places[index - 1]
-        if arrangement.knees:
-            frame = _Frame(phi=place.phi, y_top=place.y0 - DROP_IN, r_a=r_a, r_b=r_b)
-            try:
-                knee = _knee_layout(frame, shell_r)
-            except SolidWorksError as exc:
-                notes.append(f"Knee brace at tread {index}: {exc}")
-            else:
-                t, y = knee_pad(knee)
-                angle = place.phi + math.atan2(t, shell_r + PAD_THK_IN)
-                marks.append(Mark(KNEE_PAD, f"Knee brace pad, tread {index}", center=(angle, y),
-                                  size=(PAD_WIDE_IN, PAD_TALL_IN)))
-        if arrangement.inner_clips:
-            if index in tops:
-                notes.append(f"No inner clip at tread {index}: it tops its flight.")
-            elif (r_a - THICKNESS_IN) - shell_r < MIN_GAP_IN:
-                notes.append(f"No inner clip at tread {index}: the gap is under {MIN_GAP_IN:g} in.")
-            else:
-                tan_p = _pitch(places, index, r_a)
-                angle, y = clip_pad(clip_phi(place.phi, r_a, tan_p), place.y1, shell_r)
-                marks.append(Mark(CLIP_PAD, f"Inner clip pad, tread {index}", center=(angle, y),
-                                  size=(PAD_WIDE_IN, CLIP_PAD_TALL_IN)))
+    clips = arrangement.braces if arrangement.clips is None else arrangement.clips
+    for wanted, mark_of, pans in ((arrangement.knees, knee_mark, arrangement.braces),
+                                  (arrangement.inner_clips, clip_mark, clips)):
+        for index in pans if wanted else ():
+            if not 1 <= index <= len(places):
+                notes.append(f"There is no tread {index} for a brace.")
+                continue
+            found = mark_of(where, arrangement.platforms, index)
+            (notes if isinstance(found, str) else marks).append(found)
 
     platforms = arrangement.platforms + (1 if arrangement.top_platform else 0)
     for k in range(1, platforms + 1):
@@ -157,6 +140,36 @@ def shell_marks(arrangement: StairArrangement) -> tuple[list[Mark], list[str]]:
             marks.append(Mark(PLATFORM_KNEE_PAD, f"{name} knee brace pad {label}", center=(angle, y),
                               size=(PAD_WIDE_IN, PAD_TALL_IN)))
     return marks, notes
+
+
+def knee_mark(where, platforms: int, index: int) -> Mark | str:
+    """The shell pad of the knee brace under pan ``index`` (1 the lowest, every pan counted), from ``stair_places``,
+    or why the build would refuse it."""
+    shell_r = where.flight.shell_od_in
+    r_a = where.layout.inner_face_in
+    place = where.places[index - 1]
+    frame = _Frame(phi=place.phi, y_top=place.y0 - DROP_IN, r_a=r_a, r_b=r_a + where.layout.clear_in)
+    try:
+        knee = _knee_layout(frame, shell_r)
+    except SolidWorksError as exc:
+        return f"Knee brace at tread {index}: {exc}"
+    t, y = knee_pad(knee)
+    return Mark(KNEE_PAD, f"Knee brace pad, tread {index}", center=(place.phi + math.atan2(t, shell_r + PAD_THK_IN), y),
+                size=(PAD_WIDE_IN, PAD_TALL_IN))
+
+
+def clip_mark(where, platforms: int, index: int) -> Mark | str:
+    """The shell pad of the inner clip at pan ``index``, or why the build would refuse it: no clip at a flight's
+    top tread, nor in a gap under ``MIN_GAP_IN``."""
+    if index in {k * where.per_flight for k in range(1, platforms + 2)}:
+        return f"No inner clip at tread {index}: it tops its flight."
+    shell_r = where.flight.shell_od_in
+    r_a = where.layout.inner_face_in
+    if (r_a - THICKNESS_IN) - shell_r < MIN_GAP_IN:
+        return f"No inner clip at tread {index}: the gap is under {MIN_GAP_IN:g} in."
+    place = where.places[index - 1]
+    angle, y = clip_pad(clip_phi(place.phi, r_a, _pitch(where.places, index, r_a)), place.y1, shell_r)
+    return Mark(CLIP_PAD, f"Inner clip pad, tread {index}", center=(angle, y), size=(PAD_WIDE_IN, CLIP_PAD_TALL_IN))
 
 
 def _box(a0: float, a1: float, y0: float, y1: float) -> tuple[tuple[float, float], ...]:

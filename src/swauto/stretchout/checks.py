@@ -19,10 +19,11 @@ class Clash:
     problem: str
     x: float
     y: float
+    joiner: str = " "  # ": " when the problem is a whole sentence
 
     @property
     def text(self) -> str:
-        return f"{self.label} {self.problem}"
+        return f"{self.label}{self.joiner}{self.problem}"
 
 
 def find_clashes(out: Stretchout) -> list[Clash]:

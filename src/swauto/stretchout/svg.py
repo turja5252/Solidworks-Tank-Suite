@@ -19,7 +19,7 @@ from swauto.stretchout.model import (
     TREADS,
     Stretchout,
 )
-from swauto.stretchout.stringers import HOLES, PIECES
+from swauto.stretchout.stringers import HOLES, PIECES, TREAD_MARKS, WASHERS
 from swauto.stretchout.stringers import SPLICES as SHEET_SPLICES
 
 # fill, outline per layer; "none" draws the outline only, and the shell plates alternate their fill by course
@@ -36,7 +36,9 @@ STYLE = {
     CLIPS: ("#e3c5f0", "#6b2c91"),
     PLATFORM_PADS: ("#ffe08a", "#9a6b00"),
     PIECES: ("#eef3f6", "#2f6f86"),
+    TREAD_MARKS: ("#c9e3c0", "#3d7a2f"),
     SHEET_SPLICES: ("#bfe3da", "#0f766e"),
+    WASHERS: ("none", "#0f766e"),
     HOLES: ("#ffffff", "#333333"),
 }
 THICK = (STRINGERS, PIECES)  # drawn with a heavier line

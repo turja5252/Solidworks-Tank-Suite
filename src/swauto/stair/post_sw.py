@@ -1,4 +1,5 @@
-"""Handrail posts on the outer stringer, from RailPosts.lsp and SpiralStringerHandrailPostWrap.lsp.
+"""Handrail posts on the outer stringer (and the inner one's, for the inside handrail), from RailPosts.lsp and
+SpiralStringerHandrailPostWrap.lsp.
 
 A post stands in front of each picked tread of every flight: an L2x2x1/4 with
 its flat leg bolted to the outside face of the outer stringer, heel on the
@@ -98,12 +99,21 @@ def read_post_treads(text: str, per_flight: int) -> tuple[int, ...]:
     return tuple(sorted(picks))
 
 
-def post_layout(places, per_flight: int, picks: tuple[int, ...], r_b: float) -> list[Post]:
-    """One post per picked tread per flight. ``places`` are every pan, lowest first; ``r_b`` is
-    the outer stringer's walk face, where the lisp develops it."""
+def flight_picks(picks, flight: int) -> tuple[int, ...]:
+    """The post treads of one flight (0 the lowest): ``picks`` are the same treads for every flight, or one tuple
+    of treads per flight (as the attachment rules place them)."""
+    if picks and isinstance(picks[0], tuple):
+        return tuple(picks[flight]) if flight < len(picks) else ()
+    return tuple(picks)
+
+
+def post_layout(places, per_flight: int, picks, r_b: float, rail_top: float = RAIL_TOP_IN) -> list[Post]:
+    """One post per picked tread per flight (``flight_picks``). ``places`` are every pan, lowest first; ``r_b`` is
+    the stringer's walk face, where the lisp develops it (the outer one's, or the inner one's for the inside
+    handrail), and ``rail_top`` how far over the stringer's top edge the rail the post carries is."""
     posts = []
     for first in range(0, len(places), per_flight):
-        for pick in picks:
+        for pick in flight_picks(picks, first // per_flight):
             tread, below = places[first + pick - 1], places[first + pick - 2]
             slope = (tread.y1 - below.y1) / ((tread.phi - below.phi) * r_b)
             heel = -(SETBACK_IN + LEG_IN)  # along the stringer from the tread's front edge
@@ -114,39 +124,43 @@ def post_layout(places, per_flight: int, picks: tuple[int, ...], r_b: float) -> 
                     index=tread.index,
                     phi=front + heel / r_b,
                     foot=below.y1 + FOOT_UP_IN,
-                    cut=datum + RAIL_TOP_IN - TOP_GAP_IN * math.hypot(1.0, slope),
+                    cut=datum + rail_top - TOP_GAP_IN * math.hypot(1.0, slope),
                     slope=slope,
                 )
             )
     return posts
 
 
-def add_handrail_posts(model, posts: list[Post], *, r_b: float, profile: str, progress=None) -> BraceResult:
+def add_handrail_posts(
+    model, posts: list[Post], *, r_b: float, profile: str, progress=None, inner: bool = False,
+) -> BraceResult:
     """Each post, its top cut along the rail and cut back 45 degrees, and its two bolt holes through the stringer.
 
     The posts on the flights are the same piece turned about the tank axis and raised, so the first
     is modeled and the rest are copied. The bolt holes are cut afterwards: each one also goes
-    through the stringer. ``profile`` is from ``post_profile``.
+    through the stringer. ``profile`` is from ``post_profile``. ``r_b`` is the stringer's walk face; ``inner``
+    posts go on the inner stringer's tank face (``r_b`` its walk face), the outstanding leg toward the shell.
     """
-    face_r = r_b + THICKNESS_IN
+    way, face_r = _post_side(r_b, inner)
+    prefix = "ElitePostIn" if inner else "ElitePost"
     missed = []
     master_post = None
     master_body = None
     for post in posts:
-        name = f"ElitePost{post.index:02d}"
+        name = f"{prefix}{post.index:02d}"
         copied = False
         if master_body is not None and master_post is not None:
             copied = s._copy_turned(
                 model, master_body, post.phi - master_post.phi, post.foot - master_post.foot, name,
             )
         if not copied:
-            body = _shaped_post(model, post, face_r, profile, name)
+            body = _shaped_post(model, post, face_r, profile, name, way)
             if master_body is None and body is not None:
                 master_post, master_body = post, body
         _progress(progress, f"{name} {'copied' if copied else 'placed'}")
     for post in posts:
-        name = f"ElitePost{post.index:02d}"
-        holes = _holes(model, post, face_r, r_b, name)
+        name = f"{prefix}{post.index:02d}"
+        holes = _holes(model, post, face_r, r_b, name, way)
         if not holes:
             missed.append(str(post.index))
         _progress(progress, f"{name} holes {'cut' if holes else 'missed'}")
@@ -154,20 +168,31 @@ def add_handrail_posts(model, posts: list[Post], *, r_b: float, profile: str, pr
         s._hide_construction(model)
     treads = ", ".join(str(p.index) for p in posts)
     note = (
-        f"L2x2x1/4 handrail posts in front of tread{'s' if len(posts) > 1 else ''} {treads} on the outer "
-        f"stringer, tops cut along the rail {TOP_GAP_IN:g} in under the 42 in top rail and the outstanding leg "
+        f"L2x2x1/4 handrail posts in front of tread{'s' if len(posts) > 1 else ''} {treads} on the "
+        f"{'inner stringer, on its tank face' if inner else 'outer stringer'}, tops cut along the rail "
+        f"{TOP_GAP_IN:g} in under {'the pipe' if inner else 'the 42 in top rail'} and the outstanding leg "
         "cut back 45 degrees, two 13/16 holes each through the stringer."
         + (f" Holes missed at tread(s) {', '.join(missed)}." if missed else "")
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
 
 
-def _shaped_post(model, post: Post, face_r: float, profile: str, name: str):
+def _post_side(r_b: float, inner: bool) -> tuple[float, float]:
+    """(way, face_r): the side of the stringer a flight post's flat leg is on, +1 out from the tank or -1 in
+    toward it, and the radius of the leg's face against the stringer. On the inner stringer's tank face the
+    face is concave, so the flat leg stands off it by its sag: it touches only at the heel's end."""
+    if not inner:
+        return 1.0, r_b + THICKNESS_IN
+    tank_face = r_b - THICKNESS_IN
+    return -1.0, tank_face - LEG_IN * LEG_IN / (2.0 * tank_face) - 0.001
+
+
+def _shaped_post(model, post: Post, face_r: float, profile: str, name: str, way: float = 1.0):
     """The flight post with its sloped top and 45 degree cutback, before the bolt holes."""
     before = s._body_names(model)
-    _upright_angle(model, post.phi, face_r, 1.0, 1.0, (post.foot, post.top(LEG_IN) + 0.1), LEG_IN, profile, name)
-    _top_cut(model, post, face_r, name)
-    _cutback(model, post.phi, face_r, 0.0, 1.0, post.foot, post.top(THK_IN), name)
+    _upright_angle(model, post.phi, face_r, way, 1.0, (post.foot, post.top(LEG_IN) + 0.1), LEG_IN, profile, name)
+    _top_cut(model, post, face_r, name, way)
+    _cutback(model, post.phi, face_r, 0.0, 1.0, post.foot, post.top(THK_IN), name, inward=way)
     made = [body for body in s._bodies(model) if str(body.Name) not in before]
     if len(made) != 1:
         return None
@@ -306,20 +331,21 @@ def _channel_hole(model, point_in) -> bool:
     return False
 
 
-def _leg_face(model, post: Post, face_r: float, y: float):
-    """Outside face of the flat leg, square to the radial line through the heel."""
-    return _face_at(s._bodies(model), _world(post.phi, face_r + THK_IN, HOLE_GAUGE_IN, y), _radial(post.phi))
+def _leg_face(model, post: Post, face_r: float, y: float, way: float = 1.0):
+    """The flat leg's face away from the stringer, square to the radial line through the heel."""
+    normal = tuple(way * v for v in _radial(post.phi))
+    return _face_at(s._bodies(model), _world(post.phi, face_r + way * THK_IN, HOLE_GAUGE_IN, y), normal)
 
 
-def _top_cut(model, post: Post, face_r: float, name: str) -> None:
+def _top_cut(model, post: Post, face_r: float, name: str, way: float = 1.0) -> None:
     """Cut the top along the rail slope, through both legs."""
-    face = _leg_face(model, post, face_r, post.foot + 2.5)
+    face = _leg_face(model, post, face_r, post.foot + 2.5, way)
     lo, hi = -0.5, LEG_IN + 0.5
     over = post.top(hi) + 1.0
 
     def draw(manager, to_sketch):
         corners = ((lo, post.top(lo)), (hi, post.top(hi)), (hi, over), (lo, over))
-        pts = [to_sketch(_world(post.phi, face_r + THK_IN, t, y)) for t, y in corners]
+        pts = [to_sketch(_world(post.phi, face_r + way * THK_IN, t, y)) for t, y in corners]
         for (ax, ay), (bx, by) in zip(pts, pts[1:] + pts[:1]):
             if manager.CreateLine(ax, ay, 0.0, bx, by, 0.0) is None:
                 raise SolidWorksError(f"{name}: top cut edge failed.")
@@ -330,18 +356,21 @@ def _top_cut(model, post: Post, face_r: float, name: str) -> None:
 
 def _cutback(
     model, line_phi: float, heel_r: float, heel_t: float, away: float, foot: float, top: float, name: str,
+    inward: float = 1.0,
 ) -> None:
     """Cut the outstanding leg of an upright angle back 45 degrees from ``top`` at its root down to its toe.
 
     The heel is at ``heel_r`` on the radial line at ``line_phi``, ``heel_t`` along the travel, the
-    other leg running ``away`` along it. Sketched on the leg's inside face, outside the other leg
-    and no more than 0.1 in over the top, so cut before the rails go on it takes nothing else.
+    other leg running ``away`` along it and the outstanding leg ``inward`` along the radial. Sketched on the
+    leg's inside face, outside the other leg and no more than 0.1 in over the top, so cut before the rails go on
+    it takes nothing else.
     """
     face_t = heel_t + away * THK_IN
     normal = tuple(away * v for v in _travel(line_phi))
-    face = _face_at(s._bodies(model), _world(line_phi, heel_r + THK_IN + LEG_IN / 2.0, face_t, foot + 2.5), normal)
-    root, past = heel_r + THK_IN, heel_r + LEG_IN + 0.5
-    corners = ((root, top + 0.1), (root, top), (past, top - (past - root)), (past, top + 0.1))
+    face = _face_at(s._bodies(model), _world(line_phi, heel_r + inward * (THK_IN + LEG_IN / 2.0), face_t, foot + 2.5),
+                    normal)
+    root, past = heel_r + inward * THK_IN, heel_r + inward * (LEG_IN + 0.5)
+    corners = ((root, top + 0.1), (root, top), (past, top - abs(past - root)), (past, top + 0.1))
 
     def draw(manager, to_sketch):
         pts = [to_sketch(_world(line_phi, r, face_t, y)) for r, y in corners]
@@ -353,9 +382,9 @@ def _cutback(
         raise SolidWorksError(f"{name}: the outstanding leg was not cut back 45 degrees.")
 
 
-def _holes(model, post: Post, face_r: float, r_b: float, name: str) -> bool:
+def _holes(model, post: Post, face_r: float, r_b: float, name: str, way: float = 1.0) -> bool:
     """13/16 rounds through the flat leg and the stringer."""
-    points = [_world(post.phi, face_r + THK_IN, HOLE_GAUGE_IN, post.foot + up) for up in HOLE_UP_IN]
+    points = [_world(post.phi, face_r + way * THK_IN, HOLE_GAUGE_IN, post.foot + up) for up in HOLE_UP_IN]
     radius = HOLE_DIA_IN / 2.0 * _INCH
 
     def draw(manager, to_sketch):
@@ -364,14 +393,17 @@ def _holes(model, post: Post, face_r: float, r_b: float, name: str) -> bool:
             if _create_circle(manager, sx, sy, radius) is None:
                 raise SolidWorksError(f"{name}: hole circle failed.")
 
-    if not _cut(model, _leg_face(model, post, face_r, post.foot + 2.5), f"{name}Holes", draw, THK_IN + THICKNESS_IN + 0.1):
+    face = _leg_face(model, post, face_r, post.foot + 2.5, way)
+    if not _cut(model, face, f"{name}Holes", draw, THK_IN + THICKNESS_IN + 0.1):
         return False
-    in_stringer = [_world(post.phi, r_b + THICKNESS_IN / 2.0, HOLE_GAUGE_IN, post.foot + up) for up in HOLE_UP_IN]
+    in_stringer = [_world(post.phi, r_b + way * THICKNESS_IN / 2.0, HOLE_GAUGE_IN, post.foot + up)
+                   for up in HOLE_UP_IN]
     return all(_hole_in(model, p) for p in points) and all(_stringer_hole(model, p, r_b) for p in in_stringer)
 
 
 def _stringer_hole(model, point_in, r_b: float) -> bool:
-    """The post's hole carried on into the outer stringer: the post shares its axis, so look at the stringer alone."""
+    """The post's hole carried on into the stringer whose walk face is ``r_b``: the post shares its axis, so look
+    at the stringer alone."""
     point = [v * _INCH for v in point_in]
     for body in s._bodies(model):
         try:

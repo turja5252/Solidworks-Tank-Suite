@@ -12,6 +12,20 @@ from swauto import runlog
 from swauto.comutil import com_value, format_com_error
 from swauto.errors import BuildStopped, SolidWorksError, SolidWorksNotRunning, SolidWorksUnavailable
 from swauto.session import connect
+from swauto.stair.attachments import (
+    CLIP,
+    INNER,
+    KNEE,
+    OUTER,
+    POST,
+    RAIL_SPLIT,
+    Rules,
+    Spot,
+    applied,
+    flight_posts,
+    shell_from,
+)
+from swauto.stair.attachments import plan as plan_attachments
 from swauto.stair.brace_sw import (
     add_cross_brace,
     add_knee_brace,
@@ -19,18 +33,26 @@ from swauto.stair.brace_sw import (
     remove_cross_brace,
     stair_flight_tops,
 )
-from swauto.stair.development import MAX_PLATFORMS, flight_treads, stair_plan
+from swauto.stair.development import MAX_PLATFORMS, develop_both, flight_step, flight_treads, stair_plan
+from swauto.stair.game import Choice, Game
 from swauto.stair.grab_sw import GRAB_TOP_IN, GrabRail
 from swauto.stair.inner_clip_sw import add_inner_clip, clip_angle_profile
 from swauto.stair.landings import StairArrangement
-from swauto.stair.post_sw import PLATFORM_POST_IN, RAIL_TOP_IN, read_post_treads
+from swauto.stair.post_sw import PLATFORM_POST_IN, RAIL_TOP_IN, flight_picks, read_post_treads
 from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN, check_platform_mid_top
-from swauto.stair.splitter import HOLE_ROW_IN as SPLIT_HOLE_ROW_IN
 from swauto.stair.splitter import LIMIT as SPLIT_LIMIT
 from swauto.stair.splitter import MAX_SPAN_FT as SPLIT_MAX_SPAN_FT
 from swauto.stair.splitter import SEGMENT_COUNT as SPLIT_SEGMENTS_DEFAULT
 from swauto.stair.splitter import SEGMENTS as SPLIT_SEGMENTS
-from swauto.stair.splitter import SplitSettings
+from swauto.stair.splitter import (
+    SplitSettings,
+    choose_cuts,
+    clashes,
+    flight_span_in,
+    joints,
+    pieces_wanted,
+    reliefs,
+)
 from swauto.stair.sizing import (
     AUTO_RISE_IN,
     auto_treads,
@@ -53,8 +75,9 @@ from swauto.stair.stringer import (
     StringerMock,
     layout_stringer,
 )
+from swauto.stair.stair_sw import InnerRail
 from swauto.stair.stair_sw import create_stair as build_stair
-from swauto.stair.stair_sw import flight_suffix, is_counterclockwise, mirror_stair, split_joints, turn_stair
+from swauto.stair.stair_sw import flight_suffix, is_counterclockwise, mirror_stair, turn_stair
 from swauto.stair.stringer_sw import create_stringer_try
 from swauto.stair.tread_joint import TreadJointSpec, layout_tread_joint
 from swauto.stair.tread_joint_sw import create_tread_joint
@@ -110,7 +133,7 @@ def parse_brace_treads(text: str) -> tuple[int, ...]:
             number = float(part)
         except ValueError as exc:
             raise ValueError(f"Brace treads are tread numbers like 2, 5 (not {part!r}).") from exc
-        if number != int(number) or number < 1:
+        if not math.isfinite(number) or number != int(number) or number < 1:
             raise ValueError("Brace treads are whole tread numbers, 1 or more.")
         picks.add(int(number))
     return tuple(sorted(picks))
@@ -131,16 +154,30 @@ def _inner_clip(model, index: int, tops: set[int], profile: str, shell_radius_in
     return add_inner_clip(model, index, profile, shell_radius_in=shell_radius_in, progress=progress).note
 
 
+RAIL_SIDES = ("Outside", "Inside", "Both")
+_RAIL_SIDE = {"Outside": (OUTER,), "Inside": (INNER,), "Both": (OUTER, INNER)}
+
+
 def _flight_tops(treads: int, platforms: int) -> set[int]:
     per_flight = flight_treads(treads, platforms)
     return {k * per_flight for k in range(1, platforms + 2)}
 
 
 def _brace_stage_plan(
-    braces, *, knees: bool = False, inner: bool = False, tops: set[int] | frozenset[int] = frozenset()
+    braces, *, knees: bool = False, inner: bool = False, tops: set[int] | frozenset[int] = frozenset(),
+    clips: tuple[int, ...] | None = None,
 ) -> list[tuple[frozenset[str], str]]:
     """Four shares per brace (angle, each cap with its hole, leg hole), three more per knee,
-    three more per inner clip. ``tops`` are the treads that end a flight, which get no inner clip."""
+    three more per inner clip. ``tops`` are the treads that end a flight, which get no inner clip. With
+    ``clips`` the inner clips are at those treads, braces or not, in the order the build adds them."""
+    if clips is not None:
+        plan = _brace_stage_plan(braces, knees=knees, tops=tops)
+        for index in sorted(set(clips) - set(tops)):
+            clip = f"EliteBrace{index:02d}Inner"
+            plan.append((frozenset({f"{clip} angle placed"}), f"inner clip {index}"))
+            plan.append((frozenset({f"{clip} landing clip placed"}), f"inner clip {index} landing clip and pad"))
+            plan.append((frozenset({f"{clip} holes cut", f"{clip} holes missed"}), f"inner clip {index} holes"))
+        return plan
     plan: list[tuple[frozenset[str], str]] = []
     for index in braces:
         key = f"EliteBrace{index:02d}"
@@ -165,6 +202,8 @@ def _stair_stage_plan(
     treads: int, *, shell: bool = True, braces=(), knees: bool = False, inner: bool = False,
     platforms: int = 0, top_platform: bool = False, posts=(), top_rail: bool = False, mid_rail: bool = False,
     grab: bool = False, ccw: bool = False, turned: bool = False, split_treads: tuple[int, ...] = (),
+    split_rounds: tuple[tuple[int, int], ...] = (), clips: tuple[int, ...] | None = None, inner_posts=(),
+    rail_splits: tuple[int, ...] = (),
 ) -> list[tuple[frozenset[str], str]]:
     """One equal share per progress line the stair build actually emits.
 
@@ -172,10 +211,14 @@ def _stair_stage_plan(
     miss moves the percent forward and never back. Without the tank, the
     shell stage is left out; the stringers are unchanged. Mid platforms add
     a flight of stringers each, the extra pan level with each platform, the
-    platform frames, and their clips. ``posts`` are tread numbers in a flight.
+    platform frames, and their clips. ``posts`` are tread numbers in a flight (or per flight,
+    ``post_sw.flight_picks``); ``clips``, when given, are the inner clips' treads apart from the braces';
+    ``inner_posts`` the inside handrail's, whose pipe follows them; ``rail_splits`` the pans of the posts below
+    each handrail split's bay.
     A counterclockwise stair ends with its mirror and the clockwise one's delete, and a
     stair turned to its orientation with the turn. ``split_treads`` are each flight's splitter
-    joints (their lower treads), cut on both stringers after the bolts.
+    joints (their lower treads), cut on both stringers after the bolts; ``split_rounds`` the inner
+    stringer's piece rounds and plate rounds at each (two and one when not given).
     """
     per_flight = flight_treads(treads, platforms)
     plan: list[tuple[frozenset[str], str]] = []
@@ -210,17 +253,23 @@ def _stair_stage_plan(
                     f"tread {index} {side} bolts",
                 )
             )
+    rounds = [split_rounds[i] if i < len(split_rounds) else (2, 1) for i in range(len(split_treads))]
     for flight in range(platforms + 1) if split_treads else ():
-        for side in ("In", "Out"):
+        for side, word in (("In", "inner"), ("Out", "outer")):
             name = f"EliteSplit{side}{flight_suffix(flight)}"
             where = f" (flight {flight + 1})" if platforms else ""
-            for tread in split_treads:
-                plan.append((frozenset({f"{name}T{tread:02d} cut"}), f"{side.lower()}er stringer split{where}"))
+            for tread, (piece_rounds, _plate_rounds) in zip(split_treads, rounds, strict=True):
+                plan.append((frozenset({f"{name}T{tread:02d} cut"}), f"{word} stringer split{where}"))
+                for number in range(1, piece_rounds + 1) if side == "In" else ():
+                    plan.append((frozenset({f"{name}T{tread:02d} round {number}"}), f"inner stringer round{where}"))
                 plan.append((frozenset({f"{name}T{tread:02d} splice placed"}), f"splice plate{where}"))
-            plan.append((frozenset({f"{name} splices trimmed"}), f"splice plates trimmed{where}"))
             for tread in split_treads:
                 plan.append((frozenset({f"{name}T{tread:02d} holes cut", f"{name}T{tread:02d} holes missed"}),
                              f"splice holes{where}"))
+            plan.append((frozenset({f"{name} splices trimmed"}), f"splice plates trimmed{where}"))
+            for tread, (_piece_rounds, plate_rounds) in zip(split_treads, rounds, strict=True):
+                if side == "In" and plate_rounds:
+                    plan.append((frozenset({f"{name}T{tread:02d} plate round"}), f"splice plate round{where}"))
     for k in range(1, platforms + 1 + (1 if top_platform else 0)):
         key = f"ElitePlatform{k * per_flight:02d}"
         plan.append((frozenset({f"{key} frame placed"}), f"platform after tread {k * per_flight}"))
@@ -234,7 +283,7 @@ def _stair_stage_plan(
             plan.append((frozenset({f"{key}Shell{end} clip placed"}), f"platform shell clip {k * per_flight}{end}"))
         for end in ("A", "B"):
             plan.append((frozenset({f"{key}Knee{end} placed"}), f"platform knee brace {k * per_flight}{end}"))
-    for index in (k * per_flight + pick for k in range(platforms + 1) for pick in posts):
+    for index in (k * per_flight + pick for k in range(platforms + 1) for pick in flight_picks(posts, k)):
         key = f"ElitePost{index:02d}"
         plan.append((frozenset({f"{key} placed"}), f"handrail post {index}"))
         plan.append((frozenset({f"{key} holes cut", f"{key} holes missed"}), f"handrail post {index} holes"))
@@ -260,10 +309,28 @@ def _stair_stage_plan(
         plan.append((frozenset({"EliteRailBottomEnd placed"}), "rail end at the foot"))
     for k in range(platforms + 1) if grab and posts else ():
         plan.append((frozenset({f"EliteGrabF{k + 1} placed"}), f"grab rail flight {k + 1}"))
-    for index in (k * per_flight + pick for k in range(platforms + 1) for pick in posts) if grab else ():
+    post_pans = [k * per_flight + pick for k in range(platforms + 1) for pick in flight_picks(posts, k)]
+    for index in post_pans if grab else ():
         key = f"EliteGrabBracket{index:02d}"
         plan.append((frozenset({f"{key} placed", f"{key} skipped"}), f"grab rail connector {index}"))
-    plan.extend(_brace_stage_plan(braces, knees=knees, inner=inner, tops=_flight_tops(treads, platforms)))
+    inner_pans = [k * per_flight + pick for k in range(platforms + 1) for pick in flight_picks(inner_posts, k)]
+    for index in inner_pans:
+        key = f"ElitePostIn{index:02d}"
+        plan.append((frozenset({f"{key} placed", f"{key} copied"}), f"inside handrail post {index}"))
+    for index in inner_pans:
+        key = f"ElitePostIn{index:02d}"
+        plan.append((frozenset({f"{key} holes cut", f"{key} holes missed"}), f"inside handrail post {index} holes"))
+    for k in range(platforms + 1) if inner_pans else ():
+        plan.append((frozenset({f"EliteGrabInF{k + 1} placed"}), f"inside handrail pipe flight {k + 1}"))
+    for index in inner_pans:
+        key = f"EliteGrabInBracket{index:02d}"
+        plan.append((frozenset({f"{key} placed", f"{key} copied", f"{key} skipped"}),
+                     f"inside handrail connector {index}"))
+    for pan in rail_splits:
+        keys = {f"EliteRailSplit{pan:02d} made", f"EliteRailSplit{pan:02d} missed",
+                f"EliteRailSplitIn{pan:02d} made", f"EliteRailSplitIn{pan:02d} missed"}
+        plan.append((frozenset(keys), f"handrail split at post {pan}"))
+    plan.extend(_brace_stage_plan(braces, knees=knees, inner=inner, tops=_flight_tops(treads, platforms), clips=clips))
     if ccw:
         plan.append((frozenset({"stair mirrored"}), "counterclockwise mirror"))
         plan.append((frozenset({"clockwise stair deleted"}), "clockwise stair deleted"))
@@ -452,7 +519,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     split_span_var = tk.StringVar(value=_fmt_num(SPLIT_MAX_SPAN_FT))
     split_count_var = tk.StringVar(value=str(SPLIT_SEGMENTS_DEFAULT))
     split_plate_var = tk.StringVar(value="")
-    split_row_var = tk.StringVar(value=_fmt_num(SPLIT_HOLE_ROW_IN))
+    split_row_var = tk.StringVar(value="")
     split_options = ttk.Frame(top)
     split_options.grid(row=14, column=0, columnspan=8, sticky="w", pady=(4, 0))
     ttk.Checkbutton(split_options, text="Split stringers", variable=split_var).pack(side="left")
@@ -469,7 +536,21 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     ttk.Entry(split_options, textvariable=split_plate_var, width=6).pack(side="left", padx=(4, 0))
     ttk.Label(split_options, text="in (blank: Auto)  hole rows").pack(side="left", padx=(2, 0))
     ttk.Entry(split_options, textvariable=split_row_var, width=6).pack(side="left", padx=(4, 0))
-    ttk.Label(split_options, text="in off the cut").pack(side="left", padx=(2, 0))
+    ttk.Label(split_options, text="in off the cut (blank: Auto)").pack(side="left", padx=(2, 0))
+    rules_var = tk.BooleanVar(value=False)
+    rail_side_var = tk.StringVar(value=RAIL_SIDES[0])
+    rules_options = ttk.Frame(top)
+    rules_options.grid(row=15, column=0, columnspan=8, sticky="w", pady=(4, 0))
+    ttk.Checkbutton(rules_options, text="Place by the rules", variable=rules_var).pack(side="left")
+    ttk.Label(rules_options, text="handrail on").pack(side="left", padx=(10, 0))
+    ttk.Combobox(rules_options, textvariable=rail_side_var, values=RAIL_SIDES, width=8, state="readonly").pack(
+        side="left", padx=(4, 0))
+    ttk.Label(
+        rules_options,
+        text="posts, knee braces, inner clips and splitter cuts by Elite's rules, or as you place them in the "
+             "Stretchout tab's Stair game; the typed posts and braces are not used",
+        wraplength=460, justify="left",
+    ).pack(side="left", padx=(10, 0))
     knee_var = tk.BooleanVar(value=True)
     inner_var = tk.BooleanVar(value=True)
     brace_options = ttk.Frame(top)
@@ -527,7 +608,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "also gets one near each end of its outer channel, bolted through the web, its heel the "
             "outer distance in from the platform end, cut back the same way and stopping the same 3/4 in "
             "under the rail for the weld. The inner distance is for "
-            "the inner rail, which is not built yet. Top rail runs an L2x2x1/4 42 in up over the outer "
+            "the inside platforms' rail, which is not built yet. Top rail runs an L2x2x1/4 42 in up over the outer "
             "posts, rolled to a helix on each flight with the library angle's 3/16 root fillet and toe "
             "rounds, mitered to a level piece where it reaches a platform, and bolted to the platform "
             "post through a short vertical end piece, cut back with the post; each platform has its own "
@@ -548,22 +629,34 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "square with a 1-5/8 in round cap welded on each end; ends +/- lengthens or shortens every "
             "flight's pipe at its low and high end. Each flight post holds it on a PC #34, a 3/4 x 3/4 "
             "quarter turn cut from 3/4 plate hanging under it: the foot's end welded to the post, the "
-            "upright under the pipe and cut to its slope."
+            "upright under the pipe and cut to its slope.\n"
+            "Place by the rules: the typed posts and braces give way to Elite's rules. The stringer cuts come "
+            "first (the splitter's); each stringer piece then gets one knee brace with its cross brace and one "
+            "inner clip near its middle, never beside a cut, their shell pads 1 in clear of every shell seam, the "
+            "floor and the shell's top, and off the nozzles, FTCOs and anchor chairs; the first piece gets an "
+            "extra inner clip at tread 1. Posts stand at each flight's bottom (tread 2), its top and every 4 "
+            "treads, moved a tread off a cut, a cross brace or (inside) an inner clip. Handrail on picks the "
+            "outside rail, the inside one or both. The inside handrail (Elite STWE) is a 1-1/2 in pipe on L2x2 "
+            "posts bolted to the inner stringer's tank face, on PC #34s, 34 in over the stringer's top edge; "
+            "the rails are split where they would run past their stock (40 ft outside, 20 ft pipe inside): "
+            "two L2x2 connector angles back to back bolted with two 5/8 in bolts 12 in apart for the top rail "
+            "and midrail, and a 1-1/2 in round bar 2 in long in a 2 in gap in the pipe. Move any of it in the "
+            "Stretchout tab's Stair game, and see it in its Stair in 3D view."
         ),
         justify="left",
         wraplength=640,
-    ).grid(row=15, column=0, columnspan=8, sticky="w", pady=(0, 4))
+    ).grid(row=16, column=0, columnspan=8, sticky="w", pady=(0, 4))
 
     summary_var = tk.StringVar(value="")
     ttk.Label(top, textvariable=summary_var, justify="left", wraplength=640).grid(
-        row=16, column=0, columnspan=8, sticky="w", pady=(4, 4)
+        row=17, column=0, columnspan=8, sticky="w", pady=(4, 4)
     )
 
     ttk.Label(
-        top, text="Plan from above, 0° at 12 o'clock and clockwise: red ends, the dashed arrow climbs"
-    ).grid(row=17, column=0, columnspan=8, sticky="w")
+        top, text="Plan from above, 0° at 12 o'clock and clockwise: red ends, the dashed arrow climbs, teal splices"
+    ).grid(row=18, column=0, columnspan=8, sticky="w")
     plan = tk.Canvas(top, width=_PLAN, height=_PLAN, background="#f4f1ea", highlightthickness=1)
-    plan.grid(row=18, column=0, columnspan=8, sticky="w")
+    plan.grid(row=19, column=0, columnspan=8, sticky="w")
 
     def tab_inputs() -> dict[str, object]:
         """Everything on the tab, for the run log."""
@@ -581,8 +674,48 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "grab_high": grab_high_var.get(),
             "split": split_var.get(), "split_mode": split_mode_var.get(), "split_span_ft": split_span_var.get(),
             "split_segments": split_count_var.get(), "split_plate": split_plate_var.get(),
-            "split_hole_row": split_row_var.get(),
+            "split_hole_row": split_row_var.get(), "by_the_rules": rules_var.get(), "handrail_on": rail_side_var.get(),
         }
+
+    def saved_inputs() -> dict[str, object]:
+        """The tab and what was placed in the Stair game, for the project file."""
+        data: dict[str, object] = dict(tab_inputs())
+        game = (shared or {}).get("stair_game")
+        if game is not None:
+            data["game"] = {"pins": [[p.kind, p.flight, p.tread, p.side] for p in game.choice.pins],
+                            "removed": [list(key) for key in game.choice.removed]}
+        return data
+
+    def load_inputs(data: dict) -> None:
+        """Put a project's saved tab back, and its Stair game placements."""
+        fields = {
+            "diameter": diameter_var, "gap": gap_var, "shell_height": shell_height_var, "top_offset": top_offset_var,
+            "bottom_offset": bottom_offset_var, "treads": treads_var, "slope": slope_var, "tread_width": tread_var,
+            "climbs": hand_var, "orientation": orient_var, "orientation_at": orient_end_var, "plate_width": plate_var,
+            "pan_wall": wall_var, "include_shell": include_shell, "braces": braces_var, "knee_braces": knee_var,
+            "inner_clips": inner_var, "mid_platforms": platforms_var, "top_platform": top_platform_var,
+            "posts": posts_var, "post_in_outer": post_in_out_var, "post_in_inner": post_in_inner_var,
+            "top_rail": top_rail_var, "mid_rail": mid_rail_var, "mid_top": mid_top_var, "grab_rail": grab_var,
+            "grab_top": grab_top_var, "grab_low": grab_low_var, "grab_high": grab_high_var, "split": split_var,
+            "split_mode": split_mode_var, "split_span_ft": split_span_var, "split_segments": split_count_var,
+            "split_plate": split_plate_var, "split_hole_row": split_row_var, "by_the_rules": rules_var,
+            "handrail_on": rail_side_var,
+        }
+        # The treads last: the height and the platforms pick a count of their own as they are set.
+        for key in [k for k in fields if k != "treads"] + ["treads"]:
+            if key in data:
+                with contextlib.suppress(tk.TclError, ValueError):
+                    fields[key].set(data[key])
+        game = data.get("game")
+        if shared is not None:
+            shared.pop("stair_game", None)  # never the last project's pieces
+        if isinstance(game, dict) and shared is not None:
+            with contextlib.suppress(ValueError, TypeError):
+                choice = Choice(tuple(Spot(*p, pinned=True) for p in game.get("pins", [])),
+                                tuple(tuple(key) for key in game.get("removed", [])))
+                played = Game(base_arrangement(), None, read_rules(), choice)
+                shared["stair_game"] = played
+        refresh()
 
     def read_wall() -> float:
         try:
@@ -707,6 +840,13 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             treads_at, spans = stair_plan(current, platforms, bool(top_platform_var.get()))
             turn, ends = read_turn(current, platforms)
             top_offset, bottom_offset = read_offsets()
+            splits = read_splits()
+            ruled = rules_plan(base_arrangement()) if rules_var.get() else None
+            if ruled is not None and splits is not None:
+                # The plan's cuts, checked against its posts and knee braces (flight 1's; every flight is cut alike).
+                beside = {s.tread for s in ruled.spots if s.kind in (POST, KNEE) and s.flight == 0}
+                splits = replace(splits, fixed=tuple(ruled.cuts), avoid=tuple(beside))
+            splitters = _splitters(current, platforms, splits) if splits is not None else None
         except ValueError as exc:
             summary_var.set(str(exc))
             plan.delete("all")
@@ -737,9 +877,12 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             f"{slopes['outer']:.2f}° outer stringer, {slopes['shell']:.2f}° at the shell OD (mid-walls, as the "
             f"lisp's Audit) · {lap_text} at the centerline (depth {TREAD_DEPTH_IN:g} in) · sweep "
             f"{math.degrees(max([treads_at[-1]] + [b for _a, b in spans])):.2f}° · outside face radius "
-            f"{drawn.outside_radius_in:.2f} in"
+            f"{drawn.outside_radius_in:.2f} in" + (f"\n{splitters[0]}" if splitters else "")
+            + (f"\nBy the rules: {_rules_text(ruled)}" + (f" {' '.join(ruled.warnings)}" if ruled.warnings else "")
+               if ruled is not None else "")
         )
-        _draw_plan(plan, drawn, treads_at, spans, ends=ends, turn=turn, ccw=ccw)
+        _draw_plan(plan, drawn, treads_at, spans, ends=ends, turn=turn, ccw=ccw,
+                   splices=splitters[1] if splitters else ())
         if not state["busy"]:
             status_var.set("Stringer ready.")
 
@@ -805,19 +948,31 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             wall = read_wall()
             platforms = read_platforms(current.treads)
             per_flight = flight_treads(current.treads, platforms)
-            braces = read_braces(per_flight * (platforms + 1))
-            posts = read_post_treads(posts_var.get(), per_flight)
+            by_rules = bool(rules_var.get())
+            braces = () if by_rules else read_braces(per_flight * (platforms + 1))
+            posts = () if by_rules else read_post_treads(posts_var.get(), per_flight)
+            result = None
+            inner_rail = None
+            rail_splits: tuple = ()
+            if rules_var.get():
+                # Everything the rules (or the Stair game) placed, in place of the typed posts and braces.
+                base = base_arrangement()
+                result = rules_plan(base)
+                posts = flight_posts(base, result, OUTER) if OUTER in read_rules().sides else ()
+                if INNER in read_rules().sides:
+                    inner_rail = InnerRail(posts=flight_posts(base, result, INNER))
+                rail_splits = tuple((spot.side, spot.pan(per_flight)) for spot in result.of_kind(RAIL_SPLIT))
             post_in = read_post_in(post_in_out_var, "outer")
             read_post_in(post_in_inner_var, "inner")
-            top_rail = bool(top_rail_var.get()) and bool(posts)
-            mid_rail = bool(mid_rail_var.get()) and bool(posts)
+            top_rail = bool(top_rail_var.get()) and any(posts)
+            mid_rail = bool(mid_rail_var.get()) and any(posts)
             try:
                 mid_top = float(mid_top_var.get().strip())
             except ValueError as exc:
                 raise ValueError("The platform midrail top must be a number of inches.") from exc
             check_platform_mid_top(mid_top)
             grab = None
-            if bool(grab_var.get()) and posts:
+            if bool(grab_var.get()) and any(posts):
                 try:
                     grab = GrabRail(
                         top=float(grab_top_var.get().strip()),
@@ -832,6 +987,12 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             splits = read_splits()
             _top_offset, bottom_offset = read_offsets()
             turn, ends = read_turn(current, platforms)
+            clips = None
+            rule_notes: list[str] = []
+            if result is not None:
+                planned = applied(base, result)
+                braces, clips, splits = planned.braces, planned.clips, planned.splits
+                rule_notes = [f"Placed by the rules: {_rules_text(result)}"] + list(result.warnings)
         except ValueError as exc:
             messagebox.showerror("Stair", str(exc) if str(exc) else "Pan wall must be numeric.")
             return
@@ -850,10 +1011,20 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
                 session.app, current, wall, progress=progress, shell=with_shell, platforms=platforms,
                 top_platform=top_platform, posts=posts, platform_post_in=post_in, top_rail=top_rail,
                 mid_rail=mid_rail, platform_mid_top=mid_top, grab=grab, ground_in=-bottom_offset,
-                shell_height_in=shell_height, splits=splits,
+                shell_height_in=shell_height, splits=splits, inner_rail=inner_rail, rail_splits=rail_splits,
             )
-            notes = [result.note]
-            if braces:
+            notes = [result.note, *rule_notes]
+            if clips is not None:
+                profile = angle_profile(session.app) if braces else ""
+                clip_profile = clip_angle_profile(session.app) if inner and clips else ""
+                for index in braces:
+                    notes.append(add_cross_brace(result.model, index, profile, progress=progress).note)
+                    if knees:
+                        notes.append(add_knee_brace(result.model, index, profile, shell_radius_in=current.shell_od_in,
+                                                    progress=progress).note)
+                for index in clips if inner else ():
+                    notes.append(_inner_clip(result.model, index, tops, clip_profile, current.shell_od_in, progress))
+            elif braces:
                 profile = angle_profile(session.app)
                 clip_profile = clip_angle_profile(session.app) if inner else ""
                 for index in braces:
@@ -881,10 +1052,10 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         stages = _stair_stage_plan(
             current.treads, shell=with_shell, braces=braces, knees=knees, inner=inner, platforms=platforms,
             top_platform=top_platform, posts=posts, top_rail=top_rail, mid_rail=mid_rail, grab=grab is not None,
-            ccw=ccw, turned=turned, split_treads=tuple(
-                joint.tread for joint in (split_joints(replace(current, treads=per_flight), splits)["In"]
-                                          if splits else ())
-            ),
+            ccw=ccw, turned=turned, **_split_stages(replace(current, treads=per_flight), splits),
+            clips=clips if inner or clips is None else (),
+            inner_posts=inner_rail.posts if inner_rail is not None else (),
+            rail_splits=tuple(pan for _side, pan in rail_splits),
         )
         run_job("Stair", stages, work)
 
@@ -1021,31 +1192,64 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     for var in (
         diameter_var, gap_var, slope_var, plate_var, wall_var, top_platform_var, tread_var, hand_var, orient_var,
         orient_end_var,
+        # the splitters, and what their cuts keep off
+        split_var, split_mode_var, split_span_var, split_count_var, split_plate_var, split_row_var, posts_var,
+        braces_var, knee_var, inner_var, rules_var, rail_side_var,
     ):
         var.trace_add("write", refresh)
 
     def read_splits() -> SplitSettings | None:
-        """The splitter settings, or None when the stringers are not split."""
+        """The splitter settings, or None when the stringers are not split. The cuts keep off the treads with a
+        post or a cross brace: the brace's caps are bolted through both stringers, knee brace and clip or not."""
         if not split_var.get():
             return None
+        current = read_spec()
+        per_flight = flight_treads(current.treads, read_platforms(current.treads))
+        avoid: set[int] = set()
+        if not rules_var.get():  # by the rules, the plan keeps its own cuts off its own pieces
+            avoid = set(read_post_treads(posts_var.get(), per_flight))
+            avoid |= {(index - 1) % per_flight + 1 for index in parse_brace_treads(braces_var.get())}
         try:
             plate = split_plate_var.get().strip()
+            row = split_row_var.get().strip()
             return SplitSettings(
                 mode=split_mode_var.get(),
                 segments=int(float(split_count_var.get().strip() or "0")),
                 max_span_ft=float(split_span_var.get().strip() or "0"),
                 plate_height_in=float(plate) if plate else None,
-                hole_row_in=float(split_row_var.get().strip() or "0"),
+                hole_row_in=float(row) if row else None,
+                avoid=tuple(avoid),
             )
-        except ValueError as exc:
+        except (ValueError, OverflowError) as exc:  # int(float("inf")) overflows
             raise ValueError(f"Stringer splitters: {exc}") from exc
 
+    def read_rules() -> Rules:
+        return Rules(sides=_RAIL_SIDE[rail_side_var.get()])
+
+    def rules_plan(base: StairArrangement):
+        """The attachments by the rules for the stair ``base``, round what was placed in the Stair game (when the
+        game is of this stair)."""
+        given = shared if shared is not None else {}
+        shell = shell_from(given.get("spec"), given.get("nozzles") or (), given.get("cleanouts") or (),
+                           given.get("anchors"))
+        game = given.get("stair_game")
+        pins, removed = (), ()
+        if game is not None and game.arrangement.stair == base.stair and game.arrangement.platforms == base.platforms:
+            pins, removed = game.choice.pins, game.choice.removed
+        return plan_attachments(base, shell, read_rules(), pins, removed)
+
     def arrangement() -> StairArrangement:
-        """The stair as the tab stands, for the Stretchout tab. Raises ValueError with what is wrong."""
+        """The stair as the tab stands, its attachments placed by the rules when that is on, for the Stretchout
+        tab. Raises ValueError with what is wrong."""
+        base = base_arrangement()
+        return applied(base, rules_plan(base)) if rules_var.get() else base
+
+    def base_arrangement() -> StairArrangement:
+        """The stair as the tab stands, the braces as typed. Raises ValueError with what is wrong."""
         current = read_spec()
         current.validate()
         platforms = read_platforms(current.treads)
-        braces = read_braces(flight_treads(current.treads, platforms) * (platforms + 1))
+        braces = () if rules_var.get() else read_braces(flight_treads(current.treads, platforms) * (platforms + 1))
         turn, _ends = read_turn(current, platforms)
         _top_offset, bottom_offset = read_offsets()
         return StairArrangement(
@@ -1056,6 +1260,12 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
 
     if shared is not None:
         shared["stairway"] = arrangement
+        shared["stairway_base"] = base_arrangement
+        shared["stair_rules"] = read_rules
+        shared["stair_game_changed"] = refresh
+        shared["stairway_inputs"] = saved_inputs
+        shared["load_stairway"] = load_inputs
+        shared["stair_plan"] = lambda: rules_plan(base_arrangement()) if rules_var.get() else None
 
     def on_wheel(event) -> None:
         scroller.yview_scroll(int(-event.delta / 120), "units")
@@ -1191,12 +1401,82 @@ def plan_xy(radius: float, angle: float) -> tuple[float, float]:
     return (radius * math.sin(angle), radius * math.cos(angle))
 
 
+def _split_stages(flight: StringerMock, splits: SplitSettings | None) -> dict:
+    """``_stair_stage_plan``'s splitter arguments for one flight: the cut treads, and the inner stringer's piece
+    rounds and plate rounds at each, as the build will report them."""
+    if splits is None:
+        return {"split_treads": (), "split_rounds": ()}
+    inner, _outer = develop_both(flight)
+    cuts = joints(inner, flight.rise_in, flight.treads, splits)
+    rounds = [reliefs(inner, joint) for joint in cuts]
+    return {
+        "split_treads": tuple(joint.tread for joint in cuts),
+        "split_rounds": tuple((sum(r.piece != "plate" for r in found), sum(r.piece == "plate" for r in found))
+                              for found in rounds),
+    }
+
+
+def _rules_text(result) -> str:
+    """The plan in a line: where each kind of piece went, every flight."""
+    parts = []
+    for kind, name in ((KNEE, "knee braces"), (CLIP, "inner clips"), (POST, "posts")):
+        spots = result.of_kind(kind)
+        if spots:
+            by_flight = {}
+            for spot in spots:
+                by_flight.setdefault(spot.flight, []).append(spot.tread)
+            parts.append(f"{name} at treads " + "; ".join(
+                f"{', '.join(map(str, sorted(set(t))))}" + (f" (flight {k + 1})" if len(by_flight) > 1 else "")
+                for k, t in sorted(by_flight.items())))
+    parts.append(f"stringer cuts after treads {', '.join(map(str, result.cuts))}" if result.cuts
+                 else "no stringer cuts")
+    return "; ".join(parts) + "."
+
+
+def _splitters(stair: StringerMock, platforms: int, splits: SplitSettings):
+    """The summary's splitter line, and each splice plate in plan for ``_draw_plan``: (radius, from, to, in the
+    way) in the clockwise build's angles, every flight. The plates show just off their stringers."""
+    flight = replace(stair, treads=flight_treads(stair.treads, platforms))
+    wanted = pieces_wanted(flight_span_in(flight.rise_in, flight.treads), splits)
+    if choose_cuts(flight.rise_in, flight.treads, splits) is None:
+        if splits.mode == SPLIT_SEGMENTS:
+            return f"Splitters: a flight of {flight.treads} treads cannot make {wanted} pieces.", []
+        return (f"Splitters: a {splits.max_span_ft:g} ft max span needs {wanted} pieces a flight, more than its "
+                f"{flight.treads} treads; the stringers stay whole."), []
+    turn, _lift = flight_step(flight)
+    arcs = []
+    notes: list[str] = []
+    found = {}
+    for dev, radius in zip(develop_both(flight), (-THICKNESS_IN - 1.5, THICKNESS_IN + 1.5), strict=True):
+        found[dev.side] = joints(dev, flight.rise_in, flight.treads, splits)
+        for joint in found[dev.side]:
+            problems = clashes(dev, [joint], splits.avoid)
+            notes.extend(problems)
+            xs = [x for x, _y in joint.plate]
+            arcs.extend((dev.radius_in + radius, k * turn + min(xs) / dev.radius_in,
+                         k * turn + max(xs) / dev.radius_in, bool(problems)) for k in range(platforms + 1))
+    if not found["inner"]:
+        if splits.mode == SPLIT_SEGMENTS:
+            return "Splitters: none, Segments is 1; each flight's stringers are one piece.", arcs
+        return "Splitters: none needed, each flight's stringers are one piece within the max span.", arcs
+    gaps = ", ".join(f"{joint.tread} and {joint.tread + 1}" for joint in found["inner"])
+    rows = sorted({round(abs(y - joint.y_cut), 4)
+                   for cuts in found.values() for joint in cuts for _x, y in joint.holes})
+    text = (f"Splitters: each flight's stringers are cut between treads {gaps} ({len(found['inner']) + 1} pieces), "
+            f"the splice holes {' and '.join(f'{row:.3f}'.rstrip('0').rstrip('.') for row in rows)} in off the cut")
+    if notes:
+        return f"{text}. Check: {' '.join(notes)}", arcs
+    return (f"{text}; every bolt's washer clears the treads and their bolts, and no post or brace is "
+            "beside a cut."), arcs
+
+
 def _draw_plan(
     canvas: tk.Canvas, layout: StringerLayout, treads_at: list[float], spans: list[tuple[float, float]],
-    *, ends: tuple[float, float] = (0.0, 0.0), turn: float = 0.0, ccw: bool = False,
+    *, ends: tuple[float, float] = (0.0, 0.0), turn: float = 0.0, ccw: bool = False, splices=(),
 ) -> None:
     """Shell, stringer faces, a line per tread, each platform's outline, the climb and both ends, over the whole
-    stair, where it lands on the tank: the clockwise build's angles mirrored for ``ccw``, then turned."""
+    stair, where it lands on the tank: the clockwise build's angles mirrored for ``ccw``, then turned. ``splices``
+    are the splitters' plates, from ``_splitters``."""
     canvas.delete("all")
     sweep = max([treads_at[-1]] + [b for _a, b in spans]) if treads_at else layout.sweep_rad
     label_r = _platform_out(layout) + 8.0
@@ -1212,12 +1492,13 @@ def _draw_plan(
     ]
     _paint(
         canvas, _PLAN, _PLAN, points,
-        lambda locate: _plan_marks(canvas, layout, sweep, treads_at, spans, locate, world, ends, label_r),
+        lambda locate: _plan_marks(canvas, layout, sweep, treads_at, spans, locate, world, ends, label_r, splices),
     )
 
 
 def _plan_marks(
-    canvas: tk.Canvas, layout: StringerLayout, sweep: float, treads_at, spans, locate, world, ends, label_r: float
+    canvas: tk.Canvas, layout: StringerLayout, sweep: float, treads_at, spans, locate, world, ends, label_r: float,
+    splices=(),
 ) -> None:
     def at(radius: float, angle: float) -> tuple[float, float]:
         return locate(*plan_xy(radius, world(angle)))
@@ -1239,6 +1520,9 @@ def _plan_marks(
             at(_platform_out(layout), side_b), at(layout.inner_face_in, side_b),
         )
         canvas.create_polygon(*[v for corner in corners for v in corner], outline="#b5651d", fill="", width=2)
+    for radius, start, end, bad in splices:
+        canvas.create_line(*[v for step in range(9) for v in at(radius, start + (end - start) * step / 8)],
+                           fill="#d40000" if bad else "#0f766e", width=5)
 
 
 def _platform_out(layout: StringerLayout) -> float:

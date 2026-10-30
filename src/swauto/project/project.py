@@ -38,6 +38,9 @@ class Project:
     roof_nozzles: list[RoofNozzle] = field(default_factory=list)
     # Part file name -> {"fingerprint", "built_at", "status", "error"}
     built: dict[str, dict] = field(default_factory=dict)
+    # The Stairway tab as it stood (its fields by name) and what was placed in the Stair game ("game"); the stair
+    # is not in the assembly yet, so this only brings the tab back.
+    stairway: dict = field(default_factory=dict)
 
     @property
     def path(self) -> Path:
@@ -86,6 +89,7 @@ class Project:
             "nozzles": [asdict(nozzle) for nozzle in self.nozzles],
             "roof_nozzles": [asdict(nozzle) for nozzle in self.roof_nozzles],
             "built": self.built,
+            "stairway": self.stairway,
         }
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -108,6 +112,7 @@ class Project:
             nozzles=[Nozzle(**dict(n)) for n in data.get("nozzles", [])],
             roof_nozzles=[RoofNozzle(**dict(n)) for n in data.get("roof_nozzles", [])],
             built=dict(data.get("built") or {}),
+            stairway=dict(data.get("stairway") or {}),
         )
 
 

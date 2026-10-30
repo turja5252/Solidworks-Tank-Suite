@@ -237,3 +237,11 @@ def test_a_same_named_file_open_from_another_folder_stops_the_build(tmp_path):
         check_name_clashes(App(unrelated, other_folder), project, items)
     with pytest.raises(SolidWorksError, match="Tank 2.SLDASM"):
         check_name_clashes(App(Doc(tmp_path / "elsewhere" / "Tank 2.SLDASM")), project, items)
+
+
+def test_the_stairway_and_its_game_are_kept_with_the_project(tmp_path):
+    stairway = {"shell_height": "480", "by_the_rules": True, "handrail_on": "Both",
+                "game": {"pins": [["handrail post", 0, 12, "outer"]], "removed": [["knee brace", 0, 7, ""]]}}
+    project = Project(folder=tmp_path, name="Tank 103", spec=_tank(), stairway=stairway)
+    back = Project.load(project.save())
+    assert back.stairway == stairway

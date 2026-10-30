@@ -68,6 +68,9 @@ def build_project_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict 
     def take_inputs(project: Project) -> None:
         project.spec, project.cleanouts, project.nozzles = inputs()
         project.roof_nozzles = list(shared.get("roof_nozzles") or [])
+        stairway = shared.get("stairway_inputs")
+        if callable(stairway):
+            project.stairway = stairway()
 
     def show(project: Project, saved: bool) -> None:
         """Name the open project here and in the bar over every tab."""
@@ -122,6 +125,9 @@ def build_project_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict 
         try:
             project = Project(folder=Path(folder), name=safe_name(name), spec=spec, cleanouts=cleanouts,
                               nozzles=nozzles, roof_nozzles=list(shared.get("roof_nozzles") or []))
+            stairway = shared.get("stairway_inputs")
+            if callable(stairway):
+                project.stairway = stairway()
         except ValueError as exc:
             messagebox.showerror("Project", str(exc))
             return
@@ -148,7 +154,8 @@ def build_project_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict 
         # Fill the other tabs; each one feeds its inputs back through ``shared`` as it reads them.
         missing = []
         for hook, value in (("apply_spec", project.spec), ("load_cleanouts", project.cleanouts),
-                            ("load_nozzles", project.nozzles), ("load_roof_nozzles", project.roof_nozzles)):
+                            ("load_nozzles", project.nozzles), ("load_roof_nozzles", project.roof_nozzles),
+                            ("load_stairway", project.stairway)):
             fill = shared.get(hook)
             if callable(fill):
                 fill(value)
