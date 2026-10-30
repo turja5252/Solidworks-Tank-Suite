@@ -33,9 +33,11 @@ from swauto.errors import SolidWorksError
 from swauto.parts import new_part, quiet
 from swauto.project.items import Item, Placement, _family, _names, fingerprint
 from swauto.stair import stair_sw as s
-from swauto.stair.brace_sw import angle_profile
+from swauto.stair.brace_parts import brace_holes, brace_jobs
+from swauto.stair.brace_sw import CAP_THK_IN, HOLE_DIA_IN, angle_profile
 from swauto.stair.grab_sw import GrabRail, _sketch_through
-from swauto.stair.platform_parts import clip_jobs, clip_sides, pad_job, support_jobs, web_holes
+from swauto.stair.inner_clip_sw import clip_angle_profile
+from swauto.stair.platform_parts import _holes_through, clip_jobs, clip_sides, pad_job, support_jobs, web_holes
 from swauto.stair.platform_sw import (
     CHANNEL_IN,
     _arc_member,
@@ -71,6 +73,8 @@ from swauto.stair.rail_parts import (
     split_pairs,
 )
 from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN
+from swauto.stair.split_parts import build_plate, cut_stringer, keep_stringer_piece, stringer_joints
+from swauto.stair.splitter import SplitSettings
 from swauto.stair.stringer import (
     BOLT_DIA_IN,
     BOLT_FROM_FRONT_IN,
@@ -127,6 +131,10 @@ class StairParts:
     mid_top: float | None = None  # the platform midrail's top over the grating (rail_sw.PLATFORM_MID_TOP_IN)
     grab: GrabRail | None = None  # the outer grab rail on the flight posts
     rail_splits: tuple = ()  # (side, pan of the post below the bay) of each handrail splice, as for create_stair
+    braces: tuple = ()  # treads with a cross brace under them
+    knees: bool = False  # each cross brace with a knee brace down to the shell
+    inner_clips: tuple = ()  # treads with an inner clip above them
+    splits: SplitSettings | None = None  # the stringer splitter's settings, as for create_stair
 
     @property
     def where(self):
@@ -367,7 +375,7 @@ def _straight_side(model, lines, base: float, frame_file: str, name: str, side: 
 
 
 def jobs(parts: StairParts, post_file: str = "", frame_file: str = "", knee_file: str = "",
-         clip_file: str = "") -> list[PartJob]:
+         clip_file: str = "", clip4_file: str = "") -> list[PartJob]:
     """Every piece, in build order: the tread, each flight's two stringers, the flight post, the platforms' frames
     and supports, the stringer clips, the shell pad, and with the flight posts the rest of the outer handrail
     (``rail_parts``)."""
@@ -380,6 +388,7 @@ def jobs(parts: StairParts, post_file: str = "", frame_file: str = "", knee_file
         tuple(parts.place(p.phi - first.phi, p.y0 - first.y0) for p in where.places),
     )]
     posts = parts.flight_posts()
+    braced = brace_holes(where, parts.braces, parts.inner_clips, parts.shell_od)
     for k in range(len(where.offsets)):
         dphi, dy = parts.flight_move(k)
         # This flight's posts where they would stand on the first flight, where its stringers are modelled.
@@ -387,13 +396,30 @@ def jobs(parts: StairParts, post_file: str = "", frame_file: str = "", knee_file
                      if (p.index - 1) // where.per_flight == k)
         for side, word in (("In", "inner"), ("Out", "outer")):
             holes = mine if side == "Out" else ()
+            extra = tuple(([_seat(p, dphi, dy) for p in points], _seat(axis, dphi, 0.0, shift=False))
+                          for index, points, axis in braced[side] if (index - 1) // where.per_flight == k)
             params = {"version": PARTS_VERSION, "flight": flight, "side": side, "foot_holes": k > 0,
-                      "posts": [[p.phi, p.foot] for p in holes]}
-            out.append(PartJob(
-                f"Stair stringer {word}", f"Flight {k + 1} {word} stringer", params,
-                lambda model, side=side, foot=k > 0, holes=holes: _stringer(model, parts, side, foot, holes),
-                (parts.place(dphi, dy),),
-            ))
+                      "posts": [[p.phi, p.foot] for p in holes], "braces": [points for points, _axis in extra]}
+            cuts = stringer_joints(where, parts.splits, side) if parts.splits is not None else []
+            for i in range(len(cuts) + 1):
+                piece = f" piece {i + 1} of {len(cuts) + 1}" if cuts else ""
+                out.append(PartJob(
+                    f"Stair stringer {word}", f"Flight {k + 1} {word} stringer{piece}",
+                    dict(params, splits=asdict(parts.splits) if cuts else None, piece=i),
+                    lambda model, side=side, foot=k > 0, holes=holes, extra=extra, cuts=cuts, i=i:
+                    _stringer(model, parts, side, foot, holes, extra, cuts, i),
+                    (parts.place(dphi, dy),),
+                ))
+    if parts.splits is not None:
+        for side, word in (("In", "inner"), ("Out", "outer")):
+            for joint in stringer_joints(where, parts.splits, side):
+                out.append(PartJob(
+                    "Stair splice plate", f"{word.title()} stringer splice plate at tread {joint.tread}",
+                    {"version": PARTS_VERSION, "flight": flight, "side": side, "splits": asdict(parts.splits),
+                     "tread": joint.tread},
+                    lambda model, side=side, joint=joint: build_plate(model, where, side, joint, f"EliteSplit{side}"),
+                    tuple(parts.place(*parts.flight_move(k)) for k in range(len(where.offsets))),
+                ))
     if posts:
         seat = _post_layout(where.places, where.per_flight, (2,), parts.r_b)[0]
         out.append(PartJob(
@@ -401,8 +427,11 @@ def jobs(parts: StairParts, post_file: str = "", frame_file: str = "", knee_file
             lambda model: _post(model, parts, seat, post_file),
             tuple(parts.place(p.phi - seat.phi, p.foot - seat.foot) for p in posts),
         ))
-    if parts.platforms or parts.top_platform:
-        platforms = parts.platform_lines()
+    braces, knee_pads = brace_jobs(PartJob, where, parts.braces, parts.knees, parts.inner_clips, parts.shell_od,
+                                   knee_file, clip4_file, {"version": PARTS_VERSION, "flight": flight}, parts.place)
+    out.extend(braces)
+    platforms = parts.platform_lines() if parts.platforms or parts.top_platform else []
+    if platforms:
         out.extend(platform_jobs(parts, frame_file))
         for k, seat_lines, dphi, dy in parts.platform_seats():
             common = {"version": PARTS_VERSION, "flight": flight,
@@ -411,7 +440,8 @@ def jobs(parts: StairParts, post_file: str = "", frame_file: str = "", knee_file
                                     lambda turn, dphi=dphi, dy=dy: parts.place(dphi + turn, dy)))
         out.extend(clip_jobs(PartJob, platforms, parts.platforms, clip_file,
                              {"version": PARTS_VERSION, "flight": flight}, parts.place))
-        out.append(pad_job(PartJob, platforms, parts.shell_od, {"version": PARTS_VERSION}, parts.place))
+    if platforms or knee_pads:
+        out.append(pad_job(PartJob, platforms, parts.shell_od, {"version": PARTS_VERSION}, parts.place, knee_pads))
     if posts:
         common = {"version": PARTS_VERSION, "flight": flight, "rails": parts.rail_params()}
         rails = parts.rails()
@@ -463,10 +493,13 @@ def _tread(model, parts: StairParts) -> None:
         raise SolidWorksError("Tread: the bolt holes were not cut.")
 
 
-def _stringer(model, parts: StairParts, side: str, foot_holes: bool, posts: Sequence[Post]) -> None:
+def _stringer(model, parts: StairParts, side: str, foot_holes: bool, posts: Sequence[Post], braces=(), cuts=(),
+              piece: int = 0) -> None:
     """One stringer (``side`` In or Out) where the first flight's stands, as every flight's is modelled: rolled and
     formed as the one-part build makes it, every tread's two bolt holes through it (a sketch square to it on the
-    bolt lines), and each of ``posts``' two holes (on the outer one, the posts moved onto the first flight)."""
+    bolt lines), each of ``posts``' two holes (on the outer one, the posts moved onto the first flight), and
+    ``braces``' holes, the cross braces' caps' and the inner clips', moved onto it too. With the splitter's ``cuts``
+    it is cut at each joint (``split_parts``) and only its ``piece``-th piece from the bottom is kept."""
     where = parts.where
     layout = where.layout
     s.build_flight_stringers(model, where.flight, parts.shell_od, at=where.offsets[0], foot_holes=foot_holes,
@@ -486,6 +519,12 @@ def _stringer(model, parts: StairParts, side: str, foot_holes: bool, posts: Sequ
                                  _circles(points, POST_HOLE_DIA_IN, name))
         if s._cut_both_ways(model, sketch, THK_IN + THICKNESS_IN + 0.1) is None:
             raise SolidWorksError(f"{name}: the post holes were not cut through the stringer.")
+    for i, (points, axis) in enumerate(braces, start=1):  # a brace cap's or an inner clip's, (points, axis)
+        _holes_through(model, points[0], axis, points, HOLE_DIA_IN, CAP_THK_IN + THICKNESS_IN + 0.1,
+                       f"EliteBraceHoles{i}")
+    if cuts:  # the splitter's joints: cut there, then keep this piece
+        cut_stringer(model, where, side, list(cuts), f"EliteSplit{side}")
+        keep_stringer_piece(model, piece, f"EliteSplit{side}")
 
 
 def _post(model, parts: StairParts, post: Post, profile: str) -> None:
@@ -499,25 +538,39 @@ def _post(model, parts: StairParts, post: Post, profile: str) -> None:
 
 def build(app, parts: StairParts, folder: Path, name: str = ASSEMBLY, progress=None,
           built: Mapping[str, str] | None = None) -> tuple[str, dict[str, str]]:
-    """Model every piece in a new part, save it in ``folder`` and close it, then place them all in
-    ``folder``/``name``.SLDASM. Each part is closed before the assembly opens (an assembly must not hold a part being
-    edited). ``built`` is what the last build returned, so each shape keeps its file. Returns a note with the time
-    each part took, and each file's fingerprint."""
-    from swauto.project.build_sw import _properties, _save, check_name_clashes, sync_assembly
+    """Model each piece in a new part, save it in ``folder`` and close it, then place them all in
+    ``folder``/``name``.SLDASM. ``built`` is what the last build returned (file name to fingerprint): a file that
+    already holds its piece's shape is kept as it is, so a change rebuilds only what it changed, and a shape no longer
+    used leaves the assembly. The assembly is closed first, and each part before it is rebuilt: SolidWorks must not
+    hold a part being replaced. ``progress`` hears "<file> built" or "<file> kept" after each. Returns a note with
+    the time each part took, and each file's fingerprint."""
+    from swauto.project.build_sw import _close, _properties, _save, check_name_clashes, sync_assembly
     from swauto.project.project import Project
     from swauto.tank.spec import TankSpec
 
+    built = dict(built or {})
     folder.mkdir(parents=True, exist_ok=True)
     timings = []
     frame_file = platform_profile(app) if parts.platforms or parts.top_platform else ""
-    knee_file = angle_profile(app) if frame_file else ""
+    knee_file = angle_profile(app) if frame_file or parts.braces else ""
     clip_file = clip_profile(app) if frame_file else ""
-    todo = stair_items(jobs(parts, post_profile(app) if parts.posts else "", frame_file, knee_file, clip_file),
-                       built)
-    project = Project(folder=folder, name=name, spec=TankSpec())
+    clip4_file = clip_angle_profile(app) if parts.inner_clips else ""
+    todo = stair_items(jobs(parts, post_profile(app) if parts.posts else "", frame_file, knee_file, clip_file,
+                            clip4_file), built)
+    # The last build's files are this assembly's too: one whose shape is gone leaves it.
+    project = Project(folder=folder, name=name, spec=TankSpec(), built={file: {} for file in built})
     # SolidWorks keeps one document per file name: a same-named part open from another folder would be overwritten.
     check_name_clashes(app, project, todo)
+    _close(app, project.assembly_path, save=True)
+    kept = 0
     for item in todo:
+        path = folder / item.file
+        if built.get(item.file) == item.fingerprint and path.exists():
+            kept += 1
+            if progress is not None:
+                progress(f"{item.file} kept")
+            continue
+        _close(app, path, save=False)  # being rebuilt: the file is replaced
         start = time.time()
         model = new_part(app)
         if model is None:
@@ -531,7 +584,7 @@ def build(app, parts: StairParts, folder: Path, name: str = ASSEMBLY, progress=N
             with contextlib.suppress(Exception):
                 s._hide_construction(model)
             _properties(model, item)
-            _save(model, folder / item.file)
+            _save(model, path)
             steps.append(f"save {time.time() - mark:.0f}")
         finally:
             mark = time.time()
@@ -539,11 +592,11 @@ def build(app, parts: StairParts, folder: Path, name: str = ASSEMBLY, progress=N
             steps.append(f"close {time.time() - mark:.0f}")
         timings.append(f"{item.label} {time.time() - start:.0f} s ({', '.join(steps)})")
         if progress is not None:
-            progress(f"{item.file} built ({item.label}): {timings[-1]}")
+            progress(f"{item.file} built")
     start = time.time()
-    placed, _removed = sync_assembly(app, project, todo)
+    placed, removed = sync_assembly(app, project, todo)
     timings.append(f"assembly {time.time() - start:.0f} s")
     copies = sum(len(item.placements) for item in todo)
-    note = (f"{len(todo)} part files, {copies} pieces placed ({placed} new) in {name}.SLDASM. "
-            f"Times: {', '.join(timings)}.")
+    note = (f"{len(todo)} part files ({len(todo) - kept} built, {kept} kept as they were), {copies} pieces in "
+            f"{name}.SLDASM ({placed} placed, {removed} taken out). Times: {', '.join(timings)}.")
     return note, {item.file: item.fingerprint for item in todo}

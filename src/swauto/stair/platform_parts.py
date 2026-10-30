@@ -90,11 +90,11 @@ def pad_centres(lines, shell_r: float) -> list[tuple[float, float]]:
     return centres
 
 
-def pad_job(job, platforms: list, shell_r: float, common: dict, place):
+def pad_job(job, platforms: list, shell_r: float, common: dict, place, more=()):
     """The one shell pad piece (``job`` the PartJob class): modelled flat on the shell at angle 0 and height 0, and
     put by ``place(turn, lift)`` at every pad of every platform (``platforms`` are (k, lines) on the ground-0
-    stair), its shell clips' and its knees'."""
-    centres = [c for _k, lines in platforms for c in pad_centres(lines, shell_r)]
+    stair), its shell clips' and its knees', and at ``more`` (plan angle, height), the stair's knee braces'."""
+    centres = [c for _k, lines in platforms for c in pad_centres(lines, shell_r)] + list(more)
     return job("Stair shell pad", "Shell pad", dict(common, piece="shell pad", shell_od=shell_r),
                lambda model: build_pad(model, 0.0, 0.0, shell_r, "EliteShellPad"),
                tuple(place(phi, y) for phi, y in centres))
