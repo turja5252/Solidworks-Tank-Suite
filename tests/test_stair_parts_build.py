@@ -98,9 +98,9 @@ def test_the_ground_turn_and_post_picks_move_parts_and_change_no_file():
 
 
 def test_a_rolled_platform_gets_its_sides_its_end_radials_and_one_radial_for_all_between():
-    parts = _platform_parts(PlatformSpec(96.0))
+    parts = _platform_parts(PlatformSpec(150.0))
     (_k, lines), = parts.platform_lines()
-    assert lines.rolled and len(lines.radials) == 2
+    assert lines.rolled and len(lines.radials) == 3
     built = {job.label: job for job in platform_jobs(parts, "C4x5.4")}
     assert sorted(built) == [f"Platform 1 {n}" for n in ("radial A", "radial B", "radials between", "side C",
                                                          "side D")]
@@ -124,14 +124,14 @@ def test_a_rolled_platforms_supports_at_the_radials_are_the_pieces_at_a_turned_a
     from swauto.stair.platform_parts import C_FACE_IN
     from swauto.stair.platform_sw import _channel_ends, platform_knees
 
-    parts = _platform_parts(PlatformSpec(96.0))
+    parts = _platform_parts(PlatformSpec(150.0))  # the middle of its three radials is held
     (_k, lines), = parts.platform_lines()
     built = {job.label: job for job in jobs(parts, "", "C4x5.4", "L3x3", "L6x6")}
     stems = ("tab", "shell clip", "hanger", "knee brace", "knee clip")
     ends, knees = _channel_ends(lines), platform_knees(lines, parts.shell_od)
     for stem in stems:
         job = built[f"Platform 1 {stem} at A and the radials between"]
-        assert len(job.placements) == len(lines.supports()) - 1  # A and every radial between
+        assert len(job.placements) == len(lines.supports()) - 1 == 2  # A and the held radial
         for placement, end, (_l, frame, knee, _b) in zip(job.placements, ends, knees, strict=False):
             # The shell side's bolt and the knee's top bolt, carried from A's place to this support's.
             assert placed(placement, ends[0].world(C_FACE_IN, 2.0, lines.top - 2.0)) == pytest.approx(
@@ -163,7 +163,7 @@ def test_platforms_alike_share_every_piece_and_a_straight_ones_supports_each_get
     assert len(radial_b) == 2  # the top platform's B has no clip holes: no flight leaves it
     straight = stair_items(jobs(_platform_parts(PlatformSpec(60.0, rolled=False)), "", "C4x5.4", "L3x3", "L6x6"))
     knees = [item for item in straight if item.params["family"] == "Stair platform knee"]
-    assert [item.label for item in knees] == [f"Platform 1 knee brace at {s}" for s in ("A", "R1", "B")]
+    assert [item.label for item in knees] == [f"Platform 1 knee brace at {s}" for s in ("A", "B")]  # 60 in
     assert sum(item.file == "Stair shell pad A.SLDPRT" for item in straight) == 1
 
 

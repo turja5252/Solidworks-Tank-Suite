@@ -300,8 +300,10 @@ def _stair_stage_plan(
                  f"platform clip holes {k * per_flight}{side}")
             )
         shape = shapes[k - 1] if k - 1 < len(shapes) else None
-        radials = len(shape.radial_positions()) if shape is not None else 0
-        supports = ["A", *(f"R{i}" for i in range(1, radials + 1)), "B"]
+        radials = shape.radial_positions() if shape is not None else ()
+        held = shape.support_positions() if shape is not None else ()
+        # The supports as platform_sw labels them: the ends, and the radials (numbered among them all) that are held.
+        supports = ["A", *(f"R{i}" for i, along in enumerate(radials, start=1) if along in held), "B"]
         for end in supports:
             plan.append((frozenset({f"{key}Shell{end} clip placed"}), f"platform shell clip {k * per_flight}{end}"))
         for end in supports:

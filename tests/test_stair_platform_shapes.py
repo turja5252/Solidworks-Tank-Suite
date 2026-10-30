@@ -1,5 +1,6 @@
 """Platform shapes (2026-10-30): any length along the centreline, wider than the stair, rolled sides, and radials
-between the ends of a long platform, each with a knee brace and a shell clip."""
+between the ends of a long platform no more than 48 in apart, with a knee brace and a shell clip at least every 96 in
+(Chris Samm)."""
 
 import math
 
@@ -24,11 +25,25 @@ def _lines(spec: PlatformSpec):
 
 def test_a_long_platform_gets_radials_no_more_than_the_spacing_apart():
     assert PlatformSpec().radial_positions() == ()
-    assert PlatformSpec(40.0).radial_positions() == ()
-    assert PlatformSpec(96.0).radial_positions() == pytest.approx((32.0, 64.0))
+    assert PlatformSpec(48.0).radial_positions() == ()
+    assert PlatformSpec(96.0).radial_positions() == pytest.approx((48.0,))
     assert PlatformSpec(120.0).radial_positions() == pytest.approx((40.0, 80.0))
-    assert PlatformSpec(41.0).radial_positions() == pytest.approx((20.5,))
+    assert PlatformSpec(49.0).radial_positions() == pytest.approx((24.5,))
     assert PlatformSpec(96.0, radials=(50.0, 30.0)).radial_positions() == (30.0, 50.0)
+
+
+def test_a_knee_brace_and_shell_clip_at_least_every_96_in_on_a_radial_as_chris_samm_set_it():
+    """Chris Samm, 2026-10-30: "a 96 in platform gets one radial with no support, 120 in one support, 150 in the
+    middle radial"; the ends always have one."""
+    assert PlatformSpec(96.0).support_positions() == ()
+    assert PlatformSpec(120.0).support_positions() == pytest.approx((40.0,))
+    assert PlatformSpec(150.0).support_positions() == pytest.approx((75.0,))
+    assert PlatformSpec(200.0).support_positions() == pytest.approx((80.0, 120.0))
+    assert PlatformSpec(150.0, supports=(37.5, 112.5)).support_positions() == pytest.approx((37.5, 112.5))
+    for length in (100.0, 180.0, 250.0, 400.0):
+        spec = PlatformSpec(length)
+        stops = [0.0, *spec.support_positions(), length]
+        assert max(b - a for a, b in zip(stops, stops[1:], strict=False)) <= 96.0
 
 
 def test_sides_roll_on_their_own_over_36_in_unless_chosen():
@@ -54,16 +69,19 @@ def test_the_lines_follow_the_shape():
     assert long_wide.r_b - plain.r_b == pytest.approx(12.0) and long_wide.r_a == plain.r_a
     assert long_wide.stringer_b == pytest.approx(plain.r_b)  # the stair stops short of the wider platform
     assert long_wide.rolled and not plain.rolled
-    assert [label for label, _a, _s in long_wide.supports()] == ["A", "R1", "R2", "B"]
-    for angle, along in zip(long_wide.radials, (32.0, 64.0), strict=True):
+    assert [label for label, _a, _s in long_wide.members()] == ["A", "R1", "B"]
+    assert [label for label, _a, _s in long_wide.supports()] == ["A", "B"]  # 96 in: no support between
+    for angle, along in zip(long_wide.radials, (48.0,), strict=True):
         assert (angle - long_wide.phi_a) * long_wide.r_mid == pytest.approx(along)
+    longer = _lines(PlatformSpec(150.0))
+    assert [label for label, _a, _s in longer.supports()] == ["A", "R2", "B"]
 
 
 def test_every_support_gets_a_knee_brace_and_a_shell_clip():
-    lines = _lines(PlatformSpec(96.0))
+    lines = _lines(PlatformSpec(150.0))
     knees = platform_knees(lines, STAIR.shell_od_in)
     pads = shell_pads(lines, STAIR.shell_od_in)
-    assert [k[0] for k in knees] == [p[0] for p in pads] == ["A", "R1", "R2", "B"]
+    assert [k[0] for k in knees] == [p[0] for p in pads] == ["A", "R2", "B"]
     # A rolled outer side: the knees hang under the arc, all the same distance out.
     assert len({round(back, 6) for *_rest, back in knees}) == 1
     # On a rolled inner side each clip starts on the arc, looking into the platform along it.
@@ -86,15 +104,16 @@ def test_straight_sides_that_would_bow_into_the_shell_are_refused():
 
 
 def test_the_shell_and_the_3d_view_get_every_support():
-    arrangement = StairArrangement(StringerMock(treads=21, platform_specs=(PlatformSpec(96.0),)), platforms=1)
+    arrangement = StairArrangement(StringerMock(treads=21, platform_specs=(PlatformSpec(150.0),)), platforms=1)
     labels = [m.label for m in shell_marks(arrangement)[0]]
-    for name in ("A", "R1", "R2", "B"):
+    for name in ("A", "R2", "B"):
         assert f"Platform 1 shell clip pad {name}" in labels and f"Platform 1 knee brace pad {name}" in labels
+    assert "Platform 1 knee brace pad R1" not in labels  # the radials either side of R2 need none
     faces = scene(arrangement)
     knees = {f.label.rsplit(" ", 1)[-1] for f in faces if "knee brace pad" in f.label}
-    assert knees == {"A", "R1", "R2", "B"}
+    assert knees == {"A", "R2", "B"}
     deck = [p for f in faces if f.label == "Platform after tread 11" for p in f.points]
-    lines = _lines(PlatformSpec(96.0))
+    lines = _lines(PlatformSpec(150.0))
     radii = [math.hypot(p[0], p[2]) for p in deck]
     assert min(radii) == pytest.approx(lines.r_in) and max(radii) == pytest.approx(lines.r_out)
 
@@ -114,35 +133,36 @@ def test_the_rules_put_radials_and_posts_on_a_long_platform_and_hand_them_on():
     arrangement = _long()
     rules = Rules(sides=(OUTER, INNER))
     result = plan(arrangement, rules=rules)
-    assert [s.tread for s in result.of_kind(RADIAL)] == [32, 64]
+    assert [s.tread for s in result.of_kind(RADIAL)] == [48]
     for side in (OUTER, INNER):
-        assert [s.tread for s in result.of_kind(PLATFORM_POST, side)] == [4, 36, 68, 92]
-    # A pinned radial stays; the rest re-flow so no bay passes the 40 in spacing.
+        assert [s.tread for s in result.of_kind(PLATFORM_POST, side)] == [4, 52, 92]
+    # A pinned radial stays; the rest re-flow so no bay passes the 48 in spacing.
     pinned = plan(arrangement, rules=rules, pins=(Spot(RADIAL, 0, 20),))
     assert [(s.tread, s.pinned) for s in pinned.of_kind(RADIAL)] == [(20, True), (58, False)]
     assert applied(arrangement, pinned).stair.platform(0).radials == (20.0, 58.0)
     # Red: a post on a radial's end, a radial on top of a pinned one, one past the ends.
-    assert not check(arrangement, result, Spot(PLATFORM_POST, 0, 33, OUTER), rules=rules)[0]
-    assert not check(arrangement, result, Spot(PLATFORM_POST, 0, 40, OUTER), rules=rules)[0]  # by the one at 36
-    assert check(arrangement, result, Spot(PLATFORM_POST, 0, 48, OUTER), rules=rules)[0]
+    assert not check(arrangement, result, Spot(PLATFORM_POST, 0, 49, OUTER), rules=rules)[0]
+    assert not check(arrangement, result, Spot(PLATFORM_POST, 0, 56, OUTER), rules=rules)[0]  # by the one at 52
+    assert check(arrangement, result, Spot(PLATFORM_POST, 0, 66, OUTER), rules=rules)[0]
     assert not check(arrangement, pinned, Spot(RADIAL, 0, 23), rules=rules)[0]
     assert not check(arrangement, result, Spot(RADIAL, 0, 3), rules=rules)[0]
 
 
-def test_a_radial_slides_off_a_weld_and_keeps_the_bays_within_the_spacing():
+def test_a_held_radial_slides_off_a_weld_no_more_than_6_in_and_keeps_the_bays_within_the_spacing():
     from swauto.stair.attachments import RADIAL, Rules, Shell, _Context, _radial_marks, plan
     from swauto.stretchout.model import Seam, x_of_angle
 
-    arrangement = _long()
+    arrangement = StairArrangement(StringerMock(treads=21, platform_specs=(PlatformSpec(150.0),)), platforms=1)
     girth = 2.0 * math.pi * STAIR.shell_od_in
     ctx = _Context(arrangement, stair_places(arrangement.stair, STAIR.shell_od_in, 1), None, Rules())
-    knee = next(m for m in _radial_marks(ctx, 0, 32.0) if "knee" in m.label)
+    knee = next(m for m in _radial_marks(ctx, 0, 75.0) if "knee" in m.label)  # the middle radial: the held one
     x = x_of_angle(arrangement.world(knee.center[0]), girth) % girth
     shell = Shell(girth, 400.0, (Seam(x, 0.0, x, 400.0, "the test seam"),))
     radials = [s.tread for s in plan(arrangement, shell).of_kind(RADIAL)]
-    assert radials[0] != 32 and abs(radials[0] - 32) <= 20 and radials[1] == 64
-    bounds = [0, *radials, 96]
-    assert max(b - a for a, b in zip(bounds, bounds[1:], strict=False)) <= 40.0
+    assert radials[1] != 75 and abs(radials[1] - 75) <= 6
+    assert radials[0] == round(37.5) and radials[2] == round(112.5)  # nothing on the shell: they stay put
+    bounds = [0, *radials, 150]
+    assert max(b - a for a, b in zip(bounds, bounds[1:], strict=False)) <= 48.0
 
 
 def test_the_game_drops_a_radial_on_a_platform_and_keeps_one_the_rules_need(tk_window):
@@ -196,12 +216,12 @@ def _all(widget):
 def test_posts_between_the_ends_stand_beside_the_radials_or_where_the_plan_put_them():
     from swauto.stair.attachments import PLATFORM_POST, OUTER, Spot, applied, plan
 
-    assert PlatformSpec(96.0).post_positions() == pytest.approx((36.0, 68.0))
+    assert PlatformSpec(96.0).post_positions() == pytest.approx((52.0,))
     assert PlatformSpec(96.0, posts=(50.0, 20.0)).post_positions() == (20.0, 50.0)
     arrangement = _long()
-    result = plan(arrangement, pins=(Spot(PLATFORM_POST, 0, 50, OUTER),))
+    result = plan(arrangement, pins=(Spot(PLATFORM_POST, 0, 30, OUTER),))
     shape = applied(arrangement, result).stair.platform(0)
-    assert shape.posts == (36.0, 50.0, 68.0)  # the end ones (4 in from the ends) are the build's own
+    assert shape.posts == (30.0, 52.0)  # the end ones (4 in from the ends) are the build's own
 
 
 def test_a_post_frame_sits_on_the_outer_side_straight_or_rolled():
@@ -223,10 +243,11 @@ def test_a_post_frame_sits_on_the_outer_side_straight_or_rolled():
 def test_the_build_stages_count_every_radial_and_post():
     from swauto.stair.stringer_gui import _stair_stage_plan
 
-    labels = {key for keys, _label in _stair_stage_plan(21, platforms=1, posts=(2,), shapes=(PlatformSpec(96.0),))
+    labels = {key for keys, _label in _stair_stage_plan(21, platforms=1, posts=(2,), shapes=(PlatformSpec(150.0),))
               for key in keys}
-    for name in ("ShellR1 clip placed", "ShellR2 clip placed", "KneeR2 placed", "PostM1 placed", "PostM2 holes cut"):
+    for name in ("ShellR2 clip placed", "KneeR2 placed", "PostM1 placed", "PostM3 holes cut"):
         assert f"ElitePlatform11{name}" in labels
+    assert "ElitePlatform11KneeR1 placed" not in labels  # only the held radial has a knee brace
     plain = {key for keys, _label in _stair_stage_plan(21, platforms=1, posts=(2,)) for key in keys}
     assert "ElitePlatform11ShellR1 clip placed" not in plain
 

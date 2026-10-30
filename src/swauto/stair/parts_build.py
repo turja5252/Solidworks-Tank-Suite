@@ -312,7 +312,7 @@ def platform_jobs(parts: StairParts, frame_file: str) -> list[PartJob]:
             member(label, f"Platform {k} radial {label}",
                    lambda model, lines=lines, base=base, angle=angle, way=way, label=label, name=name, holes=holes:
                    _end_radial(model, lines, angle, way, base, frame_file, name, label, holes), holes=bool(holes))
-        between = lines.supports()[1:-1]
+        between = lines.members()[1:-1]
         if between and lines.rolled:
             label, angle, way = between[0]
             out.append(PartJob(CHANNELS, f"Platform {k} radials between", dict(common, piece="between"),

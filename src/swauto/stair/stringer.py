@@ -26,7 +26,10 @@ TOP_HOLE_BACK_IN = (2.1875, 4.6875)
 END_CUT_IN = 0.125
 MAX_TREADS = 200  # a 100 ft shell at 7.5 in rises is 160 treads
 PLATFORM_LENGTH_IN = 36.0  # along the centreline: the lisp launcher's "centerline arc" default
-PLATFORM_SPACING_IN = 40.0  # the most between a platform's radials, along its centreline (the user, 2026-10-30)
+# Chris Samm, 2026-10-30: radials no more than 48 in apart along the centreline, and a knee brace and shell clip on
+# a radial at least every 96 in (the ends always have them).
+PLATFORM_SPACING_IN = 48.0
+SUPPORT_SPACING_IN = 96.0
 POST_BESIDE_IN = 4.0  # a platform post toward B from a radial, clear of the radial's coped end and its bolts
 
 
@@ -38,8 +41,10 @@ class PlatformSpec:
     ``length_in`` runs along the centreline, halfway between C and D. ``width_in`` is nominal, as the treads are:
     36 is the stair's own platform, and more puts D further out (C never moves). ``rolled`` rolls C and D about the
     tank axis; None takes the lisp's default, rolled when longer than 36 in. A long platform gets radials between
-    A and B, no more than ``spacing_in`` apart along the centreline, each with its knee brace and shell clip;
-    ``radials`` are where they are, in from A along the centreline (None: equal bays). ``posts`` are the outer
+    A and B, no more than ``spacing_in`` apart along the centreline; ``radials`` are where they are, in from A along
+    the centreline (None: equal bays). The ends carry a knee brace and a shell clip, and so do enough radials between
+    that no two supports are more than ``support_spacing_in`` apart (Chris Samm, 2026-10-30): ``supports`` are those
+    radials, the same way (None: the fewest that do, nearest the middle of their bays). ``posts`` are the outer
     side's posts between its two end posts, the same way (None: one beside each radial)."""
 
     length_in: float = PLATFORM_LENGTH_IN
@@ -48,6 +53,8 @@ class PlatformSpec:
     spacing_in: float = PLATFORM_SPACING_IN
     radials: tuple[float, ...] | None = None
     posts: tuple[float, ...] | None = None
+    supports: tuple[float, ...] | None = None
+    support_spacing_in: float = SUPPORT_SPACING_IN
 
     @property
     def is_rolled(self) -> bool:
@@ -65,6 +72,14 @@ class PlatformSpec:
         bays = max(1, math.ceil(self.length_in / self.spacing_in - 1e-9))
         return tuple(self.length_in * i / bays for i in range(1, bays))
 
+    def support_positions(self) -> tuple[float, ...]:
+        """The radials between A and B with a knee brace and a shell clip, in from A along the centreline: those
+        chosen, or the fewest that keep every bay between supports within ``support_spacing_in``."""
+        radials = self.radial_positions()
+        if self.supports is not None:
+            return tuple(sorted(along for along in self.supports if any(abs(along - r) < 1e-6 for r in radials)))
+        return held_radials(radials, self.length_in, self.support_spacing_in)
+
     def post_positions(self) -> tuple[float, ...]:
         """The outer side's posts between its end posts, in from A along the centreline: where they were put, or
         one beside each radial."""
@@ -80,6 +95,26 @@ class PlatformSpec:
                              "the stair's own platform.")
         if not 12.0 <= self.spacing_in <= 240.0:
             raise ValueError("The most between a platform's radials must be 12 to 240 in.")
+
+
+def held_radials(radials: tuple[float, ...], length_in: float, spacing_in: float) -> tuple[float, ...]:
+    """The fewest of ``radials`` (in from A along the centreline) that, with the ends at 0 and ``length_in``, leave
+    no bay between supports longer than ``spacing_in``: as many as the length needs, each the radial nearest its
+    even share of the length. All of them when no fewer will do."""
+    def fits(chosen):
+        stops = [0.0, *chosen, length_in]
+        return all(b - a <= spacing_in + 1e-9 for a, b in zip(stops, stops[1:], strict=False))
+
+    need = max(0, math.ceil(length_in / spacing_in - 1e-9) - 1)
+    for count in range(need, len(radials) + 1):
+        chosen: list[float] = []
+        for i in range(1, count + 1):
+            want = length_in * i / (count + 1)
+            free = [r for r in radials if r not in chosen]
+            chosen.append(min(free, key=lambda r: (abs(r - want), r)))
+        if fits(sorted(chosen)):
+            return tuple(sorted(chosen))
+    return tuple(radials)
 
 
 @dataclass(frozen=True)

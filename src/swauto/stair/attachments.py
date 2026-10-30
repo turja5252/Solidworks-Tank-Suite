@@ -45,7 +45,7 @@ from swauto.stair.landings import (
 from swauto.stair.post_sw import PLATFORM_POST_IN
 from swauto.stair.splitter import SplitSettings, choose_cuts
 from swauto.stair.stair_sw import StairPlaces, stair_places
-from swauto.stair.stringer import POST_BESIDE_IN, THICKNESS_IN, PlatformSpec
+from swauto.stair.stringer import POST_BESIDE_IN, THICKNESS_IN, PlatformSpec, held_radials
 from swauto.stretchout.checks import _outlines_meet, crosses
 from swauto.stretchout.model import Item, Seam, Stretchout, _slot, build_stretchout, x_of_angle
 
@@ -68,6 +68,7 @@ POST_EVERY = 4  # tread gaps between posts (the user)
 OUTER_RAIL_FT = 40.0  # stock lengths, Elite STWC (angle, flat bar) and STWE (inside pipe)
 INNER_RAIL_FT = 20.0
 RADIAL_CLEAR_IN = 6.0  # the least between a platform's radial and an end or another radial
+RADIAL_SLIDE_IN = 6.0  # how far a radial may slide off its even place to keep its pads clear (Chris Samm)
 POST_CLEAR_IN = 6.0  # the least between two platform posts
 
 
@@ -577,37 +578,53 @@ def _platform_spots(ctx: _Context, pins: tuple[Spot, ...], warnings: list[str]) 
 
 def _platform_radials(ctx: _Context, k: int, spec: PlatformSpec, pins: tuple[Spot, ...],
                       warnings: list[str]) -> list[Spot]:
-    """Radials between the platform's ends and the pinned ones wherever a bay would pass the radial spacing: as
-    equal as the bays go, each slid to the nearest whole inch whose knee brace and shell clip pads are clear,
-    keeping every bay within the spacing. The ends' pads cannot move; a warning says when one is not clear."""
+    """Radials between the platform's ends and the pinned ones wherever a bay would pass the radial spacing, as
+    equal as the bays go. Those that carry a knee brace and a shell clip (Chris Samm: at least one every
+    ``spec.support_spacing_in``, the ends always; ``held_radials`` picks them) slide to the nearest whole inch, no
+    more than RADIAL_SLIDE_IN either way, whose pads are clear, keeping every bay within the spacing; the others have
+    nothing on the shell and stay where the bays put them. The ends' pads cannot move; a warning says when a pad is
+    not clear."""
     name = platform_name(ctx.arrangement, k)
     pinned = sorted({p.tread for p in pins if p.kind == RADIAL and p.flight == k})
     spots = [Spot(RADIAL, k, t, pinned=True) for t in pinned]
-    for t in pinned:
-        ctx.pads += _radial_pads(ctx, k, t)
     fixed = [0.0, *pinned, spec.length_in]
+    even = list(pinned)
+    for low, high in zip(fixed, fixed[1:], strict=False):
+        bays = max(1, math.ceil((high - low) / spec.spacing_in - 1e-9))
+        even += [low + (high - low) * i / bays for i in range(1, bays)]
+    held = held_radials(tuple(sorted(even)), spec.length_in, spec.support_spacing_in)
+    placed = list(pinned)
     for low, high in zip(fixed, fixed[1:], strict=False):
         bays = max(1, math.ceil((high - low) / spec.spacing_in - 1e-9))
         last = low
         for i in range(1, bays):
             want = low + (high - low) * i / bays
-            found = None
-            reason = ""
-            for t in _slides(round(want), spec.spacing_in / 2.0):
-                if (t - last < RADIAL_CLEAR_IN or high - t < RADIAL_CLEAR_IN or t - last > spec.spacing_in
-                        or high - t > (bays - i) * spec.spacing_in):
-                    continue
-                ok, why = _radial_clear(ctx, k, t)
-                if ok:
-                    found = t
-                    break
-                reason = reason or why
-            if found is None:
-                found = round(want)
-                warnings.append(f"{name}: no place near {found} in along it keeps a radial's pads clear ({reason}).")
-            ctx.pads += _radial_pads(ctx, k, found)
+            found = round(want)
+            if any(abs(want - h) < 1e-6 for h in held):
+                reason = ""
+                for t in _slides(round(want), RADIAL_SLIDE_IN):
+                    if (t - last < RADIAL_CLEAR_IN or high - t < RADIAL_CLEAR_IN or t - last > spec.spacing_in
+                            or high - t > (bays - i) * spec.spacing_in):
+                        continue
+                    ok, why = _radial_clear(ctx, k, t)
+                    if ok:
+                        found = t
+                        reason = ""
+                        break
+                    reason = reason or why
+                if reason:
+                    warnings.append(f"{name}: no place near {found} in along it keeps a radial's pads clear "
+                                    f"({reason}).")
             spots.append(Spot(RADIAL, k, found))
+            placed.append(found)
             last = found
+    # The supports among where the radials ended up, as the build picks them from the same places.
+    for along in held_radials(tuple(sorted(float(t) for t in placed)), spec.length_in, spec.support_spacing_in):
+        if along in pinned:
+            ok, why = _radial_clear(ctx, k, along)
+            if not ok:
+                warnings.append(f"{name}: the pinned radial at {along:g} in along it: {why}.")
+        ctx.pads += _radial_pads(ctx, k, along)
     lines, _last = platform_frame(ctx.arrangement, ctx.where, k)
     marks, _notes = platform_pad_marks(replace(lines, radials=()), ctx.arrangement.stair.shell_od_in, name)
     for mark in marks:
@@ -629,7 +646,7 @@ def _slides(start: int, reach: float):
 def _radial_marks(ctx: _Context, k: int, along: float) -> list[Mark]:
     """The knee brace pad and the shell clip pad of a radial ``along`` inches from platform ``k``'s A end."""
     lines, _last = platform_frame(ctx.arrangement, ctx.where, k)
-    lines = replace(lines, radials=(lines.phi_a + along / lines.r_mid,))
+    lines = replace(lines, radials=(lines.phi_a + along / lines.r_mid,), held=None)
     marks, _notes = platform_pad_marks(lines, ctx.arrangement.stair.shell_od_in, platform_name(ctx.arrangement, k))
     return [m for m in marks if m.label.endswith(" R1")]
 

@@ -81,6 +81,6 @@ def test_the_parts_build_puts_the_braces_in_and_their_holes_in_the_stringers_on_
     assert built["Flight 2 outer stringer"].params["braces"] == [[_seat(points[0], dphi, dy)]]
     assert len(built["Flight 2 inner stringer"].params["braces"]) == 2  # tread 10's cap, tread 9's clip
     # The knees' pads are the platform's shell pad piece, placed at theirs too.
-    assert len(built["Shell pad"].placements) == 8 + 2
+    assert len(built["Shell pad"].placements) == 4 + 2  # the 96 in platform's ends' two each, the knees' two
     files = [item.file for item in stair_items(list(built.values()))]
     assert len(files) == len(set(files))

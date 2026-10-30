@@ -121,6 +121,7 @@ class _Lines:
     stringer_b: float
     rolled: bool = False
     radials: tuple[float, ...] = ()
+    held: tuple[float, ...] | None = None  # the radials with a knee brace and shell clip (None: all of them)
 
     @property
     def r_in(self) -> float:
@@ -135,11 +136,19 @@ class _Lines:
         """The centreline the platform's length runs along."""
         return (self.r_a + self.r_b) / 2.0
 
-    def supports(self) -> list[tuple[str, float, float]]:
-        """Each radial channel with a knee brace under the outer side and a shell clip on the inner one: its
-        label, the angle of its web's back, and the way into the platform from it (+1 toward B)."""
+    def members(self) -> list[tuple[str, float, float]]:
+        """Each radial channel of the frame, the ends and every radial between: its label, the angle of its web's
+        back, and the way into the platform from it (+1 toward B)."""
         between = [(f"R{i}", angle, 1.0) for i, angle in enumerate(self.radials, start=1)]
         return [("A", self.phi_a, 1.0), *between, ("B", self.phi_b, -1.0)]
+
+    def supports(self) -> list[tuple[str, float, float]]:
+        """The radial channels with a knee brace under the outer side and a shell clip on the inner one: both ends,
+        and the radials between that are ``held`` (Chris Samm: one at least every 96 in), as ``members`` labels
+        them."""
+        held = self.radials if self.held is None else self.held
+        return [member for member in self.members()
+                if member[0] in ("A", "B") or any(abs(member[1] - angle) < 1e-9 for angle in held)]
 
 
 def platform_lines(
@@ -159,6 +168,7 @@ def platform_lines(
     return _Lines(
         phi_a, phi_a + spec.length_in / r_mid, r_a, r_b, tread_top - GRATING_IN, stringer, spec.is_rolled,
         tuple(phi_a + along / r_mid for along in spec.radial_positions()),
+        tuple(phi_a + along / r_mid for along in spec.support_positions()),
     )
 
 
@@ -225,7 +235,7 @@ def place_mid_platform(
         if _signed_area(outline) < 0:
             outline.reverse()  # counterclockwise in the sketch puts the flanges inside
         _frame(model, outline, base, profile, name)
-        for label, angle, side in lines.supports()[1:-1]:
+        for label, angle, side in lines.members()[1:-1]:
             _radial_member(model, lines, angle, side, base, profile, f"{name}{label}")
     _progress(progress, f"{name} frame placed")
     with contextlib.suppress(Exception):
@@ -261,7 +271,7 @@ def _rolled_frame(model, lines: _Lines, base: float, profile: str, name: str) ->
     arc whose flanges face the axis."""
     _arc_member(model, lines.r_in, lines.phi_a, lines.phi_b, base, 0.0, profile, f"{name}C")
     _arc_member(model, lines.r_out, lines.phi_a, lines.phi_b, base + CHANNEL_IN, math.pi, profile, f"{name}D")
-    for label, angle, side in lines.supports():
+    for label, angle, side in lines.members():
         _radial_member(model, lines, angle, side, base, profile, f"{name}{label}")
 
 
@@ -828,8 +838,8 @@ def add_platform_knee_braces(
         s._hide_construction(model)
     note = (
         f"Platform after tread {tread_index}: a 3/8 x {HANGER_WIDE_IN:g} x {HANGER_TALL_IN:g} hanger under the "
-        f"outer channel at each end{' and each radial' if lines.radials else ''} with an L3x3x3/8 knee brace at "
-        "45 deg down to a clip and pad on the shell."
+        f"outer channel at each end{' and each held radial' if len(lines.supports()) > 2 else ''} with an L3x3x3/8 "
+        "knee brace at 45 deg down to a clip and pad on the shell."
         + (f" Holes missed at end(s) {', '.join(missed)}." if missed else "")
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
@@ -969,7 +979,7 @@ def add_platform_shell_clips(
         s._hide_construction(model)
     note = (
         f"Platform after tread {tread_index}: 3/8 x 4 in tabs welded to the inner channel at both ends"
-        f"{' and beside each radial' if lines.radials else ''}, "
+        f"{' and beside each held radial' if len(lines.supports()) > 2 else ''}, "
         f"bolted to 3/8 shell clips on 1/4 x 4 x 6 pads, two 13/16 holes 2 in apart."
         + (f" Holes missed at end(s) {', '.join(missed)}." if missed else "")
     )

@@ -33,7 +33,7 @@ def placed(placement, point_in):
 
 def test_a_stair_with_a_rolled_platform_gets_every_piece_of_its_outer_handrail():
     assert _labels(_parts()) == [
-        "Platform 1 post A", "Platform 1 post B", "Platform 1 post M1", "Platform 1 post M2", "Platform 1 toe plate",
+        "Platform 1 post A", "Platform 1 post B", "Platform 1 post M1", "Platform 1 toe plate",
         "Flight 1 top rail", "Flight 2 top rail", "Platform 1 rail end A", "Platform 1 top rail level A",
         "Platform 1 rail end B", "Platform 1 top rail level B", "Platform 1 top rail",
         "Flight 1 midrail", "Flight 2 midrail", "Platform 1 midrail level A", "Platform 1 midrail level B",
@@ -52,8 +52,7 @@ def test_a_stair_narrower_than_its_platform_gets_side_posts_and_the_corner_piece
 
 def test_without_the_rails_only_the_platform_posts_and_toe_plates_go_on_and_no_post_carries_an_end_piece():
     parts = _parts(top_rail=False, mid_rail=False)
-    assert _labels(parts) == ["Platform 1 post A", "Platform 1 post B", "Platform 1 post M1", "Platform 1 post M2",
-                              "Platform 1 toe plate"]
+    assert _labels(parts) == ["Platform 1 post A", "Platform 1 post B", "Platform 1 post M1", "Platform 1 toe plate"]
     assert all(end_holes(parts.rails(), spot) is None for spot in post_spots(parts.rails(), 1))
 
 
@@ -93,7 +92,7 @@ def test_the_posts_holes_carried_onto_a_platforms_seat_land_back_on_the_real_pla
 
 def test_the_channels_get_the_posts_holes_only_with_the_handrail():
     with_posts = {job.label: job for job in jobs(_parts(), "L2x2", "C4", "L3", "L6")}
-    assert len(with_posts["Platform 1 side D"].params["post_holes"]) == 4
+    assert len(with_posts["Platform 1 side D"].params["post_holes"]) == 3  # A, B and the one by the radial
     assert with_posts["Platform 1 side C"].params["post_holes"] == []
     bare = {job.label: job for job in jobs(_parts(posts=()), "", "C4", "L3", "L6")}
     assert bare["Platform 1 side D"].params["post_holes"] == []
