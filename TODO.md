@@ -73,3 +73,6 @@ Agreed: 1 and 2 for sure; 3 to decide when we get there.
   Timed 2026-10-28, a 3-tread stair with no shell: 91 s (the same build took 9.5 min an hour earlier, so the
   machine's state matters too). Outer stringer end holes 27 s, inner 9 s, each tread's bolts 2.5-3 s a side,
   each tread copy 1.4 s, each stringer cut about 3 s.
+  Tested 2026-10-30 in the stair parts build (stair/parts_build.py, `_quiet`): CommandInProgress on, graphics
+  and feature-tree updates off while each part builds took the 6-tread treads, stringers and posts from 409 s
+  to 63 s, the parts identical by volume, faces and box. Still to try in the one-part build.

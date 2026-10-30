@@ -11,8 +11,9 @@ From Elite's STWC detail D and STWD pc 8, 9 and 10 (the outside handrail) and ST
   45 and 135 degree ends). Like the posts' outstanding legs, the standing legs are cut back 45 degrees from the
   top at their root down to their toe, so fingers sliding along under the top rail clear them.
 * The pipe is cut square at the same place, its ends 1/4 in apart, and a 1-1/2 in round bar 2 in long runs inside
-  both ends across the gap, its upper end chamfered 45 degrees to lead the upper pipe on; the gap is welded in the
-  field (the user, 2026-10-30. Elite's STWD pc 10 joint, pc 12 and STWE pc 20 put the bar in a 2 in gap instead).
+  both ends across the gap, 70% of what is inside in the upper pipe, its upper end chamfered 1/4 in x 45 degrees
+  to lead the upper pipe on; the gap is welded in the field (the user, 2026-10-30. Elite's STWD pc 10 joint, pc 12
+  and STWE pc 20 put the bar in a 2 in gap instead).
 
 Pure placement lives in ``attachments`` (which bays); this module only models them.
 """
@@ -55,8 +56,9 @@ BOLT_SPACE_IN = 12.0
 BOLT_HOLE_IN = 0.6875
 PIPE_GAP_IN = 0.25  # between the pipe ends, for the field weld
 ROUND_BAR_DIA_IN = 1.5  # inside the pipe's 1.61 in bore
-ROUND_BAR_IN = 2.0  # centred on the gap, so 7/8 in into each pipe end
-ROUND_BAR_CHAMFER_IN = 0.125  # 45 degrees on its upper end (no size given; 1/8 in assumed)
+ROUND_BAR_IN = 2.0
+ROUND_BAR_UP_SHARE = 0.7  # of the bar inside the pipes, this much is in the upper pipe and the rest in the lower
+ROUND_BAR_CHAMFER_IN = 0.25  # 45 degrees on its upper end, to lead the upper pipe on
 
 
 def add_rail_splits(
@@ -80,8 +82,8 @@ def add_rail_splits(
             top = inner_pipe_top if inner else outer_pipe_top
             if top is not None:
                 _pipe_joint(model, places, per_flight, low, high, r_a, r_b, inner, top, f"{name}Pipe")
-                parts.append("the pipe ends 1/4 in apart on a 1-1/2 in round bar 2 in long inside both, its upper "
-                             "end chamfered 45 degrees")
+                parts.append("the pipe ends 1/4 in apart on a 1-1/2 in round bar 2 in long inside both, mostly the "
+                             "upper, its upper end chamfered 1/4 in x 45 degrees")
             if parts:
                 made.append(f"between {side} posts {low.index} and {high.index}: {', '.join(parts)}")
             _progress(progress, f"{name} {'made' if parts else 'missed'}")
@@ -211,9 +213,13 @@ def _pipe_joint(model, places, per_flight: int, low: Post, high: Post, r_a: floa
 
 def round_bar_section(axis_in: float = ROUND_BAR_IN) -> list[tuple[float, float]]:
     """The round bar's half section as (along the pipe from the gap's middle, out from its axis), closed along the
-    axis: square at the lower end, chamfered 45 degrees at the upper."""
-    half, radius, chamfer = axis_in / 2.0, ROUND_BAR_DIA_IN / 2.0, ROUND_BAR_CHAMFER_IN
-    return [(-half, 0.0), (-half, radius), (half - chamfer, radius), (half, radius - chamfer), (half, 0.0)]
+    axis: square at the lower end, chamfered 45 degrees at the upper, and of its length inside the pipes 70% in the
+    upper one (the user, 2026-10-30)."""
+    inside = axis_in - PIPE_GAP_IN
+    low = -(PIPE_GAP_IN / 2.0 + (1.0 - ROUND_BAR_UP_SHARE) * inside)
+    high = PIPE_GAP_IN / 2.0 + ROUND_BAR_UP_SHARE * inside
+    radius, chamfer = ROUND_BAR_DIA_IN / 2.0, ROUND_BAR_CHAMFER_IN
+    return [(low, 0.0), (low, radius), (high - chamfer, radius), (high, radius - chamfer), (high, 0.0)]
 
 
 def _round_bar(model, center, tangent, radial, name: str) -> None:

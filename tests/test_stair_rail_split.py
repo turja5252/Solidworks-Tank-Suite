@@ -41,14 +41,15 @@ def test_a_connector_runs_from_just_short_of_the_midrails_bottom_to_the_posts_ga
     assert top < under_root  # clear of the top rail's top leg and its root fillet
 
 
-def test_the_round_bar_runs_inside_both_pipe_ends_across_the_gap_and_leads_in_at_its_upper_end():
+def test_the_round_bar_runs_mostly_into_the_upper_pipe_across_the_gap_and_leads_in_at_its_upper_end():
     section = round_bar_section()
     along = [a for a, _off in section]
-    assert min(along) == pytest.approx(-ROUND_BAR_IN / 2.0) and max(along) == pytest.approx(ROUND_BAR_IN / 2.0)
-    assert ROUND_BAR_IN / 2.0 - PIPE_GAP_IN / 2.0 == pytest.approx(0.875)  # 7/8 in into each pipe end
+    assert max(along) - min(along) == pytest.approx(ROUND_BAR_IN)
+    in_upper, in_lower = max(along) - PIPE_GAP_IN / 2.0, -PIPE_GAP_IN / 2.0 - min(along)
+    assert in_upper / (in_upper + in_lower) == pytest.approx(0.7)  # 70% of what is inside, in the upper pipe
     assert max(off for _a, off in section) * 2.0 < PIPE_OD_IN - 2.0 * PIPE_WALL_IN  # it fits the bore
     # Square at the lower end; at the upper the corner is cut back as far along as in: 45 degrees.
-    lower = [off for a, off in section if a == pytest.approx(-ROUND_BAR_IN / 2.0)]
+    lower = [off for a, off in section if a == pytest.approx(min(along))]
     upper_corner = [(a, off) for a, off in section if 0.0 < off and a > 0.0]
     assert max(lower) == pytest.approx(ROUND_BAR_DIA_IN / 2.0)
     (a0, r0), (a1, r1) = sorted(upper_corner)

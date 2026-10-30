@@ -22,7 +22,7 @@ from swauto.comutil import com_nothing, com_value, format_com_error
 from swauto.errors import BuildStopped, SolidWorksError
 from swauto.features import find_feature, iter_features
 from swauto.params import rename_feature
-from swauto.parts import extrude_blind, new_part
+from swauto.parts import extrude_blind, new_part, quiet
 from swauto.stair.development import (
     END_HOLE_RADIUS_IN,
     SLOT_LENGTH_IN,
@@ -141,12 +141,14 @@ def create_stair(
     if wall_in <= 0 or wall_in >= TREAD_MARK_IN or wall_in * 2 >= TREAD_DEPTH_IN:
         raise ValueError("Pan wall must be greater than zero and thinner than the tread.")
     model = new_part(app)
-    return build_stair_on_model(
-        model, stair.shell_od_in, stair, wall_in, progress=progress, platforms=platforms,
-        top_platform=top_platform, profiles=profiles, posts=posts, post_profile=post_file,
-        platform_post_in=platform_post_in, top_rail=top_rail, mid_rail=mid_rail, platform_mid_top=platform_mid_top,
-        grab=grab, ground_in=ground_in, splits=splits, inner_rail=inner_rail, rail_splits=rail_splits,
-    )
+    with quiet(app, model):
+        return build_stair_on_model(
+            model, stair.shell_od_in, stair, wall_in, progress=progress, platforms=platforms,
+            top_platform=top_platform, profiles=profiles, posts=posts, post_profile=post_file,
+            platform_post_in=platform_post_in, top_rail=top_rail, mid_rail=mid_rail,
+            platform_mid_top=platform_mid_top, grab=grab, ground_in=ground_in, splits=splits, inner_rail=inner_rail,
+            rail_splits=rail_splits,
+        )
 
 
 def create_stair_on_tank(
@@ -177,12 +179,13 @@ def create_stair_on_tank(
     outer_m, _inner_m = course_radii_m(tank, tank.active_courses()[0])
     shell_od = outer_m / _INCH
     _progress(progress, "shell built")
-    return build_stair_on_model(
-        model, shell_od, stair, wall_in, progress=progress, platforms=platforms, top_platform=top_platform,
-        profiles=profiles, posts=posts, post_profile=post_profile, platform_post_in=platform_post_in,
-        top_rail=top_rail, mid_rail=mid_rail, platform_mid_top=platform_mid_top, grab=grab, ground_in=ground_in,
-        splits=splits, inner_rail=inner_rail, rail_splits=rail_splits,
-    )
+    with quiet(app, model):
+        return build_stair_on_model(
+            model, shell_od, stair, wall_in, progress=progress, platforms=platforms, top_platform=top_platform,
+            profiles=profiles, posts=posts, post_profile=post_profile, platform_post_in=platform_post_in,
+            top_rail=top_rail, mid_rail=mid_rail, platform_mid_top=platform_mid_top, grab=grab,
+            ground_in=ground_in, splits=splits, inner_rail=inner_rail, rail_splits=rail_splits,
+        )
 
 
 def _platform_profiles(app) -> tuple[str, str, str]:

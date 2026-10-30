@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -17,6 +18,31 @@ _TOP_PLANE_NAMES = ("Top Plane", "Plane2", "Top")
 
 # swStartConditions_e.swStartOffset (used by FeatureExtrusionThin2)
 _START_OFFSET = 3
+
+
+@contextlib.contextmanager
+def quiet(app, model):
+    """While a build runs: tell SolidWorks an API command is in progress, and stop it redrawing ``model`` and its
+    feature tree after every feature; all back on after, and one redraw. The stair parts built 6.5x faster with
+    identical geometry (2026-10-30: 409 s to 63 s); a part watched while it builds is several times slower."""
+    _quiet(app, model, True)
+    try:
+        yield
+    finally:
+        _quiet(app, model, False)
+        with contextlib.suppress(Exception):
+            model.GraphicsRedraw2()
+
+
+def _quiet(app, model, on: bool) -> None:
+    with contextlib.suppress(Exception):
+        app.CommandInProgress = on
+    with contextlib.suppress(Exception):
+        model.FeatureManager.EnableFeatureTree = not on
+    with contextlib.suppress(Exception):
+        view = com_value(model.ActiveView)
+        if view is not None:
+            view.EnableGraphicsUpdate = not on
 
 
 def new_part(app):

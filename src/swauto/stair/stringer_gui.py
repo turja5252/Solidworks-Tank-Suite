@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 
 from swauto import runlog
 from swauto.comutil import com_value, format_com_error
+from swauto.parts import quiet
 from swauto.errors import BuildStopped, SolidWorksError, SolidWorksNotRunning, SolidWorksUnavailable
 from swauto.session import connect
 from swauto.stair.attachments import (
@@ -1112,35 +1113,38 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
                 shell_height_in=shell_height, splits=splits, inner_rail=inner_rail, rail_splits=rail_splits,
             )
             notes = [result.note, *rule_notes]
-            if clips is not None:
-                profile = angle_profile(session.app) if braces else ""
-                clip_profile = clip_angle_profile(session.app) if inner and clips else ""
-                for index in braces:
-                    notes.append(add_cross_brace(result.model, index, profile, progress=progress).note)
-                    if knees:
-                        notes.append(add_knee_brace(result.model, index, profile, shell_radius_in=current.shell_od_in,
-                                                    progress=progress).note)
-                for index in clips if inner else ():
-                    notes.append(_inner_clip(result.model, index, tops, clip_profile, current.shell_od_in, progress))
-            elif braces:
-                profile = angle_profile(session.app)
-                clip_profile = clip_angle_profile(session.app) if inner else ""
-                for index in braces:
-                    notes.append(add_cross_brace(result.model, index, profile, progress=progress).note)
-                    if knees:
-                        knee = add_knee_brace(
-                            result.model, index, profile, shell_radius_in=current.shell_od_in, progress=progress
-                        )
-                        notes.append(knee.note)
-                    if inner:
+            with quiet(session.app, result.model):  # no redraws while the rest goes on: several times faster
+                if clips is not None:
+                    profile = angle_profile(session.app) if braces else ""
+                    clip_profile = clip_angle_profile(session.app) if inner and clips else ""
+                    for index in braces:
+                        notes.append(add_cross_brace(result.model, index, profile, progress=progress).note)
+                        if knees:
+                            notes.append(add_knee_brace(result.model, index, profile,
+                                                        shell_radius_in=current.shell_od_in, progress=progress).note)
+                    for index in clips if inner else ():
                         notes.append(
                             _inner_clip(result.model, index, tops, clip_profile, current.shell_od_in, progress)
                         )
-            # Last: the braces and clips find the treads by their clockwise angles where they were built.
-            if ccw:
-                notes.append(mirror_stair(result.model, result.shell_bodies, progress=progress))
-            if turned:
-                notes.append(turn_stair(result.model, turn, result.shell_bodies, progress=progress))
+                elif braces:
+                    profile = angle_profile(session.app)
+                    clip_profile = clip_angle_profile(session.app) if inner else ""
+                    for index in braces:
+                        notes.append(add_cross_brace(result.model, index, profile, progress=progress).note)
+                        if knees:
+                            knee = add_knee_brace(
+                                result.model, index, profile, shell_radius_in=current.shell_od_in, progress=progress
+                            )
+                            notes.append(knee.note)
+                        if inner:
+                            notes.append(
+                                _inner_clip(result.model, index, tops, clip_profile, current.shell_od_in, progress)
+                            )
+                # Last: the braces and clips find the treads by their clockwise angles where they were built.
+                if ccw:
+                    notes.append(mirror_stair(result.model, result.shell_bodies, progress=progress))
+                if turned:
+                    notes.append(turn_stair(result.model, turn, result.shell_bodies, progress=progress))
             notes.append(
                 f"The foot is at {foot:.2f}° and the top end at {top_end:.2f}° "
                 "(0° toward +Z, clockwise seen from above, like the nozzles)."
