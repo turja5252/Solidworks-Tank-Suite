@@ -8,7 +8,7 @@ from tkinter import messagebox, ttk
 
 from swauto.errors import SolidWorksError
 from swauto.nozzle.nozzle_sw import add_nozzles
-from swauto.nozzle.pipe import nps_sizes
+from swauto.nozzle.pipe import SCHEDULES, nps_sizes
 from swauto.nozzle.place import Placement, place
 from swauto.nozzle.repad import default_repad_size
 from swauto.nozzle.shape import stations
@@ -31,7 +31,7 @@ _ITEM_PARTS = {
     "Class 150 slip-on": (150, "so"),
     "Class 300 slip-on": (300, "so"),
 }
-_SCHEDULES = ("STD", "XS", "XXS")
+_SCHEDULES = SCHEDULES
 _STYLES = ("Circular", "Tombstone")
 _REPADS = ("None", "Default", "Custom")
 _INSIDE = ("None", "Weld neck", "Slip-on")  # RNC's break flange, in the nozzle's class

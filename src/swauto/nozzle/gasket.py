@@ -3,8 +3,8 @@
 The ring's inside diameter is the pipe outside diameter; its outside diameter
 reaches the bolts, so it centers on them. The thickness and the material are
 typed on the nozzle; a blank thickness is 1/8 in. NPS 22 is not in every
-B16.21 edition: its outside diameters are the bolt circle less one bolt hole,
-the rule the other sizes follow.
+B16.21 edition: its outside diameters are the bolt circle less one bolt's
+diameter, the rule every other size follows.
 """
 
 from __future__ import annotations
@@ -18,13 +18,17 @@ DEFAULT_THICKNESS_IN = 0.125
 
 # nps: (inside diameter, outside diameter for Class 150, outside diameter for Class 300)
 _RINGS: dict[str, tuple[float, float, float]] = {
+    "1/2": (0.84, 1.88, 2.12),
     "3/4": (1.06, 2.25, 2.62),
     "1": (1.31, 2.62, 2.88),
+    "1-1/4": (1.66, 3.00, 3.25),
     "1-1/2": (1.91, 3.38, 3.75),
     "2": (2.38, 4.12, 4.38),
     "2-1/2": (2.88, 4.88, 5.12),
     "3": (3.50, 5.38, 5.88),
+    "3-1/2": (4.00, 6.38, 6.50),
     "4": (4.50, 6.88, 7.12),
+    "5": (5.56, 7.75, 8.50),
     "6": (6.62, 8.75, 9.88),
     "8": (8.62, 11.00, 12.12),
     "10": (10.75, 13.38, 14.25),
