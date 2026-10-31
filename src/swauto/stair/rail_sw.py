@@ -718,8 +718,14 @@ def _level_angle(model, a, b, out, profile: str, name: str) -> None:
         fresh = _new_body(model, bodies_before)
         return [] if fresh is None else _end_face(fresh, a, down, up, out)
 
-    if not _knee_fits(end, 0.01, LEG_IN) and not any(_knee_fits(end_after(t), 0.01, LEG_IN) for t in (off, -off)):
-        raise SolidWorksError(f"{name}: could not turn the rail angle with a leg down and a leg out.")
+    def square(found) -> bool:
+        twist = _turn_off(found)
+        return _knee_fits(found, 0.01, LEG_IN) and twist is not None and abs(twist) < 1e-4
+
+    # As the knee brace: an angle that only fits is turned square too; if no turn squares it, a fit will do.
+    if not square(end) and not any(square(end_after(t)) for t in (off, -off)):
+        if not any(_knee_fits(end_after(t), 0.01, LEG_IN) for t in (0.0, off, -off)):
+            raise SolidWorksError(f"{name}: could not turn the rail angle with a leg down and a leg out.")
     with contextlib.suppress(Exception):
         rename_feature(feature, name)
     _clear_selection(model)

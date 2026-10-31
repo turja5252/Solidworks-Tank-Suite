@@ -785,23 +785,31 @@ def _upright_angle(
                     return body
         return None
 
+    def fits(found) -> bool:
+        return _upright_fits(found, line_phi, heel_r, inward, away, leg_in, heel_t)
+
+    def twist(found) -> float | None:
+        """The turn that lays ``found``'s legs along the travel and the radial, read off its faces."""
+        axes = None if found is None else _leg_axes(found, heel)
+        if axes is None:
+            return None
+        first, second = axes
+        return _angle_between(first, along if _hand(first, second) * _hand(along, across) > 0 else across)
+
+    def square(found) -> bool:
+        left = twist(found)
+        return fits(found) and left is not None and abs(left) < 1e-4
+
     body = body_now()
     if body is None:
         s._rebuild(model)
         body = body_now()
-    placed = _upright_fits(body, line_phi, heel_r, inward, away, leg_in, heel_t)
-    axes = None if body is None or placed else _leg_axes(body, heel)
-    if axes is not None:
-        first, second = axes
-        target = along if _hand(first, second) * _hand(along, across) > 0 else across
-        turn = _angle_between(first, target)
-        for rotation in (turn, -turn):
-            if _set_turn(model, feature, rotation) and _upright_fits(
-                body_now(), line_phi, heel_r, inward, away, leg_in, heel_t
-            ):
-                placed = True
-                break
-    if not placed:
+    # An angle that only fits is turned square too: near 0 and 180 deg round SolidWorks' own turn left a post's legs
+    # 0.02 in off square, inside the fit (2026-10-31). If no turn squares it, a fit will do.
+    turn = twist(body)
+    turns = () if turn is None else (turn, -turn)
+    placed = square(body) or any(_set_turn(model, feature, rotation) and square(body_now()) for rotation in turns)
+    if not placed and not any(_set_turn(model, feature, rotation) and fits(body_now()) for rotation in (0.0, *turns)):
         raise SolidWorksError(f"{name}: could not turn the angle into place.")
     with contextlib.suppress(Exception):
         rename_feature(feature, name)

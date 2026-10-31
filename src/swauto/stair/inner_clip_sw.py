@@ -212,6 +212,18 @@ def _clip_angle(model, clip: _Clip, profile: str, name: str) -> None:
     want_long = (math.sin(clip.phi), -math.cos(clip.phi))  # plan x, z
     want_short = (math.cos(clip.phi), math.sin(clip.phi))
     ends = [clip.world(clip.heel_r, HEEL_FROM_HOLE_IN, y) for y in (clip.y0, clip.y0 + TALL_IN)]
+
+    def twist(found) -> float | None:
+        """The turn that lays ``found``'s 4 in leg in toward the tank; None when it reads mirrored."""
+        axes = None if found is None else _leg_axes(found, heel)
+        if axes is None or _hand(*axes) * _hand(want_long, want_short) <= 0:
+            return None
+        return _angle_between(axes[0], want_long)
+
+    def square(found) -> bool:
+        left = twist(found)
+        return _clip_fits(found, clip) and left is not None and abs(left) < 1e-4
+
     for flip in (False, True):
         a, b = (ends[1], ends[0]) if flip else (ends[0], ends[1])
         feature, path_sketch, bodies_before = _member(model, profile, a, b, name)
@@ -219,14 +231,16 @@ def _clip_angle(model, clip: _Clip, profile: str, name: str) -> None:
         if body is None:
             s._rebuild(model)
             body = _new_body(model, bodies_before)
-        placed = _clip_fits(body, clip)
-        axes = None if body is None or placed else _leg_axes(body, heel)
-        if axes is not None and _hand(*axes) * _hand(want_long, want_short) > 0:
-            turn = _angle_between(axes[0], want_long)
-            for rotation in (turn, -turn):
-                if _set_turn(model, feature, rotation) and _clip_fits(_new_body(model, bodies_before), clip):
-                    placed = True
-                    break
+        # As the upright angles (platform_sw._upright_angle): a clip that only fits is turned square too; if no turn
+        # squares it, a fit will do.
+        turn = twist(body)
+        turns = () if turn is None else (turn, -turn)
+        placed = square(body) or any(
+            _set_turn(model, feature, rotation) and square(_new_body(model, bodies_before)) for rotation in turns
+        ) or any(
+            _set_turn(model, feature, rotation) and _clip_fits(_new_body(model, bodies_before), clip)
+            for rotation in (0.0, *turns)
+        )
         if placed:
             with contextlib.suppress(Exception):
                 rename_feature(feature, name)
