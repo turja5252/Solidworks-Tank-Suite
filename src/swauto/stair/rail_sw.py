@@ -421,7 +421,7 @@ def _joint(
     phi = rail.front(place) + (level_top - stair_top) / rail.rise_per_rad
     joint = _world(phi, face_r, 0.0, top)
     lines = _lines_of(below, r_a, r_b)
-    if _narrow(lines):
+    if _wraps(below, lines):
         at_post = _sides(lines)[side].world(face_r, 0.0, top)
     else:
         at_post = _aim(_post(below, r_a, r_b, post_in, side), joint, top)
@@ -453,7 +453,7 @@ def _landing(
     model, below: _Flight, above: _Flight | None, face_r, r_a, r_b, post_in, profile, mid_top, progress,
 ) -> None:
     """Level piece and end piece at A, the platform's own rail, and at B the same for the flight above."""
-    if _narrow(_lines_of(below, r_a, r_b)):
+    if _wraps(below, _lines_of(below, r_a, r_b)):
         _corner_landing(model, below, above, face_r, r_a, r_b, profile, mid_top, progress)
         return
     tag = f"ElitePlatform{below.last.index:02d}Rail{'In' if below.side < 0 else ''}"
@@ -484,7 +484,7 @@ def _mid_landing(
     model, below: _Flight, above: _Flight | None, face_r, r_a, r_b, post_in, mid_top, progress,
 ) -> None:
     """Level flat bars from the miters to the end pieces, and the platform's own bar between its posts."""
-    if _narrow(_lines_of(below, r_a, r_b)):
+    if _wraps(below, _lines_of(below, r_a, r_b)):
         _corner_mid_landing(model, below, above, face_r, r_a, r_b, mid_top, progress)
         return
     tag = f"ElitePlatform{below.last.index:02d}Mid{'In' if below.side < 0 else ''}"
@@ -741,10 +741,16 @@ def _level_angle(model, a, b, out, profile: str, name: str) -> None:
 
 
 def _lines_of(flight: _Flight, r_a: float, r_b: float):
-    """The platform after ``flight``. The inner stringer always meets channel C at its corner, so on the inside it is
-    never the narrow stair's."""
+    """The platform after ``flight``, the outer stringer at its own walk face; on the inside, where ``flight.r_b`` is
+    the inner stringer's, at the platform's."""
     return platform_lines(phi=flight.last.phi, tread_top=flight.last.y1, r_a=r_a, r_b=r_b,
                           stringer_b=flight.r_b if flight.side > 0 else None, spec=flight.platform)
+
+
+def _wraps(flight: _Flight, lines) -> bool:
+    """The flight's rails wrap the platform's outer corners: outside, on a stair narrower than the platform. The inner
+    stringer always meets channel C at its corner, so the inside never does, a wider platform or not."""
+    return flight.side > 0 and _narrow(lines)
 
 
 def _narrow(lines) -> bool:

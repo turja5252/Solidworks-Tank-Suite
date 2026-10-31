@@ -195,3 +195,29 @@ def test_on_a_stair_narrower_than_its_platform_the_inside_still_meets_c_at_its_c
                   "Platform 1 inside top rail", "Platform 1 inside toe plate"):
         assert label in labels  # the inside does not
     assert not any("inside side post" in label or "inside top rail run" in label for label in labels)
+
+
+def test_on_a_platform_wider_than_the_stair_the_inside_does_not_wrap_its_corners():
+    # A wider platform puts D further out, not C: the outside wraps D's corners, the inside meets C at its corner as
+    # ever (it took the outside's corner pieces, and stacked a second set of them on the first; found 2026-10-31).
+    from swauto.stair import rail_sw as r
+    from swauto.stair.stair_sw import InnerRail, stair_places
+
+    parts = _parts(PlatformSpec(60.0, width_in=48.0, rolled=False), inner_rail=InnerRail(posts=(2, 4, 6)))
+    labels = [job.label for job in jobs(parts, "L2x2", "C4", "L3", "L6")]
+    assert "Platform 1 side post A" in labels and "Platform 1 top rail run" in labels  # the outside wraps
+    for label in ("Platform 1 inside post A", "Platform 1 inside rail end A", "Platform 1 inside top rail level B",
+                  "Platform 1 inside top rail", "Platform 1 inside toe plate", "Platform 1 inside midrail level A"):
+        assert label in labels
+    for label in ("Platform 1 inside side post A", "Platform 1 inside top rail run", "Platform 1 inside toe plate run",
+                  "Platform 1 inside midrail run", "Platform 1 inside top rail A"):
+        assert label not in labels
+    inner = parts.inner_rails()
+    assert not inner.wraps(1) and parts.rails().wraps(1)
+    assert all(not spot.side for spot in post_spots(inner, 1))
+    # And so in the one-part build: the inside flight's joint runs to its post on C, not to the side's corner.
+    where = stair_places(parts.stair, parts.shell_od, 1)
+    r_a = where.layout.inner_face_in
+    face_r, flights = r._rails_on(where.places, where.per_flight, r_a, parts.r_b, parts.stair.platform_specs, 42.0,
+                                  None, True)
+    assert not r._wraps(flights[0], r._lines_of(flights[0], r_a, r_a + 36.0))

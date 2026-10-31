@@ -241,7 +241,7 @@ def add_platform_posts(
     hole_ys = (middle - PLATFORM_HOLE_SPACE_IN / 2.0, middle + PLATFORM_HOLE_SPACE_IN / 2.0)
     places = []  # (label, angle or None for an end post, away)
     side_note = ""
-    if lines.stringer_b < lines.r_b - 0.01:
+    if not inner and lines.stringer_b < lines.r_b - 0.01:
         side_note = _side_posts(model, tread_index, lines, tread_top, profile, progress, rail_top).note
     else:
         places += [("A", None, 1.0), ("B", None, -1.0)]

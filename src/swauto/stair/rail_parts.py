@@ -112,10 +112,15 @@ class Rails:
         return self.shapes[k - 1] if k - 1 < len(self.shapes) else None
 
     def lines(self, k: int):
-        """Platform ``k`` (1 the lowest), as the handrail sees it: the inside's never the narrow stair's."""
+        """Platform ``k`` (1 the lowest), as the handrail sees it."""
         last = self.places[k * self.per_flight - 1]
         return platform_lines(phi=last.phi, tread_top=last.y1, r_a=self.r_a, r_b=self.pb,
                               stringer_b=None if self.inner else self.r_b, spec=self.shape(k))
+
+    def wraps(self, k: int) -> bool:
+        """The rails wrap platform ``k``'s outer corners: outside, on a stair narrower than the platform; the inside
+        never does (``rail_sw._wraps``)."""
+        return not self.inner and r._narrow(self.lines(k))
 
     def tread_top(self, k: int) -> float:
         return self.places[k * self.per_flight - 1].y1
@@ -152,7 +157,7 @@ def post_spots(rails: Rails, k: int) -> list[PostSpot]:
     tread_top = rails.tread_top(k)
     foot = lines.top - CHANNEL_IN + PLATFORM_FOOT_IN
     out = []
-    if r._narrow(lines):
+    if rails.wraps(k):
         heel_r = side_post_heel(lines)
         ys = (foot, tread_top + rails.rail_top - THK_IN)
         out += [PostSpot(k, label, True, line_phi, heel_r, 0.0, away, ys)
@@ -246,7 +251,7 @@ def build_toe(model, rails: Rails, k: int, piece: str, name: str) -> None:
     y = lines.top + r.TOE_IN
     if rails.inner:
         r._inner_toe(model, lines, y, name)
-    elif r._narrow(lines):
+    elif rails.wraps(k):
         wrap_piece(model, lines, y, r.TOE_SECTION, name, piece, lines.stringer_b + THICKNESS_IN + THK_IN)
     elif lines.rolled:
         r._rolled_band(model, lines.r_out - r.TOE_THK_IN, lines.r_out, lines.phi_a, lines.phi_b, lines.top, r.TOE_IN,
@@ -331,7 +336,7 @@ def build_end_piece(model, rails: Rails, k: int, side: str, profile: str, name: 
     (rail_sw._end_piece, or _corner_end_piece on a narrow stair), with its two bolt holes."""
     lines = rails.lines(k)
     grating = rails.tread_top(k)
-    if r._narrow(lines):
+    if rails.wraps(k):
         key_side = r._sides(lines)[side]
         heel_r = side_post_heel(lines)
         ys = (grating + rails.mid_top - r.BAR_IN, grating + rails.rail_top - THK_IN)
@@ -357,7 +362,7 @@ def build_level(model, rails: Rails, k: int, side: str, profile: str, name: str)
     below, above = _below_above(rails, k)
     lines = rails.lines(k)
     face_r = rails.face_r
-    if not r._narrow(lines):
+    if not rails.wraps(k):
         post = _rail_post(rails, k, side)
         joint, normal = r._joint(below, above, face_r, rails.r_a, rails.pb, rails.post_in, side)
         r._level_piece(model, post, joint, normal, side, profile, name)
@@ -380,7 +385,7 @@ def build_platform_rail(model, rails: Rails, k: int, piece: str, profile: str, n
     ``piece`` of it, the return along side "A" or "B" from the side post or the "run" round the outer corners."""
     lines = rails.lines(k)
     top = rails.tread_top(k) + rails.rail_top
-    if not r._narrow(lines):
+    if not rails.wraps(k):
         a, b = (_rail_post(rails, k, side) for side in ("A", "B"))
         way = rails.side
         if lines.rolled:
@@ -444,7 +449,7 @@ def build_midrail(model, rails: Rails, k: int, foot: bool, name: str) -> None:
 def build_mid_level(model, rails: Rails, k: int, side: str, name: str) -> None:
     """The midrail's level bar at side ``side`` of platform ``k`` (rail_sw._mid_level, _corner_mid_level)."""
     below, above = _below_above(rails, k)
-    if r._narrow(rails.lines(k)):
+    if rails.wraps(k):
         r._corner_mid_level(model, below, above, side, rails.face_r, rails.r_a, rails.pb, rails.mid_top, name)
     else:
         r._mid_level(model, below, above, side, rails.face_r, rails.r_a, rails.pb, rails.post_in, rails.mid_top, name)
@@ -455,7 +460,7 @@ def build_platform_mid(model, rails: Rails, k: int, piece: str, name: str) -> No
     ``piece`` of its wrap, "A", "B" or "run"."""
     lines = rails.lines(k)
     top = rails.tread_top(k) + rails.mid_top
-    if r._narrow(lines):
+    if rails.wraps(k):
         wrap_piece(model, lines, top, r.BAR_SECTION, name, piece)
         return
     a, b = (_rail_post(rails, k, side) for side in ("A", "B"))
@@ -496,7 +501,7 @@ def rail_jobs(job, rails: Rails, profile: str, common: dict, place, pairs=()) ->
     on the ground-0 stair and put there by ``place()``; ``common`` is what shapes them all. A flight's top rail and
     midrail spliced at ``pairs`` ((low post, high post) each) are a part for each piece."""
     home = (place(),)
-    narrow = {k: r._narrow(rails.lines(k)) for k in range(1, rails.count + 1)}
+    narrow = {k: rails.wraps(k) for k in range(1, rails.count + 1)}
     w, t = rails.word, rails.tag  # "inside " and "In" on the inside, nothing outside
     out = []
 
