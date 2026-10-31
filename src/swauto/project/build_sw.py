@@ -39,7 +39,7 @@ from swauto.nozzle.nozzle_sw import (
 from swauto.nozzle.nozzle_sw import _hide_sketch as _hide_nozzle_sketch
 from swauto.nozzle.shape import bolt_centers
 from swauto.params import rebuild, rename_feature
-from swauto.parts import new_part
+from swauto.parts import new_part, quiet
 from swauto.project.items import FTCO_PIECE, REPAD, SHELL_PLATE, TURNED, Item
 from swauto.project.project import BUILT, Project
 from swauto.tank.open_shell import PROJECT_PART_PROPERTY
@@ -143,20 +143,8 @@ def build_part(app, path: Path, item: Item) -> str:
     try:
         if path.exists():
             _clear(doc)
-        if item.kind == SHELL_PLATE:
-            _shell_plate(doc, item)
-            for placed, mark in item.source or ():  # nozzles placed on this plate's own frame
-                _cut_shell(doc, placed, _safe(mark))
-        elif item.kind == TURNED:
-            _turned(doc, item)
-        elif item.kind == REPAD:
-            placed, mark = item.source
-            _learn_right_plane(doc)
-            _repad(doc, placed, _safe(mark))
-        elif item.kind == FTCO_PIECE:
-            _ftco_piece(doc, item)
-        else:
-            raise SolidWorksError(f"{item.file}: no builder for {item.kind!r}.")
+        with quiet(app, doc):  # graphics and the feature tree off while it builds: many times faster
+            _build_item(doc, item)
         bodies = doc.GetBodies2(0, False) or ()
         if len(bodies) != 1:
             raise SolidWorksError(f"{item.file}: built {len(bodies)} solids, not one.")
@@ -169,6 +157,24 @@ def build_part(app, path: Path, item: Item) -> str:
         # is left loaded when the assembly opens it.
         with contextlib.suppress(Exception):
             app.CloseDoc(str(com_value(doc.GetTitle) or ""))
+
+
+def _build_item(doc, item: Item) -> None:
+    """``item``'s piece on ``doc``, by its kind."""
+    if item.kind == SHELL_PLATE:
+        _shell_plate(doc, item)
+        for placed, mark in item.source or ():  # nozzles placed on this plate's own frame
+            _cut_shell(doc, placed, _safe(mark))
+    elif item.kind == TURNED:
+        _turned(doc, item)
+    elif item.kind == REPAD:
+        placed, mark = item.source
+        _learn_right_plane(doc)
+        _repad(doc, placed, _safe(mark))
+    elif item.kind == FTCO_PIECE:
+        _ftco_piece(doc, item)
+    else:
+        raise SolidWorksError(f"{item.file}: no builder for {item.kind!r}.")
 
 
 def _shell_plate(doc, item: Item) -> None:

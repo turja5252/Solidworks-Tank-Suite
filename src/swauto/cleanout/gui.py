@@ -9,6 +9,7 @@ from tkinter import messagebox, ttk
 from swauto.cleanout.layout import course_one_gaps
 from swauto.cleanout.spec import SIZES, Cleanout
 from swauto.errors import SolidWorksError
+from swauto.parts import quiet
 from swauto.tank.open_shell import find_shell
 from swauto.tank.spec import TankSpec
 
@@ -287,11 +288,13 @@ def rebuild_with_cleanouts(live, spec: TankSpec, cleanouts: list[Cleanout], nozz
             "This shell has nozzles. List them on Shell Nozzles first so they are rebuilt with the new shell."
         )
     gaps = course_one_gaps(spec, cleanouts)
-    delete_cleanouts(model)
-    if has_nozzles:
-        _delete_prefixed(model)
-    live.update(connect().app, spec, gaps)
-    note = add_cleanouts(live.model, spec, cleanouts)
-    if nozzles:
-        note += " " + add_nozzles(live.model, spec, nozzles)
+    app = connect().app
+    with quiet(app, model):  # graphics and the feature tree off while it builds: many times faster
+        delete_cleanouts(model)
+        if has_nozzles:
+            _delete_prefixed(model)
+        live.update(app, spec, gaps)
+        note = add_cleanouts(live.model, spec, cleanouts)
+        if nozzles:
+            note += " " + add_nozzles(live.model, spec, nozzles)
     return note

@@ -36,6 +36,7 @@ from swauto.nozzle.pipe import nps_sizes
 from swauto.nozzle.repad import default_repad_size
 from swauto.nozzle.roof_place import RoofPlacement, pad_outline, place_on_roof
 from swauto.nozzle.roof_spec import DIRECT, HEIGHT, PROJECTION_LABELS, RoofNozzle, read_isp
+from swauto.parts import quiet
 from swauto.tank.framing import Layout, rafter_outline
 from swauto.tank.open_roof import find_roof_part
 from swauto.tank.roof import RoofSpec, course_break_plan_radii
@@ -490,7 +491,8 @@ def build_roof_nozzle_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: d
             from swauto.nozzle.roof_sw import add_roof_nozzles
             from swauto.session import connect
 
-            model = find_roof_part(shared, connect().app)
+            app = connect().app
+            model = find_roof_part(shared, app)
         except (ValueError, SolidWorksError) as exc:
             messagebox.showerror("Roof nozzle", str(exc))
             return
@@ -503,7 +505,8 @@ def build_roof_nozzle_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: d
             frame.update_idletasks()
 
         try:
-            status_var.set(add_roof_nozzles(model, roof, list(nozzles), progress=progress))
+            with quiet(app, model):  # graphics and the feature tree off while it builds: many times faster
+                status_var.set(add_roof_nozzles(model, roof, list(nozzles), progress=progress))
         except (SolidWorksError, ValueError) as exc:
             status_var.set(str(exc))
             messagebox.showerror("Roof nozzle", str(exc))

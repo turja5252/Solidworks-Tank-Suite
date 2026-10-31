@@ -69,6 +69,24 @@ def course_at(spec: TankSpec, elevation_in: float) -> tuple[int, Course, float]:
     raise ValueError(f"Elevation {elevation_in:g} in is above the shell ({bottom:g} in).")
 
 
+def repad_seams(placed: Placement, spec: TankSpec) -> list[float]:
+    """The course seams (heights from the floor) a nozzle's repad runs across. The pad is rolled to its nozzle's
+    course, so past a seam it stands off a course with a smaller outside, or runs into one with a larger."""
+    pad = placed.repad
+    if pad is None:
+        return []
+    half = pad.outer_diameter_in / 2.0
+    low = 0.0 if pad.style == "tombstone" else placed.nozzle.elevation_in - half
+    high = placed.nozzle.elevation_in + half
+    seams = []
+    bottom = 0.0
+    for course in spec.active_courses()[:-1]:
+        bottom += course.height_in
+        if low < bottom < high:
+            seams.append(bottom)
+    return seams
+
+
 def projections(
     outside_projection_in: float,
     inside_projection_in: float,

@@ -9,10 +9,11 @@ from tkinter import messagebox, ttk
 from swauto.errors import SolidWorksError
 from swauto.nozzle.nozzle_sw import add_nozzles
 from swauto.nozzle.pipe import SCHEDULES, nps_sizes
-from swauto.nozzle.place import Placement, place
+from swauto.nozzle.place import Placement, place, repad_seams
 from swauto.nozzle.repad import default_repad_size
 from swauto.nozzle.shape import stations
 from swauto.nozzle.spec import Nozzle
+from swauto.parts import quiet
 from swauto.tank.open_shell import find_shell
 from swauto.tank.profile import course_radii_m
 from swauto.tank.spec import TankSpec
@@ -130,7 +131,7 @@ def check_rows(rows: list[dict[str, object]], spec) -> list[RowCheck]:
         except ValueError as exc:
             checks.append(RowCheck(None, str(exc), False))
             continue
-        checks.append(RowCheck(nozzle, _row_summary(placed), True))
+        checks.append(RowCheck(nozzle, _row_summary(placed, repad_seams(placed, shell)), True))
     rows_by_mark: dict[str, list[int]] = {}
     for index, check in enumerate(checks):
         if check.nozzle is not None:
@@ -175,7 +176,8 @@ def _row_nozzle(values: dict[str, object]) -> Nozzle:
     )
 
 
-def _row_summary(placed: Placement) -> str:
+def _row_summary(placed: Placement, seams: list[float] = ()) -> str:
+    """The row's Check cell: what was read, and anything to look at (``seams``: course seams its pad runs across)."""
     nozzle = placed.nozzle
     shape = "WN" if nozzle.kind == "wn" else "SO"
     pad = placed.repad
@@ -191,8 +193,10 @@ def _row_summary(placed: Placement) -> str:
     )
     matched = (f", face {placed.chord_in:.3f} in out to the radial plane"
                if nozzle.match_plane and nozzle.offset_in and placed.chord_in else "")
+    crossing = (f", pad crosses the seam{'s' if len(seams) > 1 else ''} at {', '.join(f'{s:g}' for s in seams)} in"
+                if seams else "")
     return (f"OK  {nozzle.nps} in {nozzle.rating}# {shape}, course {placed.course_number}, {pad_text}{extras}"
-            f"{matched}")
+            f"{matched}{crossing}")
 
 
 class _Row:
@@ -460,7 +464,8 @@ def build_nozzle_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict |
         try:
             from swauto.session import connect
 
-            live = find_shell(shared, connect().app)  # this run's shell, or the shell part open in SolidWorks
+            app = connect().app
+            live = find_shell(shared, app)  # this run's shell, or the shell part open in SolidWorks
         except (ValueError, SolidWorksError) as exc:
             messagebox.showerror("Shell nozzle", str(exc))
             return
@@ -469,7 +474,8 @@ def build_nozzle_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict |
         status_var.set(f"Building {len(nozzles)} nozzle(s) on the shell...")
         frame.update_idletasks()
         try:
-            status_var.set(add_nozzles(model, spec, list(nozzles)))
+            with quiet(app, model):  # graphics and the feature tree off while it builds: many times faster
+                status_var.set(add_nozzles(model, spec, list(nozzles)))
         except (SolidWorksError, ValueError) as exc:
             status_var.set(str(exc))
             messagebox.showerror("Shell nozzle", str(exc))

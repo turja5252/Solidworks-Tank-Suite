@@ -81,6 +81,22 @@ def test_grid_rows_skip_blanks_and_flag_what_is_wrong():
     assert not checks[4].ok and "above the shell" in checks[4].message
 
 
+def test_a_row_says_when_its_pad_crosses_a_course_seam():
+    spec = TankSpec(diameter_in=200, diameter_basis="mw", courses=[Course(96, 0.5), Course(96, 0.375)])
+    low, across, tomb = check_rows(
+        [
+            _row(mark="N1", size="12", elevation="40", osp="10", isp="2", repad="Default"),  # 27 in pad: 26.5 to 53.5
+            _row(mark="N2", size="12", elevation="90", osp="10", isp="2", repad="Default"),  # 76.5 to 103.5
+            _row(mark="N3", size="6", elevation="100", osp="8", isp="2", repad="Default",
+                 style="Tombstone"),  # from the floor up
+        ],
+        spec,
+    )
+    assert low.ok and "seam" not in low.message
+    assert across.ok and across.message.endswith(", pad crosses the seam at 96 in")
+    assert tomb.ok and tomb.message.endswith(", pad crosses the seam at 96 in")
+
+
 def test_grid_rows_with_one_mark_twice_are_both_wrong():
     spec = TankSpec(diameter_in=200, diameter_basis="od", courses=[Course(96, 0.5)])
     row = _row(mark="N1", size="6", elevation="48", osp="8", isp="4")
