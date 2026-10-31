@@ -2,6 +2,8 @@
 
 import math
 
+import pytest
+
 from swauto.stair.attachments import CLIP, KNEE, OUTER, POST, RAIL_SPLIT, SPLICE, Rules, Shell, Spot
 from swauto.stair.development import develop_both
 from swauto.stair.game import TRAY, Game, Piece, slot, spot_xy
@@ -263,3 +265,60 @@ def test_the_view_pans_when_empty_space_is_dragged_and_measures_between_two_poin
     assert (bx - ax, by - ay) == (24.0, 10.0) and ax * 4 == round(ax * 4)
     assert frame.said.get() == f"Measured {measured(24.0, 10.0)}. Click again for a new measure."
     assert measured(24.0, 10.0) == '2\'-2" (2\'-0" across, 10" up)' and inches(0.0625) == '1/16"'
+
+
+def test_a_rail_is_dragged_to_a_new_height_and_a_typed_height_shows_at_once(tk_window):
+    """The user, 2026-10-30: the rail heights adjustable in the Stair game, made easy."""
+    import tkinter as tk
+    from tkinter import ttk
+
+    from swauto.stretchout.gui import GAME_VIEW, build_stretchout_tab
+
+    book = ttk.Notebook(tk_window)
+    page = ttk.Frame(book)
+    book.add(page)
+    shared = {"spec": TANK, "nozzles": [], "cleanouts": [], "stairway": lambda: ARRANGEMENT}
+    build_stretchout_tab(page, tk.StringVar(master=tk_window), shared)
+    book.select(page)
+    tk_window.update()
+    (view,) = [w for w in _widgets(page) if isinstance(w, ttk.Combobox) and GAME_VIEW in w.cget("values")]
+    view.set(GAME_VIEW)
+    view.event_generate("<<ComboboxSelected>>")
+    tk_window.update()
+    frame = next(w for w in page.winfo_children() if hasattr(w, "game_events"))
+    press, motion, release = (frame.game_events[k] for k in ("press", "motion", "release"))
+    canvas = next(w for w in _widgets(frame) if isinstance(w, tk.Canvas))
+    # Zoom in on the top rail's middle until the posts along it stand apart.
+    x0, y0, x1, y1 = canvas.bbox(canvas.find_withtag("rail=Top rail")[0])
+    for _ in range(8):
+        frame.game_events["wheel"](_At((x0 + x1) / 2.0, (y0 + y1) / 2.0, delta=120))
+    scale = frame.game_state["bands"][OUTER]["scale"]  # the zoom is in it
+
+    def top_rail_y(x: float) -> float:
+        """The top rail's middle, as drawn, on the vertical at ``x``."""
+        pts = canvas.coords(canvas.find_withtag("rail=Top rail")[0])
+        corners = list(zip(pts[0::2], pts[1::2], strict=True))
+        ys = [ya + (yb - ya) * (x - xa) / (xb - xa) for (xa, ya), (xb, yb) in zip(corners, corners[1:] + corners[:1],
+                                                                                    strict=True)
+              if xa != xb and (xa - x) * (xb - x) <= 0]
+        return sum(ys) / len(ys)
+
+    # A point on the top rail's middle line with no post on it; the grab rail runs close under it at this zoom.
+    pts = canvas.coords(canvas.find_withtag("rail=Top rail")[0])
+    a = ((pts[0] + pts[6]) / 2.0, (pts[1] + pts[7]) / 2.0)
+    b = ((pts[2] + pts[4]) / 2.0, (pts[3] + pts[5]) / 2.0)
+    for k in range(5, 96):
+        start = _At(a[0] + (b[0] - a[0]) * k / 100.0, a[1] + (b[1] - a[1]) * k / 100.0)
+        near = canvas.find_overlapping(start.x - 4, start.y - 4, start.x + 4, start.y + 4)
+        if not any("placed" in canvas.gettags(item) for item in near):
+            break
+    before = top_rail_y(start.x)
+    press(start)
+    assert frame.game_state["rail_drag"] is not None, (k, frame.said.get(), [canvas.gettags(i) for i in near])
+    motion(_At(start.x, start.y - 3.1 * scale))  # 3.1 in up: it goes in 1/4 in steps
+    release(_At(start.x, start.y - 3.1 * scale))
+    assert frame.height_vars["rail_top"].get() == "45"
+    assert top_rail_y(start.x) == pytest.approx(before - 3.0 * scale, abs=1.0)
+    frame.height_vars["rail_top"].set("40")  # typed in its box
+    tk_window.update()
+    assert top_rail_y(start.x) == pytest.approx(before + 2.0 * scale, abs=1.0)

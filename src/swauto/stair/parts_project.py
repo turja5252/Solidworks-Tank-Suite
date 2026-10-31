@@ -9,6 +9,7 @@ and puts Stair.SLDASM into the tank's assembly once, at the tank's origin; the t
 from __future__ import annotations
 
 from swauto.project.items import Item, Placement
+from swauto.stair.heights import RAIL_TOP_IN
 from swauto.stair.parts_build import ASSEMBLY, StairParts, build, jobs, stair_items
 
 STAIR_ASSEMBLY = "stair assembly"
@@ -16,7 +17,8 @@ STAIR_ASSEMBLY = "stair assembly"
 
 def stair_parts(stair, wall_in: float, *, platforms: int, top_platform: bool, posts, ground_in: float, turn: float,
                 ccw: bool, top_rail: bool, mid_rail: bool, post_in: float, mid_top: float, grab, rail_splits, braces,
-                knees: bool, inner_clips, splits, inner_rail) -> tuple[StairParts, list[str]]:
+                knees: bool, inner_clips, splits, inner_rail, rail_top: float = RAIL_TOP_IN,
+                flight_mid: float | None = None) -> tuple[StairParts, list[str]]:
     """The parts build's StairParts for the stair the tab describes, and what of it the parts build leaves out."""
     if ccw:
         raise ValueError("A stair that climbs counterclockwise is not built as parts yet: Create stair builds it.")
@@ -28,6 +30,7 @@ def stair_parts(stair, wall_in: float, *, platforms: int, top_platform: bool, po
     parts = StairParts(
         stair, stair.shell_od_in, wall_in, platforms=platforms, posts=tuple(posts), ground_in=ground_in, turn=turn,
         top_platform=top_platform, top_rail=top_rail, mid_rail=mid_rail, post_in=post_in, mid_top=mid_top, grab=grab,
+        rail_top=rail_top, flight_mid=flight_mid,
         rail_splits=tuple((side, pan) for side, pan in rail_splits if side == "outer"), braces=tuple(braces),
         knees=knees, inner_clips=tuple(inner_clips), splits=splits,
     )

@@ -25,10 +25,10 @@ from swauto.errors import SolidWorksError
 from swauto.params import rename_feature
 from swauto.stair import stair_sw as s
 from swauto.stair.brace_sw import BraceResult, _progress
+from swauto.stair.heights import GRAB_TOP_IN  # the pipe's top over the stringer's top edge
 from swauto.stair.platform_sw import _travel, _world
 from swauto.stair.post_sw import PLATFORM_POST_IN, RAIL_TOP_IN, Post, _post_side
 from swauto.stair.rail_sw import (
-    MID_TOP_IN,
     PLATFORM_MID_TOP_IN,
     _draw_section,
     _Flight,
@@ -41,7 +41,6 @@ from swauto.stair.stringer_sw import _names, _rename_new, _select_feature
 from swauto.tank.shell import _clear_selection, _close_sketch, _open_sketch
 
 _INCH = 0.0254
-GRAB_TOP_IN = 34.0  # pipe top over the stringer's top edge
 PIPE_OD_IN = 1.9  # 1-1/2 in Sch 40
 PIPE_WALL_IN = 0.145
 CAP_DIA_IN = 1.625
@@ -75,7 +74,7 @@ class _Pipe:
 
     def center_y(self, phi: float) -> float:
         """Centerline height: the top of a radial slice, 1/cos of the slope over it, is ``top`` over the stringer's top edge."""
-        return self.flight.top(phi) - RAIL_TOP_IN + self.top - PIPE_OD_IN / 2.0 / math.cos(self.alpha)
+        return self.flight.top(phi) - self.flight.rail_top + self.top - PIPE_OD_IN / 2.0 / math.cos(self.alpha)
 
     def center(self, phi: float) -> tuple[float, float, float]:
         return _world(phi, self.radius, 0.0, self.center_y(phi))
@@ -94,7 +93,7 @@ def add_grab_rails(
     model, places, per_flight: int, posts: list[Post], *, r_a: float, r_b: float, platforms: int,
     top_platform: bool, post_in: float = PLATFORM_POST_IN, mid_top: float = PLATFORM_MID_TOP_IN,
     grab: GrabRail = GrabRail(), platform_b: float | None = None, progress=None, inner: bool = False,
-    shapes: tuple = (),
+    shapes: tuple = (), rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None,
 ) -> BraceResult:
     """The pipe along every flight with its two caps, and a PC #34 to it from each flight post.
 
@@ -107,7 +106,7 @@ def add_grab_rails(
     way, face_r = _post_side(r_a if inner else r_b, inner)  # the flight posts' walk side: against the stringer
     radius = face_r - way * (BRACKET_OVERALL_IN - BRACKET_IN / 2.0)  # over the middle of the PC #34's upright
     pb = r_b if platform_b is None else platform_b
-    flights = _flights(places, per_flight, r_a if inner else r_b, shapes)
+    flights = _flights(places, per_flight, r_a if inner else r_b, shapes, rail_top, flight_mid)
     landings = 0 if inner else len(flights) - 1 + (1 if top_platform else 0)
     prefix = "EliteGrabIn" if inner else "EliteGrab"
     pipes: list[tuple[_Pipe, float, float] | None] = []
@@ -179,7 +178,7 @@ def add_grab_rails(
 def _miter_phi(below, above, face_r, r_a, r_b, post_in, mid_top, side: str) -> float:
     """Angle of the vertical through the midrail's miter with the platform midrail, where the lisp stops the pipe.
     Read off the joint point, it is taken to the turn nearest the flight's own angles: atan2 wraps at 180°."""
-    joint, _normal = _joint(below, above, face_r, r_a, r_b, post_in, side, mid_top, MID_TOP_IN)
+    joint, _normal = _joint(below, above, face_r, r_a, r_b, post_in, side, mid_top, below.flight_mid)
     near = below.last.phi
     return near + math.remainder(math.atan2(-joint[0], joint[2]) - near, 2.0 * math.pi)
 

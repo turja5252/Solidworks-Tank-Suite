@@ -32,6 +32,7 @@ from swauto.stair.development import (
     flight_treads,
     flight_turns,
 )
+from swauto.stair.heights import INNER_PIPE_TOP_IN, RAIL_TOP_IN
 from swauto.stair.splitter import (
     GAP_IN,
     RELIEF_IN,
@@ -114,6 +115,7 @@ def create_stair(
     top_rail: bool = False, mid_rail: bool = False, platform_mid_top: float | None = None,
     grab: GrabRail | None = None, ground_in: float = 0.0, shell_height_in: float | None = None,
     splits: SplitSettings | None = None, inner_rail: InnerRail | None = None, rail_splits: tuple = (),
+    rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None,
 ) -> StairResult:
     """New part, then the stair. ``shell`` adds the tank; the stringers do not change.
 
@@ -136,6 +138,7 @@ def create_stair(
             posts=posts, post_profile=post_file, platform_post_in=platform_post_in, top_rail=top_rail,
             mid_rail=mid_rail, platform_mid_top=platform_mid_top, grab=grab, ground_in=ground_in,
             shell_height_in=shell_height_in, splits=splits, inner_rail=inner_rail, rail_splits=rail_splits,
+            rail_top=rail_top, flight_mid=flight_mid,
         )
     stair.validate()
     if wall_in <= 0 or wall_in >= TREAD_MARK_IN or wall_in * 2 >= TREAD_DEPTH_IN:
@@ -147,7 +150,7 @@ def create_stair(
             top_platform=top_platform, profiles=profiles, posts=posts, post_profile=post_file,
             platform_post_in=platform_post_in, top_rail=top_rail, mid_rail=mid_rail,
             platform_mid_top=platform_mid_top, grab=grab, ground_in=ground_in, splits=splits, inner_rail=inner_rail,
-            rail_splits=rail_splits,
+            rail_splits=rail_splits, rail_top=rail_top, flight_mid=flight_mid,
         )
 
 
@@ -157,7 +160,7 @@ def create_stair_on_tank(
     platform_post_in: float | None = None, top_rail: bool = False, mid_rail: bool = False,
     platform_mid_top: float | None = None, grab: GrabRail | None = None, ground_in: float = 0.0,
     shell_height_in: float | None = None, splits: SplitSettings | None = None, inner_rail: InnerRail | None = None,
-    rail_splits: tuple = (),
+    rail_splits: tuple = (), rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None,
 ) -> StairResult:
     """New part with the shell at the Stringer tab's OD radius, then the stair. The shell is one course of
     ``shell_height_in`` when given, so the stair can be checked against its top."""
@@ -184,7 +187,8 @@ def create_stair_on_tank(
             model, shell_od, stair, wall_in, progress=progress, platforms=platforms, top_platform=top_platform,
             profiles=profiles, posts=posts, post_profile=post_profile, platform_post_in=platform_post_in,
             top_rail=top_rail, mid_rail=mid_rail, platform_mid_top=platform_mid_top, grab=grab,
-            ground_in=ground_in, splits=splits, inner_rail=inner_rail, rail_splits=rail_splits,
+            ground_in=ground_in, splits=splits, inner_rail=inner_rail, rail_splits=rail_splits, rail_top=rail_top,
+            flight_mid=flight_mid,
         )
 
 
@@ -238,6 +242,8 @@ def build_stair_on_model(
     splits: SplitSettings | None = None,
     inner_rail: InnerRail | None = None,
     rail_splits: tuple = (),
+    rail_top: float = RAIL_TOP_IN,
+    flight_mid: float | None = None,
 ) -> StairResult:
     """Stringers (unless already there), then tread by tread: pan, inner bolts, outer bolts.
 
@@ -310,6 +316,7 @@ def build_stair_on_model(
             post_note = _handrail_posts(
                 model, layout, places, per_flight, posts, post_profile, platforms, top_platform,
                 platform_post_in, top_rail, mid_rail, platform_mid_top, grab, progress, stair.platform_specs,
+                rail_top, flight_mid,
             )
         if inner_rail is not None and any(inner_rail.posts):
             if post_profile is None:
@@ -321,7 +328,7 @@ def build_stair_on_model(
         if rail_splits and post_profile is not None:
             post_note = (post_note + " " + _rail_splits(
                 model, layout, places, per_flight, rail_splits, posts, inner_rail, post_profile,
-                top_rail or mid_rail, grab, progress,
+                top_rail or mid_rail, grab, progress, rail_top, flight_mid,
             )).strip()
     except (BuildStopped, SolidWorksError):
         with contextlib.suppress(Exception):
@@ -973,7 +980,7 @@ class InnerRail:
     the posts' tops cut ``post_sw.TOP_GAP_IN`` under the rail line ``post_top`` over it."""
 
     posts: tuple = ()
-    top: float = 34.0
+    top: float = INNER_PIPE_TOP_IN
     post_top: float = 31.6875  # STWE: 3'-2 3/4" posts at Elite's 8-1/2 in rise
 
 
@@ -1000,7 +1007,7 @@ def _inner_handrail(
 
 def _rail_splits(
     model, layout, places, per_flight: int, wanted, posts, inner_rail: InnerRail | None, profile: str, rails: bool,
-    grab: GrabRail | None, progress,
+    grab: GrabRail | None, progress, rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None,
 ) -> str:
     """Each wanted split, (side, pan of the post below its bay), between that post and the next one up its flight.
     One whose posts are not there is noted."""
@@ -1009,7 +1016,7 @@ def _rail_splits(
 
     r_a = layout.inner_face_in
     r_b = r_a + layout.clear_in
-    laid = {"outer": post_layout(places, per_flight, posts, r_b) if posts else []}
+    laid = {"outer": post_layout(places, per_flight, posts, r_b, rail_top) if posts else []}
     if inner_rail is not None:
         laid["inner"] = post_layout(places, per_flight, inner_rail.posts, r_a, rail_top=inner_rail.post_top)
     pairs, lost = [], []
@@ -1025,7 +1032,8 @@ def _rail_splits(
     note = add_rail_splits(
         model, places, per_flight, pairs, r_a=r_a, r_b=r_b, profile=profile, rails=rails,
         outer_pipe_top=grab.top if grab is not None else None,
-        inner_pipe_top=inner_rail.top if inner_rail is not None else None, progress=progress,
+        inner_pipe_top=inner_rail.top if inner_rail is not None else None, progress=progress, rail_top=rail_top,
+        flight_mid=flight_mid,
     ).note if pairs else ""
     if lost:
         note += f" No posts either side for the handrail split(s) {', '.join(lost)}."
@@ -1035,12 +1043,13 @@ def _rail_splits(
 def _handrail_posts(
     model, layout, places, per_flight: int, posts: tuple[int, ...], profile: str, platforms: int,
     top_platform: bool, post_in: float | None, top_rail: bool, mid_rail: bool, mid_top: float | None,
-    grab: GrabRail | None, progress, shapes: tuple = (),
+    grab: GrabRail | None, progress, shapes: tuple = (), rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None,
 ) -> str:
     """Handrail posts at the same treads of every flight on the outer stringer, and near
     both ends of each platform's outer channel, ``post_in`` in from the ends. With
     ``top_rail`` and ``mid_rail``, the outer top rail and midrail along them, the
-    midrail ``mid_top`` over a platform's grating; with ``grab``, the grab rail on the flight posts."""
+    midrail ``mid_top`` over a platform's grating; with ``grab``, the grab rail on the flight posts. ``rail_top`` and
+    ``flight_mid`` are the top rail's and the flights' midrail's heights (stair.heights)."""
     from swauto.stair.grab_sw import add_grab_rails
     from swauto.stair.post_sw import PLATFORM_POST_IN, add_handrail_posts, add_platform_posts, post_layout
     from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN, add_bottom_end, add_mid_rails, add_toe_plates, add_top_rails
@@ -1052,7 +1061,7 @@ def _handrail_posts(
     r_a = layout.inner_face_in
     r_b = r_a + layout.clear_in  # the outer stringer
     platform_b = r_a + CLEAR_IN  # a platform is always full width, lined up on the inner stringer
-    flight_posts = post_layout(places, per_flight, posts, r_b)
+    flight_posts = post_layout(places, per_flight, posts, r_b, rail_top)
     note = add_handrail_posts(model, flight_posts, r_b=r_b, profile=profile, progress=progress).note
     after = []
     missed = []
@@ -1062,6 +1071,7 @@ def _handrail_posts(
             placed = add_platform_posts(
                 model, last.index, phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=platform_b, profile=profile,
                 post_in=post_in, stringer_b=r_b, progress=progress, spec=shapes[k - 1] if k - 1 < len(shapes) else None,
+                rail_top=rail_top,
             )
             after.append(str(last.index))
             if "missed" in placed.note:
@@ -1088,7 +1098,7 @@ def _handrail_posts(
             note += " " + add_top_rails(
                 model, places, per_flight, r_a=r_a, r_b=r_b, platforms=platforms, top_platform=top_platform,
                 profile=profile, post_in=post_in, mid_top=mid_top, platform_b=platform_b, progress=progress,
-                shapes=shapes,
+                shapes=shapes, rail_top=rail_top, flight_mid=flight_mid,
             ).note
         except SolidWorksError as exc:
             note += f" Top rail stopped: {exc}"
@@ -1097,6 +1107,7 @@ def _handrail_posts(
             note += " " + add_mid_rails(
                 model, places, per_flight, r_a=r_a, r_b=r_b, platforms=platforms, top_platform=top_platform,
                 post_in=post_in, mid_top=mid_top, platform_b=platform_b, progress=progress, shapes=shapes,
+                rail_top=rail_top, flight_mid=flight_mid,
             ).note
         except SolidWorksError as exc:
             note += f" Midrail stopped: {exc}"
@@ -1104,7 +1115,8 @@ def _handrail_posts(
             if top_rail:
                 try:
                     note += " " + add_bottom_end(
-                        model, places, per_flight, r_b=r_b, profile=profile, progress=progress
+                        model, places, per_flight, r_b=r_b, profile=profile, progress=progress, rail_top=rail_top,
+                        flight_mid=flight_mid,
                     ).note
                 except SolidWorksError as exc:
                     note += f" Rail end at the foot stopped: {exc}"
@@ -1113,7 +1125,7 @@ def _handrail_posts(
             note += " " + add_grab_rails(
                 model, places, per_flight, flight_posts, r_a=r_a, r_b=r_b, platforms=platforms,
                 top_platform=top_platform, post_in=post_in, mid_top=mid_top, grab=grab, platform_b=platform_b,
-                progress=progress, shapes=shapes,
+                progress=progress, shapes=shapes, rail_top=rail_top, flight_mid=flight_mid,
             ).note
         except SolidWorksError as exc:
             note += f" Grab rail stopped: {exc}"

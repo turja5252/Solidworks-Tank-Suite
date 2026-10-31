@@ -46,7 +46,8 @@ END_HOLE_DEPTH_IN = 2.0 * THK_IN + 0.1  # through an end piece's leg and the pos
 @dataclass(frozen=True)
 class Rails:
     """The outer handrail's numbers on the ground-0 stair, as stair_sw._handrail_posts hands them on: ``r_b`` the
-    outer stringer's walk face, ``pb`` the platforms' outer walk face (a platform is always full width)."""
+    outer stringer's walk face, ``pb`` the platforms' outer walk face (a platform is always full width); the top
+    rail's height and the flights' midrail's (None: halfway up to it)."""
 
     places: tuple
     per_flight: int
@@ -60,6 +61,8 @@ class Rails:
     top_rail: bool
     mid_rail: bool
     shapes: tuple = ()
+    rail_top: float = RAIL_TOP_IN
+    flight_mid: float | None = None
 
     @property
     def face_r(self) -> float:
@@ -67,7 +70,7 @@ class Rails:
 
     @property
     def flights(self) -> list:
-        return r._flights(self.places, self.per_flight, self.r_b, self.shapes)
+        return r._flights(self.places, self.per_flight, self.r_b, self.shapes, self.rail_top, self.flight_mid)
 
     @property
     def count(self) -> int:
@@ -122,7 +125,7 @@ def post_spots(rails: Rails, k: int) -> list[PostSpot]:
     out = []
     if r._narrow(lines):
         heel_r = side_post_heel(lines)
-        ys = (foot, tread_top + RAIL_TOP_IN - THK_IN)
+        ys = (foot, tread_top + rails.rail_top - THK_IN)
         out += [PostSpot(k, label, True, line_phi, heel_r, 0.0, away, ys)
                 for label, line_phi, away in (("A", lines.phi_a, -1.0), ("B", lines.phi_b, 1.0))]
         places = []
@@ -130,7 +133,7 @@ def post_spots(rails: Rails, k: int) -> list[PostSpot]:
         places = [("A", None, 1.0), ("B", None, -1.0)]
     between = [] if spec is None else list(spec.post_positions())
     places += [(f"M{i}", lines.phi_a + along / lines.r_mid, 1.0) for i, along in enumerate(between, start=1)]
-    ys = (foot, tread_top + RAIL_TOP_IN - TOP_GAP_IN)
+    ys = (foot, tread_top + rails.rail_top - TOP_GAP_IN)
     for label, angle, away in places:
         mid, web_r, heel_t = platform_post_frame(lines, label, angle, rails.post_in)
         out.append(PostSpot(k, label, False, mid, web_r, heel_t, away, ys))
@@ -159,7 +162,7 @@ def end_holes(rails: Rails, spot: PostSpot) -> tuple[list, tuple[float, float, f
     if not rails.top_rail or spot.label not in rails.sides_met(spot.k) or spot.k > rails.landings:
         return None
     grating = rails.tread_top(spot.k)
-    middle = (grating + rails.mid_top - r.BAR_IN + grating + RAIL_TOP_IN) / 2.0
+    middle = (grating + rails.mid_top - r.BAR_IN + grating + rails.rail_top) / 2.0
     if spot.side:
         side = r._sides(rails.lines(spot.k))[spot.label]
         t = side.out_t * HOLE_GAUGE_IN
@@ -257,7 +260,7 @@ def foot_cuts(rails: Rails):
     square cut (point, normal), both as its trims take them."""
     flight = rails.flights[0]
     face_r = rails.face_r
-    drop = RAIL_TOP_IN - r.MID_TOP_IN
+    drop = flight.rail_top - flight.flight_mid
     end = flight.front(flight.first) - flight.step
     inner = end + LEG_IN / face_r
     corner = _world(end, face_r, 0.0, flight.top(end))
@@ -299,12 +302,12 @@ def build_end_piece(model, rails: Rails, k: int, side: str, profile: str, name: 
     if r._narrow(lines):
         key_side = r._sides(lines)[side]
         heel_r = side_post_heel(lines)
-        ys = (grating + rails.mid_top - r.BAR_IN, grating + RAIL_TOP_IN - THK_IN)
+        ys = (grating + rails.mid_top - r.BAR_IN, grating + rails.rail_top - THK_IN)
         _upright_angle(model, key_side.phi, heel_r, -1.0, key_side.out_t, ys, LEG_IN, profile, name)
         spot = PostSpot(k, side, True, key_side.phi, heel_r, 0.0, key_side.out_t, ys)
     else:
         post = _rail_post(rails, k, side)
-        ys = (post.grating + rails.mid_top - r.BAR_IN, post.grating + RAIL_TOP_IN - TOP_GAP_IN)
+        ys = (post.grating + rails.mid_top - r.BAR_IN, post.grating + rails.rail_top - TOP_GAP_IN)
         _upright_angle(model, post.mid, post.web_r, 1.0, post.away, ys, LEG_IN, profile, name, heel_t=post.heel_t)
         _cutback(model, post.mid, post.web_r, post.heel_t, post.away, ys[0], ys[1], name)
         spot = PostSpot(k, side, False, post.mid, post.web_r, post.heel_t, post.away, ys)
@@ -327,7 +330,7 @@ def build_level(model, rails: Rails, k: int, side: str, profile: str, name: str)
         r._level_piece(model, post, joint, normal, side, profile, name)
         return
     key_side = r._sides(lines)[side]
-    top = rails.tread_top(k) + RAIL_TOP_IN
+    top = rails.tread_top(k) + rails.rail_top
     joint, normal = r._joint(below, above, face_r, rails.r_a, rails.pb, r.PLATFORM_POST_IN, side)
     along = r._unit(tuple(key_side.world(face_r, 0.0, top)[i] - joint[i] for i in range(3)))
     out = r._outward(along, key_side.phi)
@@ -343,7 +346,7 @@ def build_platform_rail(model, rails: Rails, k: int, piece: str, profile: str, n
     """Platform ``k``'s own top rail between its posts (rolled on a rolled platform); on a narrow stair the
     ``piece`` of it, the return along side "A" or "B" from the side post or the "run" round the outer corners."""
     lines = rails.lines(k)
-    top = rails.tread_top(k) + RAIL_TOP_IN
+    top = rails.tread_top(k) + rails.rail_top
     if not r._narrow(lines):
         a, b = (_rail_post(rails, k, side) for side in ("A", "B"))
         if lines.rolled:
@@ -386,13 +389,13 @@ def build_midrail(model, rails: Rails, k: int, foot: bool, name: str) -> None:
     midrail; on the first flight, with the foot's closed end, cut square against it."""
     flights, face_r = rails.flights, rails.face_r
     flight = flights[k]
-    tops = (rails.mid_top, r.MID_TOP_IN)
-    climb = (rails.mid_top - r.MID_TOP_IN) / flight.rise_per_rad
+    tops = (rails.mid_top, flight.flight_mid)
+    climb = (rails.mid_top - flight.flight_mid) / flight.rise_per_rad
     start = flight.front(flight.first) - flight.step if k == 0 else (
         flight.front(flight.first) + climb - r.OVERHANG_IN / face_r
     )
     end = flight.front(flight.last) + (climb + r.OVERHANG_IN / face_r if k < rails.landings else 0.0)
-    r._helix_rail(model, flight, face_r, start, end, name, r.BAR_SECTION, RAIL_TOP_IN - r.MID_TOP_IN)
+    r._helix_rail(model, flight, face_r, start, end, name, r.BAR_SECTION, flight.rail_top - flight.flight_mid)
     if k > 0:
         joint, normal = r._joint(flights[k - 1], flight, face_r, rails.r_a, rails.pb, rails.post_in, "B", *tops)
         r._trim(model, set(), joint, tuple(-v for v in normal), f"{name}StartTrim")
@@ -439,7 +442,7 @@ def build_foot(model, rails: Rails, profile: str, name: str) -> None:
     flight = rails.flights[0]
     face_r = rails.face_r
     stretch = 1.0 / math.cos(math.atan(flight.rise_per_rad / face_r))
-    drop = RAIL_TOP_IN - r.MID_TOP_IN
+    drop = flight.rail_top - flight.flight_mid
     end = flight.front(flight.first) - flight.step
     inner = end + LEG_IN / face_r
     (corner, normal), _mid = foot_cuts(rails)

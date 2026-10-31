@@ -14,9 +14,10 @@ import math
 from dataclasses import dataclass
 
 from swauto.errors import SolidWorksError
+from swauto.stair import knee2
 from swauto.stair.brace_sw import DROP_IN, PAD_TALL_IN, PAD_THK_IN, PAD_WIDE_IN, _Frame, _knee_layout, knee_pad
 from swauto.stair.development import develop_both
-from swauto.stair import knee2
+from swauto.stair.heights import RailHeights
 from swauto.stair.inner_clip_sw import MIN_GAP_IN, clip_pad, clip_phi
 from swauto.stair.inner_clip_sw import PAD_TALL_IN as CLIP_PAD_TALL_IN
 from swauto.stair.platform_sw import (
@@ -57,6 +58,7 @@ class StairArrangement:
     inner_clips: bool = True
     splits: SplitSettings | None = None
     clips: tuple[int, ...] | None = None  # the inner clips' pans when they are not the braces' (the rules)
+    heights: RailHeights = RailHeights()  # the rails' heights, as the tab or the Stair game sets them
 
     def world(self, angle: float) -> float:
         """A plan angle of the clockwise build, where it lands on the tank."""

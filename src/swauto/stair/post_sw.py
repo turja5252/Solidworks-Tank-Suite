@@ -33,6 +33,7 @@ from swauto.comutil import com_value
 from swauto.errors import SolidWorksError
 from swauto.stair import stair_sw as s
 from swauto.stair.brace_sw import BraceResult, _cylinder_radii, _face_at, _progress
+from swauto.stair.heights import RAIL_TOP_IN  # the top rail's top edge above the stringer's top edge
 from swauto.stair.platform_sw import (
     CHANNEL_IN,
     SECTIONS,
@@ -55,7 +56,6 @@ LEG_IN = 2.0
 THK_IN = 0.25
 SETBACK_IN = 0.5  # uphill edge, downhill of the tread's front edge
 FOOT_UP_IN = 0.5  # above the tread below
-RAIL_TOP_IN = 42.0  # top rail's top edge above the stringer's top edge
 TOP_GAP_IN = 0.75  # post top under the rail's top edge, square to the slope
 HOLE_GAUGE_IN = 1.125  # from the heel
 HOLE_UP_IN = (1.0, 4.0)  # above the foot
@@ -211,6 +211,7 @@ def side_post_heel(lines) -> float:
 def add_platform_posts(
     model, tread_index: int, *, phi: float, tread_top: float, r_a: float, r_b: float, profile: str,
     post_in: float = PLATFORM_POST_IN, stringer_b: float | None = None, progress=None, spec=None,
+    rail_top: float = RAIL_TOP_IN,
 ) -> BraceResult:
     """Posts at both ends of the outer channel of the platform after tread ``tread_index``,
     each with its heel ``post_in`` in from the platform end, and between them where ``spec`` (the
@@ -219,14 +220,14 @@ def add_platform_posts(
     side channels instead."""
     lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b, stringer_b=stringer_b, spec=spec)
     between = [] if spec is None else list(spec.post_positions())
-    ys = (lines.top - CHANNEL_IN + PLATFORM_FOOT_IN, tread_top + RAIL_TOP_IN - TOP_GAP_IN)
+    ys = (lines.top - CHANNEL_IN + PLATFORM_FOOT_IN, tread_top + rail_top - TOP_GAP_IN)
     name = f"ElitePlatform{tread_index:02d}Post"
     middle = lines.top - CHANNEL_IN / 2.0
     hole_ys = (middle - PLATFORM_HOLE_SPACE_IN / 2.0, middle + PLATFORM_HOLE_SPACE_IN / 2.0)
     places = []  # (label, angle or None for an end post, away)
     side_note = ""
     if lines.stringer_b < lines.r_b - 0.01:
-        side_note = _side_posts(model, tread_index, lines, tread_top, profile, progress).note
+        side_note = _side_posts(model, tread_index, lines, tread_top, profile, progress, rail_top).note
     else:
         places += [("A", None, 1.0), ("B", None, -1.0)]
     places += [(f"M{i}", lines.phi_a + along / lines.r_mid, 1.0) for i, along in enumerate(between, start=1)]
@@ -275,13 +276,14 @@ def platform_post_frame(lines, label: str, angle: float | None, post_in: float) 
     return mid, web_r, web_r * math.tan(angle - mid)
 
 
-def _side_posts(model, tread_index: int, lines, tread_top: float, profile: str, progress) -> BraceResult:
+def _side_posts(model, tread_index: int, lines, tread_top: float, profile: str, progress,
+                rail_top: float = RAIL_TOP_IN) -> BraceResult:
     """On a stair narrower than its platforms: a post on each side channel just outside the flight's top
     rail, its flat leg out along the channel's back and bolted through the web, its other leg turned
     toward the flight, back to back with the flight's end angle and bolted to it. It runs up to the
     underside of the platform rail's top leg."""
     heel_r = side_post_heel(lines)
-    ys = (lines.top - CHANNEL_IN + PLATFORM_FOOT_IN, tread_top + RAIL_TOP_IN - THK_IN)
+    ys = (lines.top - CHANNEL_IN + PLATFORM_FOOT_IN, tread_top + rail_top - THK_IN)
     name = f"ElitePlatform{tread_index:02d}Post"
     middle = lines.top - CHANNEL_IN / 2.0
     hole_ys = (middle - PLATFORM_HOLE_SPACE_IN / 2.0, middle + PLATFORM_HOLE_SPACE_IN / 2.0)

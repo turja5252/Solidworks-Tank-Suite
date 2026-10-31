@@ -5,7 +5,7 @@ import pytest
 
 from swauto.nozzle.flange import flange
 from swauto.nozzle.gasket import gasket
-from swauto.nozzle.pipe import SCHEDULES, nps_sizes, normalize_nps, normalize_schedule, pipe
+from swauto.nozzle.pipe import SCHEDULES, normalize_nps, normalize_schedule, nps_sizes, pipe
 
 SIZES = ("1/2", "3/4", "1", "1-1/4", "1-1/2", "2", "2-1/2", "3", "3-1/2", "4", "5", "6", "8", "10", "12", "14", "16",
          "18", "20", "22", "24")

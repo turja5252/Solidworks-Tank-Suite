@@ -55,6 +55,7 @@ from swauto.stair.post_sw import (
     HOLE_GAUGE_IN,
     HOLE_UP_IN,
     PLATFORM_POST_IN,
+    RAIL_TOP_IN,
     THK_IN,
     Post,
     _holes,
@@ -130,6 +131,8 @@ class StairParts:
     post_in: float | None = None  # the platform posts' heels in from the ends (post_sw.PLATFORM_POST_IN)
     mid_top: float | None = None  # the platform midrail's top over the grating (rail_sw.PLATFORM_MID_TOP_IN)
     grab: GrabRail | None = None  # the outer grab rail on the flight posts
+    rail_top: float = RAIL_TOP_IN  # the top rail's height (stair.heights)
+    flight_mid: float | None = None  # the flights' midrail's height (None: halfway up to the top rail)
     rail_splits: tuple = ()  # (side, pan of the post below the bay) of each handrail splice, as for create_stair
     braces: tuple = ()  # treads with a cross brace under them
     knees: bool = False  # each cross brace with a knee brace down to the shell
@@ -159,7 +162,7 @@ class StairParts:
 
     def flight_posts(self) -> list[Post]:
         where = self.where
-        return _post_layout(where.places, where.per_flight, self.posts, self.r_b) if self.posts else []
+        return _post_layout(where.places, where.per_flight, self.posts, self.r_b, self.rail_top) if self.posts else []
 
     def platform_lines(self) -> list[tuple[int, object]]:
         """(k, plan lines) of each platform on the ground-0 stair, 1 the lowest, the top one last: past flight k's
@@ -194,13 +197,14 @@ class StairParts:
         return Rails(where.places, where.per_flight, r_a, self.r_b, r_a + CLEAR_IN, self.platforms, self.top_platform,
                      PLATFORM_POST_IN if self.post_in is None else self.post_in,
                      PLATFORM_MID_TOP_IN if self.mid_top is None else self.mid_top,
-                     self.top_rail, self.mid_rail, self.stair.platform_specs)
+                     self.top_rail, self.mid_rail, self.stair.platform_specs, self.rail_top, self.flight_mid)
 
     def rail_params(self) -> dict:
         """What shapes the handrail's pieces."""
         rails = self.rails()
         return {"platforms": self.platforms, "top_platform": self.top_platform, "post_in": rails.post_in,
                 "mid_top": rails.mid_top, "top_rail": self.top_rail, "mid_rail": self.mid_rail,
+                "rail_top": self.rail_top, "flight_mid": rails.flights[0].flight_mid,
                 "splices": [list(split) for split in self.rail_splits],
                 "shapes": [shape_params(self.stair.platform(k - 1)) for k in range(1, rails.count + 1)]}
 
@@ -425,9 +429,10 @@ def jobs(parts: StairParts, post_file: str = "", frame_file: str = "", knee_file
                     tuple(parts.place(*parts.flight_move(k)) for k in range(len(where.offsets))),
                 ))
     if posts:
-        seat = _post_layout(where.places, where.per_flight, (2,), parts.r_b)[0]
+        seat = _post_layout(where.places, where.per_flight, (2,), parts.r_b, parts.rail_top)[0]
         out.append(PartJob(
-            "Stair post", "Flight post", {"version": PARTS_VERSION, "flight": flight, "r_b": parts.r_b},
+            "Stair post", "Flight post", {"version": PARTS_VERSION, "flight": flight, "r_b": parts.r_b,
+                                          "rail_top": parts.rail_top},
             lambda model: _post(model, parts, seat, post_file),
             tuple(parts.place(p.phi - seat.phi, p.foot - seat.foot) for p in posts),
         ))

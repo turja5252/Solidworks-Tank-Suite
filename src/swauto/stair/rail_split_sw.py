@@ -46,7 +46,7 @@ from swauto.stair.platform_sw import (
     _world,
 )
 from swauto.stair.post_sw import HOLE_GAUGE_IN, LEG_IN, RAIL_TOP_IN, THK_IN, TOP_GAP_IN, Post, _post_side
-from swauto.stair.rail_sw import BAR_IN, MID_TOP_IN, _flights, _miter_piece, _trim
+from swauto.stair.rail_sw import BAR_IN, _flights, _miter_piece, _trim
 from swauto.stair.stringer_sw import _create_circle
 
 _INCH = 0.0254
@@ -64,6 +64,7 @@ ROUND_BAR_CHAMFER_IN = 0.25  # 45 degrees on its upper end, to lead the upper pi
 def add_rail_splits(
     model, places, per_flight: int, splits, *, r_a: float, r_b: float, profile: str, rails: bool = True,
     outer_pipe_top: float | None = GRAB_TOP_IN, inner_pipe_top: float | None = None, progress=None,
+    rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None,
 ) -> BraceResult:
     """Each split: ``splits`` are (side, low post, high post) with the posts from ``post_sw.post_layout`` (the outer
     stringer's, or the inner one's), the split in the middle of the bay between them. On the outer side the top
@@ -76,7 +77,7 @@ def add_rail_splits(
         try:
             parts = []
             if not inner and rails:
-                _connectors(model, places, per_flight, low, high, r_b, profile, name)
+                _connectors(model, places, per_flight, low, high, r_b, profile, name, rail_top, flight_mid)
                 parts.append("the top rail and midrail on two L2x2x1/4 connectors flat on the rails' outside, their "
                              "standing legs back to back with two 5/8 in bolts in 11/16 holes 12 in apart")
             top = inner_pipe_top if inner else outer_pipe_top
@@ -111,15 +112,16 @@ def connector_ends(flight, phi: float, face_r: float) -> tuple[float, float, tup
     stretch = 1.0 / math.cos(alpha)
     rail_top = flight.top(phi)
     top = rail_top - TOP_GAP_IN * stretch  # the posts' gap under the top rail's top edge
-    foot = rail_top - RAIL_TOP_IN + MID_TOP_IN - (BAR_IN - FOOT_UP_IN) * stretch
+    foot = rail_top - flight.rail_top + flight.flight_mid - (BAR_IN - FOOT_UP_IN) * stretch
     travel = _travel(phi)
     up = (-math.sin(alpha) * travel[0], math.cos(alpha), -math.sin(alpha) * travel[2])
     return top, foot, up
 
 
-def _connectors(model, places, per_flight: int, low: Post, high: Post, r_b: float, profile: str, name: str) -> None:
+def _connectors(model, places, per_flight: int, low: Post, high: Post, r_b: float, profile: str, name: str,
+                rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None) -> None:
     face_r = r_b + s.THICKNESS_IN  # the rails' outside face, on the posts' walk side
-    flight = _flights(places, per_flight, r_b)[(low.index - 1) // per_flight]
+    flight = _flights(places, per_flight, r_b, (), rail_top, flight_mid)[(low.index - 1) // per_flight]
     phi = split_angle(low, high)
     top, foot, up = connector_ends(flight, phi, face_r)
     half = GAP_IN / 2.0 / face_r

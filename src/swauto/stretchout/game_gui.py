@@ -15,9 +15,8 @@ from __future__ import annotations
 
 import math
 import tkinter as tk
-from tkinter import ttk
-
 from dataclasses import replace
+from tkinter import ttk
 
 from swauto.errors import SolidWorksError
 from swauto.stair.attachments import (
@@ -51,10 +50,10 @@ from swauto.stair.game import (
     view_angle,
     view_x,
 )
+from swauto.stair.heights import RailHeights, snap
 from swauto.stair.landings import PLATFORM, PLATFORM_KNEE_PAD, PLATFORM_PAD, platform_frame, shell_marks
 from swauto.stair.platform_sw import GRATING_IN, platform_knees
-from swauto.stair.post_sw import RAIL_TOP_IN, TOP_GAP_IN
-from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN
+from swauto.stair.post_sw import TOP_GAP_IN
 from swauto.stair.stair_sw import stair_places
 from swauto.stretchout.model import (
     ANCHORS,
@@ -84,6 +83,11 @@ _STRINGER = "#2f6f86"
 _COLORS = {POST: "#f2c500", CLIP: "#2f6fdb", KNEE: "#ef7d00", SPLICE: "#0f766e", RAIL_SPLIT: "#c2185b",
            RADIAL: "#546e7a", PLATFORM_POST: "#f2c500"}
 _RAIL_COLORS = {"Top rail": "#e0b400", "Midrail": "#e0b400", "Grab rail": "#a0522d", "Pipe": "#a0522d"}
+# Each rail the game draws, the height box it moves, and what that box is called.
+_RAIL_BOXES = {"Top rail": "rail_top", "Midrail": "flight_mid", "Platform midrail": "mid_top", "Grab rail": "grab_top",
+               "Pipe": "inner_top"}
+_BOX_NAMES = (("rail_top", "top rail"), ("flight_mid", "flights' midrail"), ("mid_top", "platforms' midrail"),
+              ("grab_top", "grab rail"), ("inner_top", "inside pipe"))
 _BEHIND = (PLATES, NOZZLES, FTCOS, ANCHORS)
 HINT = ("Pick a piece from the tray and drop it on a stringer: green goes, red says why not. Drag a piece to move "
         "it, or into the bin. Both views are the whole stair on the shell's stretchout, seen from outside: red "
@@ -104,6 +108,20 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
     canvas.grid(row=1, column=0, sticky="nsew")
     scroll = ttk.Scrollbar(frame, orient="horizontal")
     scroll.grid(row=3, column=0, sticky="ew")
+    heights_row = ttk.Frame(frame, padding=(0, 4, 0, 0))
+    heights_row.grid(row=2, column=0, sticky="ew")
+    defaults = RailHeights()
+    height_vars = dict(shared.get("stairway_vars") or {
+        "rail_top": tk.StringVar(value=f"{defaults.top:g}"), "flight_mid": tk.StringVar(value=""),
+        "mid_top": tk.StringVar(value=f"{defaults.platform_mid:g}"),
+        "grab_top": tk.StringVar(value=f"{defaults.grab:g}"),
+        "inner_top": tk.StringVar(value=f"{defaults.inner:g}")})
+    ttk.Label(heights_row, text="Rail heights, in:").pack(side="left")
+    for key, label in _BOX_NAMES:
+        ttk.Label(heights_row, text=label).pack(side="left", padx=(10, 0))
+        ttk.Entry(heights_row, textvariable=height_vars[key], width=5).pack(side="left", padx=(4, 0))
+    ttk.Label(heights_row, text="(or drag a rail up or down in the views; the flights' midrail blank is halfway)",
+              foreground="#555555").pack(side="left", padx=(10, 0))
     say_var = tk.StringVar(value=HINT)
     say = tk.Label(frame, textvariable=say_var, font=("TkDefaultFont", 12, "bold"), anchor="w", justify="left",
                    wraplength=960, foreground="#333333", background=frame.winfo_toplevel().cget("background"))
@@ -113,7 +131,7 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
 
     state: dict = {"game": None, "sheet": None, "geo": None, "bands": {}, "drag": None, "zoom": 1.0,
                    "pan": (0.0, 0.0), "pan_from": None, "panning": False, "marks": [], "tiles": [], "bin": None,
-                   "spot_of": {}, "said_of": {}, "pads": {}, "devs": {}}
+                   "spot_of": {}, "said_of": {}, "pads": {}, "devs": {}, "rail_drag": None}
     measure_var = tk.BooleanVar(value=False)
 
     def tell(text: str, good: bool | None = None) -> None:
@@ -152,6 +170,34 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         state["sheet"] = sheet
         draw()
 
+    def rail_heights() -> RailHeights:
+        """The rails' heights as the boxes have them (a box that will not read keeps its default), with a rail being
+        dragged at where it is now."""
+        def number(key: str, default: float | None) -> float | None:
+            try:
+                text = height_vars[key].get().strip()
+                return float(text) if text else default
+            except (ValueError, tk.TclError):
+                return default
+
+        heights = RailHeights(number("rail_top", defaults.top), number("flight_mid", None),
+                              number("mid_top", defaults.platform_mid), number("grab_top", defaults.grab),
+                              number("inner_top", defaults.inner))
+        drag = state["rail_drag"]
+        if drag is not None:
+            field = {"rail_top": "top", "flight_mid": "mid", "mid_top": "platform_mid", "grab_top": "grab",
+                     "inner_top": "inner"}[drag["key"]]
+            heights = replace(heights, **{field: drag["value"]})
+        try:
+            heights.validate()
+        except ValueError:
+            return defaults if drag is None else heights
+        return heights
+
+    def height_of(heights: RailHeights, key: str) -> float:
+        return {"rail_top": heights.top, "flight_mid": heights.flight_mid, "mid_top": heights.platform_mid,
+                "grab_top": heights.grab, "inner_top": heights.inner}[key]
+
     def rail_flags() -> dict:
         """The Stairway tab's top rail, midrail and grab rail boxes; all on without the tab."""
         source = shared.get("stairway_inputs")
@@ -160,7 +206,7 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         except (ValueError, tk.TclError):
             given = {}
         return {"top": bool(given.get("top_rail", True)), "mid": bool(given.get("mid_rail", True)),
-                "grab": bool(given.get("grab_rail", True))}
+                "grab": bool(given.get("grab_rail", True)), "heights": rail_heights()}
 
     # ------------------------------------------------------------------------------------------ geometry
 
@@ -392,7 +438,7 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
                 text = f"{rail.name}, flight {k + 1}" + (" (1-1/2 in pipe)" if rail.name in ("Grab rail", "Pipe")
                                                          else "")
                 poly(band, [lane_point(geo, side, k, *p) for p in corners], fill=_RAIL_COLORS[rail.name],
-                     outline="#5b4500", tags=said(text))
+                     outline="#5b4500", tags=(*said(text), "rail", f"rail={rail.name}"))
             for spot in current.spots:
                 if spot.flight == k and spot.kind not in ON_PLATFORMS and side in _lanes_of(spot):
                     tag = f"spot{len(state['spot_of'])}"
@@ -418,9 +464,11 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
             posts = sorted(s.tread for s in current.of_kind(PLATFORM_POST, side) if s.flight == k)
             if side == OUTER and len(posts) > 1:
                 ends = [view_x(arrangement, lines.phi_a + t / lines.r_mid, girth) for t in (posts[0], posts[-1])]
-                for above, name in ((RAIL_TOP_IN, "top rail"), (PLATFORM_MID_TOP_IN, "midrail")):
+                heights = rail_heights()
+                for above, name, rail in ((heights.top, "top rail", "Top rail"),
+                                          (heights.platform_mid, "midrail", "Platform midrail")):
                     line(band, (ends[0], floor + above), (ends[1], floor + above), fill=_RAIL_COLORS["Top rail"],
-                         width=3, tags=said(f"Platform {k + 1}: {name}"))
+                         width=3, tags=(*said(f"Platform {k + 1}: {name}"), "rail", f"rail={rail}"))
             for spot in current.spots:
                 if spot.kind in ON_PLATFORMS and spot.flight == k and side in _lanes_of(spot):
                     tag = f"spot{len(state['spot_of'])}"
@@ -446,7 +494,7 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
             canvas.create_rectangle(cx - 4, min(cy, low - 6), cx + 4, max(low, cy + 6), fill=_COLORS[RADIAL],
                                     outline=outline, width=2, tags=tags)
         else:
-            top = to_px(band, anchor[0], anchor[1] + GRATING_IN + RAIL_TOP_IN - TOP_GAP_IN)
+            top = to_px(band, anchor[0], anchor[1] + GRATING_IN + rail_heights().top - TOP_GAP_IN)
             canvas.create_line(cx, cy, top[0], max(top[1], band["box"][1]), fill=_COLORS[POST], width=7, tags=tags)
             canvas.create_line(cx, cy, top[0], max(top[1], band["box"][1]), fill=outline, width=1, tags=tags)
         if spot.pinned:
@@ -499,7 +547,7 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
     def draw_piece(band: dict, spot: Spot, posts: tuple[int, ...], outline: str = "#222222", tags=()) -> None:
         side, flight = band["side"], spot.flight
         dev = state["geo"]["devs"][side]
-        x, y = spot_xy(dev, spot, posts)
+        x, y = spot_xy(dev, spot, posts, rail_heights())
         cx, cy = lane_px(side, flight, x, y)
         if not _inside(band, (cx, cy)):
             return
@@ -511,7 +559,7 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
                  fill=_COLORS[spot.kind], width=6 if spot.kind == KNEE else 3, tags=tags)
             poly(band, corners, fill=_COLORS[spot.kind], outline=outline, width=2, tags=tags)
         if spot.kind == POST:
-            top = lane_px(side, flight, x, post_top(dev, side, x))
+            top = lane_px(side, flight, x, post_top(dev, side, x, rail_heights()))
             canvas.create_line(cx, cy, top[0], max(top[1], band["box"][1]), fill=_COLORS[POST], width=7, tags=tags)
             canvas.create_line(cx, cy, top[0], max(top[1], band["box"][1]), fill=outline, width=1, tags=tags)
         elif spot.kind == KNEE:
@@ -592,9 +640,36 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
                 state["drag"] = (_piece_of(spot), spot)
                 tell(f"Moving the {spot.label().lower()}.")
                 return
+        rail, band = rail_at(event), band_at(event)
+        if rail is not None and band is not None:
+            key = _RAIL_BOXES[rail]
+            value = height_of(rail_heights(), key)
+            state["rail_drag"] = {"rail": rail, "key": key, "y": event.y, "start": value, "value": value,
+                                  "scale": band["scale"]}
+            tell(f"The {rail.lower()}, {inches(value)} up: drag it up or down; it goes in 1/4 in steps.")
+            return
         # Empty space: dragging it moves the view, as the right button does.
         state["panning"] = True
         on_pan_start(event)
+
+    def rail_at(event) -> str | None:
+        """The rail under the pointer, the one whose middle line is nearest where rails lie close together."""
+        best = None
+        for item in canvas.find_overlapping(event.x - 4, event.y - 4, event.x + 4, event.y + 4):
+            rail = next((tag[5:] for tag in canvas.gettags(item) if tag.startswith("rail=")), None)
+            if rail is None:
+                continue
+            points = canvas.coords(item)
+            pts = list(zip(points[0::2], points[1::2], strict=True))
+            if len(pts) >= 4:  # a rail's band: its middle line, from the middle of one end to the other's
+                a = ((pts[0][0] + pts[-1][0]) / 2.0, (pts[0][1] + pts[-1][1]) / 2.0)
+                b = ((pts[1][0] + pts[2][0]) / 2.0, (pts[1][1] + pts[2][1]) / 2.0)
+            else:
+                a, b = pts[0], pts[-1]
+            gap = _to_segment((event.x, event.y), a, b)
+            if best is None or gap < best[0]:
+                best = (gap, rail)
+        return None if best is None else best[1]
 
     def measure_at(event) -> None:
         """A point for the measuring tool, to the nearest 1/4 in on a view; a third starts a new measure."""
@@ -618,6 +693,12 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
     def on_motion(event) -> None:
         if state["panning"]:
             on_pan(event)
+            return
+        drag = state["rail_drag"]
+        if drag is not None:
+            drag["value"] = snap(drag["start"] + (drag["y"] - event.y) / drag["scale"])
+            draw()
+            tell(f"The {drag['rail'].lower()}: {inches(drag['value'])} up. Let go to set it.")
             return
         drag = state["drag"]
         if drag is None:
@@ -653,6 +734,18 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
     def on_release(event) -> None:
         if state["panning"]:
             state["panning"], state["pan_from"] = False, None
+            return
+        drag, state["rail_drag"] = state["rail_drag"], None
+        if drag is not None:
+            height_vars[drag["key"]].set(f"{drag['value']:g}")
+            try:
+                rail_heights().validate()
+            except ValueError as exc:
+                height_vars[drag["key"]].set(f"{drag['start']:g}")
+                tell(f"Not there: {exc}", False)
+            else:
+                tell(f"The {drag['rail'].lower()} is {inches(drag['value'])} up now.", True)
+            draw()
             return
         drag, state["drag"] = state["drag"], None
         canvas.delete("ghost")
@@ -778,17 +871,28 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
     canvas.bind("<ButtonPress-3>", on_pan_start)
     canvas.bind("<B3-Motion>", on_pan)
     canvas.bind("<Configure>", lambda _e: draw())
+    for var in height_vars.values():  # a height typed in a box shows at once
+        var.trace_add("write", lambda *_a: draw() if state["rail_drag"] is None else None)
     # For the tab, and for the tests to play it.
     frame.refresh = refresh  # type: ignore[attr-defined]
     frame.game_events = {  # type: ignore[attr-defined]
         "press": on_press, "motion": on_motion, "release": on_release, "wheel": on_wheel}
     frame.measure = measure_var  # type: ignore[attr-defined]
+    frame.height_vars = height_vars  # type: ignore[attr-defined]
     frame.game_state = state  # type: ignore[attr-defined]
     frame.lane_px = lane_px  # type: ignore[attr-defined]
     frame.platform_px = lambda side, spot: (  # type: ignore[attr-defined]
         to_px(state["bands"][side], *platform_point(spot, 0.0)))
     frame.said = say_var  # type: ignore[attr-defined]
     return frame
+
+
+def _to_segment(p, a, b) -> float:
+    """How far point ``p`` is from the segment ``a``-``b``, in canvas pixels."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length = dx * dx + dy * dy
+    k = 0.0 if length == 0.0 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length))
+    return math.hypot(p[0] - a[0] - k * dx, p[1] - a[1] - k * dy)
 
 
 def _snap(value: float) -> float:

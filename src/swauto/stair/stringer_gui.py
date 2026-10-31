@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import contextlib
 import math
-from dataclasses import replace
 import tkinter as tk
+from dataclasses import replace
 from tkinter import messagebox, ttk
 
 from swauto import runlog
 from swauto.comutil import com_value, format_com_error
-from swauto.parts import quiet
 from swauto.errors import BuildStopped, SolidWorksError, SolidWorksNotRunning, SolidWorksUnavailable
+from swauto.parts import quiet
 from swauto.session import connect
 from swauto.stair.attachments import (
     CLIP,
@@ -44,12 +44,25 @@ from swauto.stair.development import (
 )
 from swauto.stair.game import Choice, Game
 from swauto.stair.grab_sw import GRAB_TOP_IN, GrabRail
+from swauto.stair.heights import INNER_PIPE_TOP_IN, RailHeights
 from swauto.stair.inner_clip_sw import add_inner_clip, clip_angle_profile
 from swauto.stair.landings import StairArrangement, platform_problems
 from swauto.stair.parts_project import build_in_project, stair_parts
 from swauto.stair.parts_project import stages as parts_stages
 from swauto.stair.post_sw import PLATFORM_POST_IN, RAIL_TOP_IN, flight_picks, read_post_treads
 from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN, check_platform_mid_top
+from swauto.stair.sizing import (
+    AUTO_RISE_IN,
+    auto_treads,
+    end_angles,
+    orientation_deg,
+    placement_turn,
+    rise_run,
+    slopes_deg,
+    stair_height_in,
+    tread_lap_in,
+    world_angle,
+)
 from swauto.stair.splitter import LIMIT as SPLIT_LIMIT
 from swauto.stair.splitter import MAX_SPAN_FT as SPLIT_MAX_SPAN_FT
 from swauto.stair.splitter import SEGMENT_COUNT as SPLIT_SEGMENTS_DEFAULT
@@ -63,18 +76,9 @@ from swauto.stair.splitter import (
     pieces_wanted,
     reliefs,
 )
-from swauto.stair.sizing import (
-    AUTO_RISE_IN,
-    auto_treads,
-    end_angles,
-    orientation_deg,
-    placement_turn,
-    rise_run,
-    slopes_deg,
-    stair_height_in,
-    tread_lap_in,
-    world_angle,
-)
+from swauto.stair.stair_sw import InnerRail
+from swauto.stair.stair_sw import create_stair as build_stair
+from swauto.stair.stair_sw import flight_suffix, is_counterclockwise, mirror_stair, turn_stair
 from swauto.stair.stringer import (
     CLEAR_IN,
     PLATFORM_CHANNELS,
@@ -90,9 +94,6 @@ from swauto.stair.stringer import (
     StringerMock,
     layout_stringer,
 )
-from swauto.stair.stair_sw import InnerRail
-from swauto.stair.stair_sw import create_stair as build_stair
-from swauto.stair.stair_sw import flight_suffix, is_counterclockwise, mirror_stair, turn_stair
 from swauto.stair.stringer_sw import create_stringer_try
 from swauto.stair.tread_joint import TreadJointSpec, layout_tread_joint
 from swauto.stair.tread_joint_sw import create_tread_joint
@@ -584,6 +585,15 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     ttk.Entry(grab_options, textvariable=grab_low_var, width=5).pack(side="left", padx=(6, 0))
     ttk.Label(grab_options, text="high").pack(side="left", padx=(8, 0))
     ttk.Entry(grab_options, textvariable=grab_high_var, width=5).pack(side="left", padx=(6, 0))
+    rail_top_var = tk.StringVar(value=_fmt_num(RAIL_TOP_IN))
+    flight_mid_var = tk.StringVar(value="")  # blank: halfway up to the top rail
+    inner_top_var = tk.StringVar(value=_fmt_num(INNER_PIPE_TOP_IN))
+    ttk.Label(grab_options, text="Heights, in: top rail").pack(side="left", padx=(16, 0))
+    ttk.Entry(grab_options, textvariable=rail_top_var, width=5).pack(side="left", padx=(6, 0))
+    ttk.Label(grab_options, text="flights' midrail").pack(side="left", padx=(8, 0))
+    ttk.Entry(grab_options, textvariable=flight_mid_var, width=5).pack(side="left", padx=(6, 0))
+    ttk.Label(grab_options, text="inside pipe").pack(side="left", padx=(8, 0))
+    ttk.Entry(grab_options, textvariable=inner_top_var, width=5).pack(side="left", padx=(6, 0))
     split_var = tk.BooleanVar(value=False)
     split_mode_var = tk.StringVar(value=SPLIT_LIMIT)
     split_span_var = tk.StringVar(value=_fmt_num(SPLIT_MAX_SPAN_FT))
@@ -772,6 +782,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "post_in_outer": post_in_out_var.get(), "post_in_inner": post_in_inner_var.get(),
             "top_rail": top_rail_var.get(), "mid_rail": mid_rail_var.get(), "mid_top": mid_top_var.get(),
             "grab_rail": grab_var.get(), "grab_top": grab_top_var.get(), "grab_low": grab_low_var.get(),
+            "rail_top": rail_top_var.get(), "flight_mid": flight_mid_var.get(), "inner_top": inner_top_var.get(),
             "grab_high": grab_high_var.get(),
             "split": split_var.get(), "split_mode": split_mode_var.get(), "split_span_ft": split_span_var.get(),
             "split_segments": split_count_var.get(), "split_plate": split_plate_var.get(),
@@ -802,6 +813,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "posts": posts_var, "post_in_outer": post_in_out_var, "post_in_inner": post_in_inner_var,
             "top_rail": top_rail_var, "mid_rail": mid_rail_var, "mid_top": mid_top_var, "grab_rail": grab_var,
             "grab_top": grab_top_var, "grab_low": grab_low_var, "grab_high": grab_high_var, "split": split_var,
+            "rail_top": rail_top_var, "flight_mid": flight_mid_var, "inner_top": inner_top_var,
             "split_mode": split_mode_var, "split_span_ft": split_span_var, "split_segments": split_count_var,
             "split_plate": split_plate_var, "split_hole_row": split_row_var, "by_the_rules": rules_var,
             "handrail_on": rail_side_var,
@@ -1103,15 +1115,17 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             if INNER in read_rules().sides:
                 inner_rail = InnerRail(posts=flight_posts(base, result, INNER))
             rail_splits = tuple((spot.side, spot.pan(per_flight)) for spot in result.of_kind(RAIL_SPLIT))
+        heights = read_heights()
+        if inner_rail is not None:
+            # The posts stand as far under the pipe as they do at STWE's own height.
+            inner_rail = replace(inner_rail, top=heights.inner,
+                                 post_top=heights.inner - (InnerRail.top - InnerRail.post_top))
         post_in = read_post_in(post_in_out_var, "outer")
         read_post_in(post_in_inner_var, "inner")
         top_rail = bool(top_rail_var.get()) and any(posts)
         mid_rail = bool(mid_rail_var.get()) and any(posts)
-        try:
-            mid_top = float(mid_top_var.get().strip())
-        except ValueError as exc:
-            raise ValueError("The platform midrail top must be a number of inches.") from exc
-        check_platform_mid_top(mid_top)
+        mid_top = heights.platform_mid
+        check_platform_mid_top(mid_top, heights.top)
         grab = None
         if bool(grab_var.get()) and any(posts):
             try:
@@ -1122,8 +1136,8 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
                 )
             except ValueError as exc:
                 raise ValueError("The grab rail's pipe top and end adjustments must be numbers of inches.") from exc
-            if not 0.0 < grab.top < RAIL_TOP_IN:
-                raise ValueError(f"The grab rail's pipe top must be above 0 and under the {RAIL_TOP_IN:g} in top rail.")
+            if not 0.0 < grab.top < heights.top:
+                raise ValueError(f"The grab rail's pipe top must be above 0 and under the {heights.top:g} in top rail.")
         shell_height = float(shell_height_var.get().strip())
         splits = read_splits()
         _top_offset, bottom_offset = read_offsets()
@@ -1139,6 +1153,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "current": current, "wall": wall, "platforms": platforms, "per_flight": per_flight,
             "braces": braces, "posts": posts, "inner_rail": inner_rail, "rail_splits": rail_splits,
             "post_in": post_in, "top_rail": top_rail, "mid_rail": mid_rail, "mid_top": mid_top, "grab": grab,
+            "rail_top": heights.top, "flight_mid": heights.mid,
             "shell_height": shell_height, "splits": splits, "bottom_offset": bottom_offset, "turn": turn,
             "ends": ends, "clips": clips, "rule_notes": rule_notes,
         }
@@ -1176,6 +1191,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
                 top_platform=top_platform, posts=posts, platform_post_in=post_in, top_rail=top_rail,
                 mid_rail=mid_rail, platform_mid_top=mid_top, grab=grab, ground_in=-bottom_offset,
                 shell_height_in=shell_height, splits=splits, inner_rail=inner_rail, rail_splits=rail_splits,
+                rail_top=read["rail_top"], flight_mid=read["flight_mid"],
             )
             notes = [result.note, *rule_notes]
             with quiet(session.app, result.model):  # no redraws while the rest goes on: several times faster
@@ -1356,7 +1372,8 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
                 post_in=read["post_in"], mid_top=read["mid_top"], grab=read["grab"], rail_splits=read["rail_splits"],
                 braces=read["braces"], knees=bool(knee_var.get()),
                 inner_clips=tuple(i for i in clips if i not in tops) if inner_var.get() else (),
-                splits=read["splits"], inner_rail=read["inner_rail"],
+                splits=read["splits"], inner_rail=read["inner_rail"], rail_top=read["rail_top"],
+                flight_mid=read["flight_mid"],
             )
             plan = parts_stages(parts, project.stair_built)
         except ValueError as exc:
@@ -1402,6 +1419,8 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         # the splitters, and what their cuts keep off
         split_var, split_mode_var, split_span_var, split_count_var, split_plate_var, split_row_var, posts_var,
         braces_var, knee_var, inner_var, rules_var, rail_side_var,
+        # the rail heights the previews and the Stair game draw
+        rail_top_var, flight_mid_var, inner_top_var, mid_top_var, grab_top_var,
     ):
         var.trace_add("write", refresh)
 
@@ -1451,6 +1470,36 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         base = base_arrangement()
         return applied(base, rules_plan(base)) if rules_var.get() else base
 
+    def read_heights(strict: bool = True) -> RailHeights:
+        """The rails' heights as the tab has them. Raises ValueError with what is wrong; unless ``strict``, a box
+        that will not read keeps its default, for the previews and the Stair game."""
+        def number(var: tk.StringVar, what: str, default: float | None) -> float | None:
+            text = var.get().strip()
+            if not text:
+                return default
+            try:
+                return float(text)
+            except ValueError as exc:
+                if strict:
+                    raise ValueError(f"The {what} must be a number of inches.") from exc
+                return default
+
+        defaults = RailHeights()
+        heights = RailHeights(
+            top=number(rail_top_var, "top rail height", defaults.top),
+            mid=number(flight_mid_var, "flights' midrail height", None),
+            platform_mid=number(mid_top_var, "platform midrail top", defaults.platform_mid),
+            grab=number(grab_top_var, "grab rail's pipe top", defaults.grab),
+            inner=number(inner_top_var, "inside pipe height", defaults.inner),
+        )
+        try:
+            heights.validate()
+        except ValueError:
+            if strict:
+                raise
+            return defaults
+        return heights
+
     def base_arrangement() -> StairArrangement:
         """The stair as the tab stands, the braces as typed. Raises ValueError with what is wrong."""
         current = read_spec()
@@ -1462,7 +1511,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         return StairArrangement(
             current, platforms=platforms, top_platform=bool(top_platform_var.get()), ground_in=-bottom_offset,
             turn=turn, ccw=hand_var.get() == COUNTERCLOCKWISE, braces=braces, knees=bool(knee_var.get()),
-            inner_clips=bool(inner_var.get()), splits=read_splits(),
+            inner_clips=bool(inner_var.get()), splits=read_splits(), heights=read_heights(strict=False),
         )
 
     if shared is not None:
@@ -1471,6 +1520,8 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         shared["stair_rules"] = read_rules
         shared["stair_game_changed"] = refresh
         shared["stairway_inputs"] = saved_inputs
+        shared["stairway_vars"] = {"rail_top": rail_top_var, "flight_mid": flight_mid_var, "mid_top": mid_top_var,
+                                   "grab_top": grab_top_var, "inner_top": inner_top_var}
         shared["load_stairway"] = load_inputs
         shared["stair_plan"] = lambda: rules_plan(base_arrangement()) if rules_var.get() else None
 

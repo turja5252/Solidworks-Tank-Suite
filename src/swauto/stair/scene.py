@@ -14,6 +14,7 @@ import math
 from dataclasses import dataclass
 
 from swauto.errors import SolidWorksError
+from swauto.stair import knee2
 from swauto.stair.attachments import (
     CLIP,
     INNER,
@@ -27,14 +28,13 @@ from swauto.stair.attachments import (
     build_angle,
 )
 from swauto.stair.development import develop_both
-from swauto.stair.grab_sw import BRACKET_IN, BRACKET_OVERALL_IN, GRAB_TOP_IN, PIPE_OD_IN
+from swauto.stair.grab_sw import BRACKET_IN, BRACKET_OVERALL_IN, PIPE_OD_IN
 from swauto.stair.landings import StairArrangement, clip_mark, knee_mark, platform_frame
-from swauto.stair import knee2
 from swauto.stair.platform_sw import CHANNEL_IN, GRATING_IN, _outer_back, platform_knees, platform_lines, shell_pads
-from swauto.stair.post_sw import RAIL_TOP_IN, TOP_GAP_IN, _post_side, post_layout
-from swauto.stair.rail_sw import BAR_IN, BAR_THK_IN, MID_TOP_IN, PLATFORM_MID_TOP_IN
+from swauto.stair.post_sw import TOP_GAP_IN, _post_side, post_layout
+from swauto.stair.rail_sw import BAR_IN, BAR_THK_IN
 from swauto.stair.splitter import joints
-from swauto.stair.stair_sw import InnerRail, stair_places
+from swauto.stair.stair_sw import stair_places
 from swauto.stair.stringer import CLEAR_IN, THICKNESS_IN, TREAD_DEPTH_IN
 
 Point3 = tuple[float, float, float]
@@ -50,7 +50,6 @@ CLIP_COLOR = "#2f6fdb"
 KNEE_COLOR = "#ef7d00"
 SPLIT_COLOR = "#c2185b"
 _FACET = math.radians(3.0)
-INNER_PIPE_TOP_IN = InnerRail.top
 
 
 @dataclass(frozen=True)
@@ -83,7 +82,7 @@ def scene(arrangement: StairArrangement, plan: Plan | None = None, shell_height_
     faces: list[Face] = []
 
     top = shell_height_in or (shell.height_in if shell is not None else None) \
-        or max(p.y1 for p in where.places) + RAIL_TOP_IN
+        or max(p.y1 for p in where.places) + arrangement.heights.top
     first = min(p.phi for p in where.places) - 0.25
     last = max(p.phi for p in where.places) + 0.35
     faces += _shell(arrangement, stair.shell_od_in, first, last, top, shell)
@@ -173,13 +172,14 @@ def _attachments(arrangement, where, plan: Plan, r_a: float, r_b: float, rails: 
                 faces += _strut((r_a - THICKNESS_IN, place.phi, place.y1 + 3.0), (shell + 0.6, angle, y), color,
                                 spot.label())
     reach = TREAD_DEPTH_IN / 2.0 / r_a
+    heights = arrangement.heights
     for side, r in ((OUTER, r_b + THICKNESS_IN + 1.0), (INNER, r_a - THICKNESS_IN - 1.0)):
         picks = tuple(tuple(sorted(s.tread for s in plan.of_kind(POST, side) if s.flight == k))
                       for k in range(len(where.offsets)))
         if not any(picks):
             continue
         walk = r_b if side == OUTER else r_a  # the stringer face the posts are laid out on
-        top = RAIL_TOP_IN if side == OUTER else INNER_PIPE_TOP_IN
+        top = arrangement.heights.top if side == OUTER else arrangement.heights.inner
         posts = post_layout(where.places, per_flight, picks, walk, rail_top=top)
         for post in posts:
             faces += _block(post.phi, post.phi + 2.0 / r, r - 1.0, r + 1.0, post.foot, post.top(1.0), POST_COLOR,
@@ -206,11 +206,12 @@ def _attachments(arrangement, where, plan: Plan, r_a: float, r_b: float, rails: 
                 faces += _tube(*ends, r, 2.0, 2.0, line, RAIL, "Outer top rail" + name)
             if rails.mid and len(mine) > 1:
                 faces += _tube(*ends, r + 1.0 - BAR_THK_IN / 2.0, BAR_THK_IN, BAR_IN,
-                               lambda phi, line=line: line(phi) - (RAIL_TOP_IN - MID_TOP_IN), RAIL,
+                               lambda phi, line=line: line(phi) - (heights.top - heights.flight_mid), RAIL,
                                "Outer midrail" + name)
             if rails.grab:
                 faces += _tube(*fronts, pipe_r, PIPE_OD_IN, PIPE_OD_IN,
-                               lambda phi, line=line: line(phi) - (RAIL_TOP_IN - GRAB_TOP_IN), PIPE, "Grab rail" + name)
+                               lambda phi, line=line: line(phi) - (heights.top - heights.grab), PIPE,
+                               "Grab rail" + name)
         for spot in plan.of_kind(RAIL_SPLIT, side):
             low = next((p for p in posts if p.index == spot.pan(per_flight)), None)
             high = next((p for p in posts if p.index > spot.pan(per_flight)), None)
@@ -229,6 +230,7 @@ def _platform_handrails(arrangement, where, plan: Plan, rails: Rails) -> list[Fa
     """Each platform's posts, on the outer side's back and on the inner side's tank face, and its top rail and
     midrail along the outer side from its first post to its last."""
     faces: list[Face] = []
+    heights = arrangement.heights
     for k in range(arrangement.platforms + (1 if arrangement.top_platform else 0)):
         lines, _last = platform_frame(arrangement, where, k)
         floor = lines.top + GRATING_IN
@@ -238,7 +240,7 @@ def _platform_handrails(arrangement, where, plan: Plan, rails: Rails) -> list[Fa
             for t, angle in zip(posts, angles, strict=True):
                 back = _side_back(lines, angle, side)
                 r0, r1 = (back, back + 2.0) if side == OUTER else (back - 2.0, back)
-                tall = RAIL_TOP_IN - TOP_GAP_IN if side == OUTER else INNER_PIPE_TOP_IN
+                tall = heights.top - TOP_GAP_IN if side == OUTER else heights.inner
                 faces += _block(angle, angle + 2.0 / back, r0, r1, lines.top - CHANNEL_IN, floor + tall, POST_COLOR,
                                 f"Platform {k + 1}: {side} post {t} in along it")
             if side != OUTER or len(angles) < 2:
@@ -249,10 +251,10 @@ def _platform_handrails(arrangement, where, plan: Plan, rails: Rails) -> list[Fa
                 return _side_back(lines, angle, OUTER) + 1.0
 
             if rails.top:
-                faces += _tube(*span, out, 2.0, 2.0, lambda _a, floor=floor: floor + RAIL_TOP_IN, RAIL,
+                faces += _tube(*span, out, 2.0, 2.0, lambda _a, floor=floor: floor + heights.top, RAIL,
                                f"Platform {k + 1}: top rail")
             if rails.mid:
-                faces += _tube(*span, out, BAR_THK_IN, BAR_IN, lambda _a, floor=floor: floor + PLATFORM_MID_TOP_IN,
+                faces += _tube(*span, out, BAR_THK_IN, BAR_IN, lambda _a, floor=floor: floor + heights.platform_mid,
                                RAIL, f"Platform {k + 1}: midrail")
     return faces
 
