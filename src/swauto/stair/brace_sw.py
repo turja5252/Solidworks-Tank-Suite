@@ -853,7 +853,10 @@ def _knee_holes(model, frame: _Frame, knee: _Knee, name: str) -> bool:
         sketch = _sketch_at(model, centers[0], f"{name}HolesSk", draw, frame.travel)
     except SolidWorksError:
         return False
-    feature = s._cut_both_ways(model, sketch, 2.0 * LEG_THK_IN + CLIP_THK_IN + 0.25)
+    depth = 2.0 * LEG_THK_IN + CLIP_THK_IN + 0.25
+    # SolidWorks refused the cut both ways at one knee (13.5 deg round a 40 ft tank, 2026-10-31), even with 0.1 in
+    # on the far side; one way, into the knee from its outside, takes the holes through it, the brace leg and the clip.
+    feature = s._cut_both_ways(model, sketch, depth) or _cut_into(model, sketch, depth)
     if feature is None:
         s._delete_named(model, (f"{name}HolesSk",))
         return False
@@ -866,6 +869,28 @@ def _knee_holes(model, frame: _Frame, knee: _Knee, name: str) -> bool:
         if not any(s._has_hole_axis(body, point_m, radius_m, 0.1 * _INCH) is True for body in s._bodies(model)):
             return False
     return True
+
+
+def _cut_into(model, sketch, depth_in: float):
+    """A blind cut of ``sketch`` one way, ``depth_in`` deep, into the face it is on or, refused, the other way; every
+    body. None if both are refused."""
+    for reverse in (False, True):
+        # Argument 2 would cut away everything outside the profile; argument 3 is the direction (nozzle_sw._cut).
+        args = (
+            True, False, reverse, 0, 0, depth_in * _INCH, 0.0,
+            False, False, False, False, 0.0, 0.0, False, False, False, False,
+            False, True, True, True,
+            True, False, 0, 0.0, False,
+        )
+        _clear_selection(model)
+        if not s._select_feature(model, sketch, "SKETCH", mark=0, append=False):
+            raise SolidWorksError("Could not select the bolt sketch.")
+        feature = None
+        with contextlib.suppress(Exception):
+            feature = model.FeatureManager.FeatureCut3(*args)
+        if feature not in (None, False):
+            return feature
+    return None
 
 
 def _shell_line(model, frame: _Frame, knee: _Knee, y_from: float, y_to: float, name: str) -> None:
