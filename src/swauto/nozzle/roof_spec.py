@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from swauto.nozzle.flange import normalize_kind, normalize_rating
+from swauto.nozzle.manway import normalize_manway_size
 from swauto.nozzle.pipe import normalize_nps, normalize_schedule
 from swauto.nozzle.repad import normalize_repad_mode, normalize_repad_style
 from swauto.nozzle.spec import normalize_inside_flange
@@ -58,6 +59,10 @@ class RoofNozzle:
     ``projection`` "osp" the OSP itself. ``isp_in`` None is the lisp's AUTO: the inside end 1/4 in under the
     roof, square to it, at the low side of the pipe. A typed ISP is measured down from the roof's underside
     at the centerline, to the inside end, or to the raised face of an inside flange.
+
+    With ``manway`` it is a round roof manway (``nozzle.manway``) of size ``nps``, the lisp's MANWAY item: its
+    plate flange, gasket and cover come with it, so the rating, flange kind, schedule, blind, gasket and inside
+    flange are not used, and a default pad is the manway's.
     """
 
     mark: str
@@ -82,6 +87,7 @@ class RoofNozzle:
     gasket: bool = False
     gasket_material: str = ""
     gasket_thickness_in: float | None = None
+    manway: bool = False
 
     def __post_init__(self) -> None:
         mark = " ".join(str(self.mark).split())
@@ -92,7 +98,7 @@ class RoofNozzle:
         if self.isp_in is not None and self.isp_in <= 0.0:
             raise ValueError(f"{mark}: a typed ISP must be greater than zero; leave it blank for AUTO.")
         object.__setattr__(self, "mark", mark)
-        object.__setattr__(self, "nps", normalize_nps(self.nps))
+        object.__setattr__(self, "nps", normalize_manway_size(self.nps) if self.manway else normalize_nps(self.nps))
         object.__setattr__(self, "rating", normalize_rating(self.rating))
         object.__setattr__(self, "kind", normalize_kind(self.kind))
         object.__setattr__(self, "schedule", normalize_schedule(self.schedule))
@@ -104,6 +110,8 @@ class RoofNozzle:
         object.__setattr__(self, "gasket_material", " ".join(str(self.gasket_material).split()))
         if self.projection == DIRECT and self.projection_in <= 0.0:
             raise ValueError(f"{mark}: a direct OSP must be greater than zero.")
+        if self.manway and (self.blind or self.gasket or self.inside_flange != "none"):
+            raise ValueError(f"{mark}: a manway brings its own cover and gasket, and has no inside flange.")
         if self.gasket and not self.gasket_material:
             raise ValueError(f"{mark}: type the gasket material.")
         if self.inside_flange != "none" and self.isp_in is None:

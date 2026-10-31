@@ -3,7 +3,9 @@
 Everything is built where it goes. The roof is opened for the pipe first, and every cut is scoped to the
 one body it is for (the roof, the pad, a flange), so nothing over or under it is touched. A repad is a band
 of the cone's outside, revolved round the tank axis and trimmed to the pad's plan outline. The neck is
-turned about its own plumb axis, and the bolt holes straddle the radial line through it.
+turned about its own plumb axis, and the bolt holes straddle the radial line through it. A round manway
+(``nozzle.manway``) is built the same way: its neck, plate flange, gasket and cover turned, the bolt holes through
+the flange, the gasket and the cover, and a handle swept along its centreline either side of the axis.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from swauto.nozzle.nozzle_sw import (
     _swallow,
     _to_sketch,
 )
+from swauto.nozzle.manway import HANDLE_OFF_IN, HANDLE_ROD_IN, handle_path, manway_loops, manway_stations
 from swauto.nozzle.roof_place import (
     RoofPlacement,
     outside_y,
@@ -98,8 +101,11 @@ def _build_one(model, placed: RoofPlacement) -> None:
         _roof_hole(model, placed, level, base)
         if placed.repad is not None:
             _repad(model, placed, level, base)
-        _turned(model, placed, base)
-        _bolt_holes(model, placed, base)
+        if placed.manway is not None:
+            _manway(model, placed, base)
+        else:
+            _turned(model, placed, base)
+            _bolt_holes(model, placed, base)
         _hide_plane(model, level)
         rebuild(model)
         _name_bodies(model, placed, base)
@@ -281,6 +287,11 @@ def _bolt_holes(model, placed: RoofPlacement, base: str) -> None:
     inside = inside_stations(placed)
     if inside is not None:
         cuts.append((inside.face_z, inside.back_z, f"{base}InsideFlange", f"{base}InsideBolts"))
+    _cut_bolt_holes(model, placed, base, cuts)
+
+
+def _cut_bolt_holes(model, placed: RoofPlacement, base: str, cuts) -> None:
+    """The flange's bolt pattern through each of ``cuts``: (low z, high z, the body's feature, the cut's name)."""
     fitting = placed.flange
     radius = fitting.bolt_hole_diameter_in / 2.0
     px, pz = placed.plan_in
@@ -311,12 +322,94 @@ def _bolt_holes(model, placed: RoofPlacement, base: str) -> None:
             raise SolidWorksError(f"{placed.nozzle.mark}: the bolt holes missed the {scope[len(base):].lower()}.")
 
 
+def _manway(model, placed: RoofPlacement, base: str) -> None:
+    """A round manway's neck, bolting flange, gasket and cover, each turned in place; the bolt holes through the
+    flange, the gasket and the cover; and the cover's two handles."""
+    spot = manway_stations(placed.outside_projection_in, placed.inside_projection_in)
+    section = _section_plane(model, placed.plan_in[1], f"{base}Section")
+    for piece, loop in manway_loops(placed.manway, spot):
+        _turn(model, placed, section, loop, f"{base}{piece}")
+    if section is not None:
+        _hide_plane(model, section)
+    _cut_bolt_holes(model, placed, base, [
+        (spot.back_z, spot.face_z, f"{base}Flange", f"{base}Bolts"),
+        (spot.face_z, spot.seat_z, f"{base}Gasket", f"{base}GasketBolts"),
+        (spot.seat_z, spot.top_z, f"{base}Cover", f"{base}CoverBolts"),
+    ])
+    for number, way in ((1, -1.0), (2, 1.0)):
+        _handle(model, placed, spot.top_z, way, f"{base}Handle{number}")
+
+
+def _handle(model, placed: RoofPlacement, top_z: float, way: float, name: str) -> None:
+    """One of the cover's handles, its round bar swept along its centreline (``manway.handle_path``). Its grip
+    runs along X, ``HANDLE_OFF_IN`` off the axis toward ``way`` along Z, so its path is on a plane square to Z."""
+    px, pz = placed.plan_in
+    lift = placed.surface_in
+    cz = pz + way * HANDLE_OFF_IN
+    plane = _section_plane(model, cz, f"{name}Plane")
+    _open_sketch_on(model, plane)
+    to_sketch = _sketch_mapper(model, name)
+    sketch = model.SketchManager
+
+    def at(u: float, z: float):
+        return to_sketch((px + u, lift + z, cz))
+
+    for segment in handle_path(top_z):
+        if segment[0] == "line":
+            a, b = at(*segment[1:3]), at(*segment[3:5])
+
+            def draw(a=a, b=b):
+                return sketch.CreateLine(a[0], a[1], 0.0, b[0], b[1], 0.0)
+        else:
+            c, a, b = at(*segment[1:3]), at(*segment[3:5]), at(*segment[5:7])
+            spin = 1 if (a[0] - c[0]) * (b[1] - c[1]) - (a[1] - c[1]) * (b[0] - c[0]) > 0 else -1
+
+            def draw(c=c, a=a, b=b, spin=spin):
+                return sketch.CreateArc(c[0], c[1], 0.0, a[0], a[1], 0.0, b[0], b[1], 0.0, spin)
+
+        if not _drew(model, draw):
+            _close_sketch(model)
+            raise SolidWorksError(f"{name}: the handle's path did not draw.")
+    _close_sketch(model)
+    path = _latest(model)
+    rename_feature(path, f"{name}Path")
+    foot = handle_path(top_z)[0]
+    level = _level_plane(model, lift + top_z, f"{name}Foot")
+    _open_sketch_on(model, level)
+    to_level = _sketch_mapper(model, name)
+    c = to_level((px + foot[1], lift + top_z, cz))
+    radius = HANDLE_ROD_IN / 2.0 * _INCH
+    if not _drew(model, lambda: sketch.CreateCircleByRadius(c[0], c[1], 0.0, radius)):
+        _close_sketch(model)
+        raise SolidWorksError(f"{name}: the handle's bar did not draw.")
+    _close_sketch(model)
+    profile = _latest(model)
+    rename_feature(profile, f"{name}Sk")
+    model.ClearSelection2(True)
+    if not (profile.Select2(False, 1) and path.Select2(True, 4)):
+        raise SolidWorksError(f"{name}: could not select the handle's bar and its path.")
+    swept = model.FeatureManager.InsertProtrusionSwept3(
+        False, False, 0, False, False, 0, 0, False, 0.0, 0.0, 0, 0, False, True, True, 0.0, True
+    )
+    if swept is None:
+        raise SolidWorksError(f"{name}: the handle was not swept.")
+    rename_feature(swept, name)
+    for sketch_name in (f"{name}Path", f"{name}Sk"):
+        _hide_sketch(model, sketch_name)
+    for each in (plane, level):
+        _hide_plane(model, each)
+
+
 def _name_bodies(model, placed: RoofPlacement, base: str) -> None:
     """Readable body names in the Solid Bodies folder, found by the feature that made each one."""
     nozzle = placed.nozzle
     parts = [("Neck", "Neck"), ("Pipe", "Pipe"), ("Flange", "Flange"), ("Repad", "Repad"),
              ("InsideFlange", "Inside flange"), ("Blind", "Blind")]
-    if placed.gasket is not None:
+    if placed.manway is not None:
+        parts = [("Neck", "Manway neck"), ("Flange", "Manway flange"), ("Repad", "Repad"),
+                 ("Gasket", "Manway gasket"), ("Cover", "Manway cover"), ("Handle1", "Manway handle"),
+                 ("Handle2", "Manway handle 2")]
+    if placed.gasket is not None and placed.manway is None:
         parts.append(("Gasket", f"Gasket - {placed.gasket.material}"))
     for feature, label in parts:
         body = _body_with_feature(model, f"{base}{feature}")

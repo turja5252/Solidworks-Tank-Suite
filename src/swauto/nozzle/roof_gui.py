@@ -3,7 +3,9 @@ the roof in plan under it.
 
 It works like the Shell Nozzles grid. A nozzle is placed by its degree, its radial distance from the tank
 center and an offset, as in the lisp's ROOFNOZZLES; its flange face by its height above the roof bearing
-line, or by a direct OSP. A blank ISP is the lisp's AUTO.
+line, or by a direct OSP. A blank ISP is the lisp's AUTO. The Item "Manway" is a round roof manway, as the lisp's
+MANWAY item: its size is the manway's (20, 24, 30, 36 or 42), its flange, gasket and cover come with it, and a
+Default repad is the manway's own.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from swauto.nozzle.gui import (
     _inches,
     _optional_inches,
 )
+from swauto.nozzle.manway import ROOF_SIZES
 from swauto.nozzle.pipe import nps_sizes
 from swauto.nozzle.repad import default_repad_size
 from swauto.nozzle.roof_place import RoofPlacement, pad_outline, place_on_roof
@@ -42,11 +45,14 @@ from swauto.tank.open_roof import find_roof_part
 from swauto.tank.roof import RoofSpec, course_break_plan_radii
 
 _MODES = (PROJECTION_LABELS[HEIGHT], PROJECTION_LABELS[DIRECT])
+MANWAY = "Manway"  # the lisp's MANWAY item
+_ROOF_ITEMS = (*_ITEMS, MANWAY)
+_ROOF_SIZES = (*nps_sizes(), *(size for size in ROOF_SIZES if size not in nps_sizes()))
 _COLUMNS = (
     _Column("mark", "Mark", 56),
     _Column("service", "Service", 110),
-    _Column("item", "Item", 150, "combo", _ITEMS, _ITEMS[0]),
-    _Column("size", "Size, in", 62, "combo", nps_sizes()),
+    _Column("item", "Item", 150, "combo", _ROOF_ITEMS, _ROOF_ITEMS[0]),
+    _Column("size", "Size, in", 62, "combo", _ROOF_SIZES),
     _Column("schedule", "Sch", 54, "combo", _SCHEDULES, "STD"),  # the lisp's roof default
     _Column("degree", "Deg", 54),
     _Column("radial", "Radial, in", 66),
@@ -132,12 +138,34 @@ def nozzle_from_row(values: dict[str, object]) -> RoofNozzle:
         raise ValueError("Enter a mark, like R1.")
     if not str(values.get("size", "")).strip():
         raise ValueError("Choose a size.")
+    projection = DIRECT if str(values["mode"]) == PROJECTION_LABELS[DIRECT] else HEIGHT
+    if str(values["item"]) == MANWAY:
+        if bool(values["blind"]) or bool(values["gasket"]) or str(values["inside_flange"]) not in ("", "None"):
+            raise ValueError(
+                "A manway brings its own cover and gasket, and has no ISP flange: untick Blind and Gasket."
+            )
+        return RoofNozzle(
+            mark=mark,
+            nps=str(values["size"]),
+            manway=True,
+            degree=_inches(str(values["degree"]), "degree", blank=0.0),
+            radial_in=_inches(str(values["radial"]), "radial distance"),
+            offset_in=_inches(str(values["offset"]), "offset", blank=0.0),
+            projection=projection,
+            projection_in=_inches(str(values["value"]), "height" if projection == HEIGHT else "OSP"),
+            isp_in=read_isp(values["isp"]),
+            repad_mode=str(values["repad"]).lower(),
+            repad_outer_in=_inches(str(values["pad_od"]), "repad outside diameter", blank=0.0),
+            repad_inner_in=_inches(str(values["pad_id"]), "repad inside diameter", blank=0.0),
+            repad_thickness_in=_optional_inches(str(values["pad_thk"]), "Repad thickness"),
+            repad_style="tombstone" if str(values["style"]) == "Tombstone" else "circular",
+            description=str(values["service"]),
+        )
     parts = _ITEM_PARTS.get(str(values["item"]))
     if parts is None:
-        raise ValueError("Choose a weld neck or a slip-on, Class 150 or 300.")
+        raise ValueError("Choose a weld neck or a slip-on, Class 150 or 300, or a manway.")
     rating, kind = parts
     gasket = bool(values["gasket"])
-    projection = DIRECT if str(values["mode"]) == PROJECTION_LABELS[DIRECT] else HEIGHT
     return RoofNozzle(
         mark=mark,
         nps=str(values["size"]),
@@ -174,7 +202,8 @@ def row_values(nozzle: RoofNozzle) -> dict[str, object]:
     return {
         "mark": nozzle.mark,
         "service": nozzle.description,
-        "item": f"Class {nozzle.rating} {'weld neck' if nozzle.kind == 'wn' else 'slip-on'}",
+        "item": (MANWAY if nozzle.manway
+                 else f"Class {nozzle.rating} {'weld neck' if nozzle.kind == 'wn' else 'slip-on'}"),
         "size": nozzle.nps,
         "schedule": nozzle.schedule,
         "degree": num(nozzle.degree),
@@ -202,6 +231,13 @@ def row_summary(placed: RoofPlacement) -> str:
     isp = "ISP AUTO" if placed.auto_isp else f"ISP {placed.isp_in:g}"
     pad = placed.repad
     pad_text = "" if pad is None else f", pad {pad.outer_diameter_in:g} x {pad.thickness_in:g}"
+    if placed.manway is not None:
+        manway = placed.manway
+        return (
+            f"OK  {nozzle.nps} in manway at {placed.angle_deg:.2f}°, R {placed.radius_in:.2f}: "
+            f"B {placed.height_in:.3f}, OSP {placed.outside_projection_in:.3f}, {isp}{pad_text}; cover "
+            f"{manway.plate_outer_in:g}, {manway.bolt_count} x 5/8 bolts on {manway.bolt_circle_in:g}"
+        )
     inside = ""
     if nozzle.inside_flange != "none":
         inside = f", inside {'WN' if nozzle.inside_flange == 'wn' else 'SO'} flange"

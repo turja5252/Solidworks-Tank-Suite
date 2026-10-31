@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from swauto.nozzle.flange import Flange, flange
 from swauto.nozzle.gasket import Gasket, gasket
+from swauto.nozzle.manway import BOLT_HOLE_IN, BOLT_IN, NECK_WALL_IN, PLATE_IN, RoofManway, roof_manway
 from swauto.nozzle.pipe import Pipe, pipe
 from swauto.nozzle.repad import Repad, resolve_repad
 from swauto.nozzle.roof_spec import DIRECT, RoofNozzle
@@ -49,6 +50,7 @@ class RoofPlacement:
     inside_projection_in: float  # how far under z = 0 the inside end is, the plate included
     wall_in: float  # how far under z = 0 an inside flange's hub has to stay: the underside at its low edge
     auto_isp: bool
+    manway: RoofManway | None = None  # a round manway's pieces (then ``pipe`` and ``flange`` are its neck and plate)
 
     @property
     def height_in(self) -> float:
@@ -115,13 +117,29 @@ def plan_point(degree: float, radial_in: float, offset_in: float) -> tuple[float
     )
 
 
+def manway_neck(manway: RoofManway) -> Pipe:
+    """A manway's neck as the nozzle engine's pipe: rolled 1/4 plate, its outside the size."""
+    return Pipe(nps=manway.size, schedule="1/4 plate", outside_diameter_in=manway.neck_outer_in, wall_in=NECK_WALL_IN)
+
+
+def manway_flange(manway: RoofManway) -> Flange:
+    """A manway's bolting flange as the nozzle engine's flange: a flat 1/4 plate ring round the neck, no hub and no
+    raised face (only its numbers are read from it; ``nozzle.manway`` turns its loops)."""
+    return Flange(nps=manway.size, rating=0, kind="manway", outside_diameter_in=manway.plate_outer_in,
+                  thickness_in=PLATE_IN, hub_diameter_in=manway.neck_outer_in, length_through_hub_in=PLATE_IN,
+                  slip_on_bore_in=manway.neck_outer_in, raised_face_diameter_in=manway.plate_outer_in,
+                  bolt_circle_in=manway.bolt_circle_in, bolt_count=manway.bolt_count,
+                  bolt_hole_diameter_in=BOLT_HOLE_IN, bolt_diameter_in=BOLT_IN)
+
+
 def place_on_roof(nozzle: RoofNozzle, roof: RoofSpec) -> RoofPlacement:
     """Put ``nozzle`` on the cone roof described by the Roof tab."""
     roof.validate()
     mark = nozzle.mark
     landing = roof.landing_radius_in()
-    neck = pipe(nozzle.nps, nozzle.schedule)
-    fitting = flange(nozzle.nps, nozzle.rating, nozzle.kind)
+    manway = roof_manway(nozzle.nps) if nozzle.manway else None
+    neck = manway_neck(manway) if manway is not None else pipe(nozzle.nps, nozzle.schedule)
+    fitting = manway_flange(manway) if manway is not None else flange(nozzle.nps, nozzle.rating, nozzle.kind)
     x, z = plan_point(nozzle.degree, nozzle.radial_in, nozzle.offset_in)
     radius = math.hypot(x, z)
     angle = math.degrees(math.atan2(-x, z)) % 360.0 if radius > 1e-9 else nozzle.degree % 360.0
@@ -154,15 +172,20 @@ def place_on_roof(nozzle: RoofNozzle, roof: RoofSpec) -> RoofPlacement:
         )
     inside = None if nozzle.inside_flange == "none" else flange(nozzle.nps, nozzle.rating, nozzle.inside_flange)
     hub_reach = inside.hub_diameter_in / 2.0 if inside is not None else half
-    pad = resolve_repad(
-        nozzle.nps,
-        nozzle.repad_mode,
-        course_thickness_in=roof.thickness_in,
-        outer_in=nozzle.repad_outer_in,
-        inner_in=nozzle.repad_inner_in,
-        thickness_in=nozzle.repad_thickness_in,
-        style=nozzle.repad_style,
-    )
+    if manway is not None and nozzle.repad_mode == "default":  # the manway's own pad
+        pad = resolve_repad(manway.size, "custom", course_thickness_in=roof.thickness_in,
+                            outer_in=manway.pad_outer_in, inner_in=manway.pad_inner_in,
+                            thickness_in=nozzle.repad_thickness_in, style=nozzle.repad_style)
+    else:
+        pad = resolve_repad(
+            nozzle.nps,
+            nozzle.repad_mode,
+            course_thickness_in=roof.thickness_in,
+            outer_in=nozzle.repad_outer_in,
+            inner_in=nozzle.repad_inner_in,
+            thickness_in=nozzle.repad_thickness_in,
+            style=nozzle.repad_style,
+        )
     ring = (
         gasket(nozzle.nps, nozzle.rating, nozzle.gasket_material, nozzle.gasket_thickness_in)
         if nozzle.gasket
@@ -188,10 +211,14 @@ def place_on_roof(nozzle: RoofNozzle, roof: RoofSpec) -> RoofPlacement:
         inside_projection_in=surface - end,
         wall_in=surface - underside_y(roof, radius + hub_reach),
         auto_isp=nozzle.isp_in is None,
+        manway=manway,
     )
     if pad is not None:
         pad_reach(placed)  # the pad has to be on the roof
-    _check_clear(placed)
+    if manway is not None:
+        _check_manway_clear(placed)
+    else:
+        _check_clear(placed)
     return placed
 
 
@@ -219,6 +246,24 @@ def pad_thickness_vertical(placed: RoofPlacement) -> float:
     if placed.repad is None:
         return 0.0
     return placed.repad.thickness_in * math.hypot(1.0, slope(placed.roof))
+
+
+def _check_manway_clear(placed: RoofPlacement) -> None:
+    """A manway's bolting flange, a level plate as wide as the cover, stays over the roof and its pad where the roof
+    is highest under it: at its edge toward the tank center."""
+    manway = placed.manway
+    assert manway is not None
+    reach = manway.plate_outer_in / 2.0
+    under = outside_y(placed.roof, max(0.0, placed.radius_in - reach)) - placed.surface_in
+    under += pad_thickness_vertical(placed) if placed.repad is not None else 0.0
+    back = placed.outside_projection_in - PLATE_IN
+    if back < under - 1e-9:
+        least = placed.outside_projection_in + under - back
+        what = "its pad" if placed.repad is not None else "the roof"
+        raise ValueError(
+            f"{placed.nozzle.mark}: the manway's flange would go into {what}. The OSP needs to be at least "
+            f"{least:.3f} in (it is {placed.outside_projection_in:.3f} in)."
+        )
 
 
 def _check_clear(placed: RoofPlacement) -> None:
