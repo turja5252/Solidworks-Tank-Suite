@@ -1004,6 +1004,15 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     def note_treads(*_args) -> None:
         treads_note.set("auto" if treads_var.get().strip() == auto["treads"] else "typed")
 
+    def check_platforms(arrangement: StairArrangement) -> StairArrangement:
+        """``arrangement``, refused saying why when a platform's straight sides run into the shell: everything that
+        reads the stair off the tab asks this, not only its summary (the shell clips' pads, and the plan by the
+        rules, cannot be found then)."""
+        problems = platform_problems(arrangement)
+        if problems:
+            raise ValueError(" ".join(problems))
+        return arrangement
+
     def refresh(*_args) -> None:
         for var in (stair_height_var, rise_var, run_var):
             var.set("")
@@ -1017,9 +1026,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             read_wall()
             current.validate()
             platforms = read_platforms(current.treads)
-            problems = platform_problems(StairArrangement(current, platforms, bool(top_platform_var.get())))
-            if problems:
-                raise ValueError(" ".join(problems))
+            check_platforms(StairArrangement(current, platforms, bool(top_platform_var.get())))
             drawn = layout_stringer(current)
             treads_at, spans = stair_plan(current, platforms, bool(top_platform_var.get()))
             turn, ends = read_turn(current, platforms)
@@ -1129,6 +1136,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         current.validate()
         wall = read_wall()
         platforms = read_platforms(current.treads)
+        check_platforms(StairArrangement(current, platforms, bool(top_platform_var.get())))
         per_flight = flight_treads(current.treads, platforms)
         by_rules = bool(rules_var.get())
         braces = () if by_rules else read_braces(per_flight * (platforms + 1))
@@ -1543,11 +1551,11 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         braces = () if rules_var.get() else read_braces(flight_treads(current.treads, platforms) * (platforms + 1))
         turn, _ends = read_turn(current, platforms)
         _top_offset, bottom_offset = read_offsets()
-        return StairArrangement(
+        return check_platforms(StairArrangement(
             current, platforms=platforms, top_platform=bool(top_platform_var.get()), ground_in=-bottom_offset,
             turn=turn, ccw=hand_var.get() == COUNTERCLOCKWISE, braces=braces, knees=bool(knee_var.get()),
             inner_clips=bool(inner_var.get()), splits=read_splits(), heights=read_heights(strict=False),
-        )
+        ))
 
     if shared is not None:
         shared["stairway"] = arrangement

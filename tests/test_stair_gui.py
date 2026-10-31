@@ -356,6 +356,28 @@ def test_the_platform_shapes_are_read_into_the_stair(tk_window):
     assert any("roll them" in str(w.cget("text")) for w in _widgets(page) if isinstance(w, ttk.Label))
 
 
+def test_a_straight_platform_into_the_shell_is_refused_wherever_the_stair_is_read(tk_window):
+    # An 8 ft tank with a 200 in straight platform: the tab's summary said "roll them", but the 3D view, the Stair
+    # game and the builds read the stair without asking and stopped on "math domain error" (found 2026-10-31).
+    from swauto.stair.stringer_gui import SIDES_STRAIGHT
+
+    page = ttk.Frame(tk_window)
+    shared: dict = {}
+    build_stringer_tab(page, tk.StringVar(master=tk_window), shared)
+    shared["load_stairway"](dict(
+        shared["stairway_inputs"](), diameter="96", shell_height="176", treads="21", mid_platforms="3",
+        platform_length="200", platform_sides=SIDES_STRAIGHT, by_the_rules=True,
+    ))
+    assert "roll them" in _label_texts(page)
+    for hook in ("stairway", "stairway_base", "stair_plan"):
+        with pytest.raises(ValueError, match="roll them"):
+            shared[hook]()
+
+
+def _label_texts(tab) -> str:
+    return " ".join(str(w.cget("text")) for w in _widgets(tab) if isinstance(w, ttk.Label))
+
+
 def test_the_stage_plan_counts_the_inside_full_guardrail_or_its_pipe():
     from swauto.stair.grab_sw import GrabRail
     from swauto.stair.stair_sw import InnerRail

@@ -216,8 +216,9 @@ def platform_problems(arrangement: StairArrangement) -> list[str]:
         clear = lines.r_in * math.cos((lines.phi_b - lines.phi_a) / 2.0) - shell_r  # at the straight side's middle
         if clear < STRAIGHT_CLEAR_IN:
             name = "The top platform" if k > arrangement.platforms else f"Platform {k}"
-            problems.append(f"{name}: straight sides {spec.length_in:g} in long come within {clear:.2f} in of the "
-                            "shell at the inner side's middle; roll them.")
+            near = f"come within {clear:.2f} in of the shell" if clear >= 0.0 else f"run {-clear:.2f} in into the shell"
+            problems.append(f"{name}: straight sides {spec.length_in:g} in long {near} at the inner side's middle; "
+                            "roll them.")
     return problems
 
 
