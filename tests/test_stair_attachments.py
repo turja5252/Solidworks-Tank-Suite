@@ -8,6 +8,7 @@ import pytest
 
 from swauto.stair.attachments import (
     CLIP,
+    GROUND,
     INNER,
     KNEE,
     OUTER,
@@ -215,3 +216,29 @@ def test_the_knee_brace_keeps_off_the_flights_end_posts_when_it_can():
     result = plan(StairArrangement(stair, turn=math.radians(30)), Shell.of(build_stretchout(tank)))
     posts = [s.tread for s in result.of_kind(POST, OUTER)]
     assert posts[-1] == 8 and not any("cross brace" in w for w in result.warnings)
+
+
+def test_the_rules_keep_their_braces_and_clips_out_of_a_placed_posts_way():
+    # A post the user placed stays put. The rules' cross brace and inner clip used to stand in its way anyway, only
+    # warned of, and were built into it (an inner clip's landing 2.4 in3 into an inside post; found 2026-10-31).
+    arrangement = StairArrangement(StringerMock(treads=13), platforms=1)
+    rules = Rules(sides=(OUTER, INNER))
+    moved = plan(arrangement, None, rules, pins=(Spot(POST, 0, 6, INNER, pinned=True),))
+    flight = [s for s in moved.spots if s.flight == 0]
+    assert not any(s.kind == KNEE and s.tread in (5, 6) for s in flight)
+    assert not any(s.kind == CLIP and s.tread == 5 for s in flight)
+    assert any(s.kind == KNEE for s in flight) and any(s.kind == CLIP and s.side != GROUND for s in flight)
+    assert not any("in its way" in w for w in moved.warnings)
+    # Where no other tread takes the brace it is left out, saying why, rather than built into the post.
+    left = plan(arrangement, None, rules, pins=(Spot(POST, 0, 7, INNER, pinned=True),))
+    assert not any(s.kind == KNEE and s.flight == 0 for s in left.spots)
+    assert any("no tread takes the knee brace" in w and "inner post placed at tread 7" in w for w in left.warnings)
+
+
+def test_a_brace_or_clip_dropped_in_a_placed_posts_way_is_refused():
+    arrangement = StairArrangement(StringerMock(treads=13), platforms=1)
+    rules = Rules(sides=(OUTER, INNER))
+    current = plan(arrangement, None, rules, pins=(Spot(POST, 0, 5, INNER, pinned=True),))
+    assert check(arrangement, current, Spot(CLIP, 0, 4), None, rules) == (
+        False, "It would be in the way of the inner handrail post you placed at tread 5.")
+    assert check(arrangement, current, Spot(CLIP, 0, 3), None, rules)[0] is True

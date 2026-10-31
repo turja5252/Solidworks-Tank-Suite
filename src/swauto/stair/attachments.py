@@ -271,6 +271,9 @@ def check(arrangement: StairArrangement, current: Plan, spot: Spot, shell: Shell
         clip_at = {(s.flight, s.tread) for s in others if s.kind == CLIP}
         reason = _post_problem(spot, cuts, braces, clip_at)
         return (False, reason) if reason else (True, "The post fits here.")
+    post = _post_in_way(spot, [s for s in others if s.pinned]) if spot.kind in (KNEE, CLIP) else None
+    if post is not None:
+        return False, f"It would be in the way of the {post.side} handrail post you placed at tread {post.tread}."
     ctx.pads = [p for p in (_pad_item(ctx, s) for s in others if s.kind in (KNEE, CLIP)) if p is not None]
     ok, reason = _pad_ok(ctx, spot, cuts)
     return ok, reason if not ok else f"The {spot.kind}'s shell pad is clear here."
@@ -367,31 +370,42 @@ def _piece_braces(ctx: _Context, k: int, low: int, high: int, cuts: list[int], p
     # A cross brace by a flight's end posts (bottom at 2, top at the top tread) would push them off; there only
     # when nothing else in the piece takes it.
     ends = {1, 2, ctx.per_flight - 1, ctx.per_flight} if ctx.rules.sides else set()
+    # Out of the way of the posts the user placed: the rules' own posts move round these, but those stay put, and a
+    # brace or clip left in one's way was only warned of and then built into it (found 2026-10-31).
+    placed_posts = [p for p in pins if p.kind == POST]
+
+    def fits(kind: str, t: int) -> tuple[bool, str]:
+        ok, reason = _pad_ok(ctx, Spot(kind, k, t), cuts)
+        post = _post_in_way(Spot(kind, k, t), placed_posts) if ok else None
+        if post is not None:
+            return False, f"it would be in the way of the {post.side} post placed at tread {post.tread}"
+        return ok, reason
+
     best: dict[str, int] = {}
-    reasons: dict[str, str] = {}
+    reasons: dict[str, list[str]] = {}
     for kind in wanted:
         tries = sorted(order, key=lambda t: t in ends) if kind == KNEE else order
         for t in tries:
-            ok, reason = _pad_ok(ctx, Spot(kind, k, t), cuts)
+            ok, reason = fits(kind, t)
             if ok:
                 best[kind] = t
                 break
-            reasons.setdefault(kind, reason)
+            if reason not in reasons.setdefault(kind, []):
+                reasons[kind].append(reason)
     if len(best) == 2 and best[KNEE] != best[CLIP]:
         # The same tread for both when that is no further from the middle than the farther of the two.
         reach = max(abs(best[KNEE] - middle), abs(best[CLIP] - middle))
         for t in order:
             if abs(t - middle) > reach:
                 break
-            if (t in ends) <= (best[KNEE] in ends) and all(_pad_ok(ctx, Spot(kind, k, t), cuts)[0]
-                                                           for kind in (KNEE, CLIP)):
+            if (t in ends) <= (best[KNEE] in ends) and all(fits(kind, t)[0] for kind in (KNEE, CLIP)):
                 best = {KNEE: t, CLIP: t}
                 break
     spots = []
     for kind in wanted:
         if kind not in best:
             warnings.append(f"Flight {k + 1}, treads {low} to {high}: no tread takes the {kind}"
-                            f" ({reasons.get(kind, 'no room')}).")
+                            f" ({'; '.join(reasons.get(kind, ['no room']))}).")
             continue
         spot = Spot(kind, k, best[kind])
         ctx.pads.append(_pad_item(ctx, spot))
@@ -522,6 +536,15 @@ def _post_problem(spot: Spot, cuts, braces, clip_at) -> str | None:
     if spot.side == INNER and (spot.flight, t - 1) in clip_at:
         return f"The inner clip at tread {t - 1} is in its way."
     return None
+
+
+def _post_in_way(spot: Spot, posts) -> Spot | None:
+    """The post among ``posts`` (the user's) that a cross brace with its knee, or an inner clip, at ``spot`` would be
+    in the way of: the posts' own test, _post_problem, with ``spot`` there."""
+    braces = {(spot.flight, spot.tread)} if spot.kind == KNEE else set()
+    clip_at = {(spot.flight, spot.tread)} if spot.kind == CLIP else set()
+    return next((post for post in posts if post.kind == POST and post.flight == spot.flight
+                 and _post_problem(post, (), braces, clip_at)), None)
 
 
 # -------------------------------------------------------------------------------------------- rail splits
