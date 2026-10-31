@@ -16,6 +16,7 @@ from tkinter import ttk
 
 from swauto.stair.attachments import shell_from
 from swauto.stair.scene import Face, Rails, scene
+from swauto.stair.stair_sw import INSIDE_FULL, INSIDE_PIPE
 
 _LIGHT = (0.35, 0.8, 0.5)
 _WELD = "#c62828"
@@ -86,7 +87,9 @@ def build_view3d(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         except (ValueError, tk.TclError):
             given = {}
         return Rails(top=bool(given.get("top_rail", True)), mid=bool(given.get("mid_rail", True)),
-                     grab=bool(given.get("grab_rail", True)))
+                     grab=bool(given.get("grab_rail", True)),
+                     inner_full=given.get("inside_handrail", INSIDE_FULL) != INSIDE_PIPE,
+                     inner_grab=bool(given.get("inner_grab_rail", False)))
 
     def draw() -> None:
         canvas.delete("all")

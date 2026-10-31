@@ -62,11 +62,14 @@ class Face:
 
 @dataclass(frozen=True)
 class Rails:
-    """The rails the Stairway tab asks for outside: top rail, midrail, grab rail. Inside it is the pipe alone."""
+    """The rails the Stairway tab asks for: top rail, midrail, grab rail outside and (``inner_grab``) inside. Inside
+    they are the same on the full guardrail (``inner_full``), else STWE's pipe alone."""
 
     top: bool = True
     mid: bool = True
     grab: bool = True
+    inner_full: bool = True
+    inner_grab: bool = False
 
 
 def scene(arrangement: StairArrangement, plan: Plan | None = None, shell_height_in: float | None = None,
@@ -179,7 +182,8 @@ def _attachments(arrangement, where, plan: Plan, r_a: float, r_b: float, rails: 
         if not any(picks):
             continue
         walk = r_b if side == OUTER else r_a  # the stringer face the posts are laid out on
-        top = arrangement.heights.top if side == OUTER else arrangement.heights.inner
+        piped = side == INNER and not rails.inner_full  # STWE's inside pipe on short posts
+        top = arrangement.heights.inner if piped else arrangement.heights.top
         posts = post_layout(where.places, per_flight, picks, walk, rail_top=top)
         for post in posts:
             faces += _block(post.phi, post.phi + 2.0 / r, r - 1.0, r + 1.0, post.foot, post.top(1.0), POST_COLOR,
@@ -198,20 +202,22 @@ def _attachments(arrangement, where, plan: Plan, r_a: float, r_b: float, rails: 
             lines[k] = line
             fronts = (where.places[k * per_flight].phi - reach, where.places[(k + 1) * per_flight - 1].phi - reach)
             name = f", flight {k + 1}"
-            if side == INNER:
+            if piped:
                 faces += _tube(*fronts, pipe_r, PIPE_OD_IN, PIPE_OD_IN, line, PIPE, "Inside pipe" + name)
                 continue
+            word = "Outer" if side == OUTER else "Inside"
             ends = (mine[0].phi, mine[-1].phi + 2.0 / r)
             if rails.top and len(mine) > 1:
-                faces += _tube(*ends, r, 2.0, 2.0, line, RAIL, "Outer top rail" + name)
+                faces += _tube(*ends, r, 2.0, 2.0, line, RAIL, f"{word} top rail" + name)
             if rails.mid and len(mine) > 1:
-                faces += _tube(*ends, r + 1.0 - BAR_THK_IN / 2.0, BAR_THK_IN, BAR_IN,
+                walk_side = 1.0 if side == OUTER else -1.0  # on the posts' walk side
+                faces += _tube(*ends, r + walk_side * (1.0 - BAR_THK_IN / 2.0), BAR_THK_IN, BAR_IN,
                                lambda phi, line=line: line(phi) - (heights.top - heights.flight_mid), RAIL,
-                               "Outer midrail" + name)
-            if rails.grab:
+                               f"{word} midrail" + name)
+            if rails.grab if side == OUTER else rails.inner_grab:
                 faces += _tube(*fronts, pipe_r, PIPE_OD_IN, PIPE_OD_IN,
                                lambda phi, line=line: line(phi) - (heights.top - heights.grab), PIPE,
-                               "Grab rail" + name)
+                               ("Grab rail" if side == OUTER else "Inside grab rail") + name)
         for spot in plan.of_kind(RAIL_SPLIT, side):
             low = next((p for p in posts if p.index == spot.pan(per_flight)), None)
             high = next((p for p in posts if p.index > spot.pan(per_flight)), None)
@@ -219,7 +225,7 @@ def _attachments(arrangement, where, plan: Plan, r_a: float, r_b: float, rails: 
                 continue
             phi = (low.phi + high.phi) / 2.0
             y = lines[spot.flight](phi)
-            at = r if side == OUTER else pipe_r
+            at = pipe_r if piped else r
             faces += _block(phi - 1.0 / at, phi + 1.0 / at, at - 1.5, at + 1.5, y - 3.0, y + 1.0, SPLIT_COLOR,
                             spot.label())
     faces += _platform_handrails(arrangement, where, plan, rails)
@@ -228,7 +234,8 @@ def _attachments(arrangement, where, plan: Plan, r_a: float, r_b: float, rails: 
 
 def _platform_handrails(arrangement, where, plan: Plan, rails: Rails) -> list[Face]:
     """Each platform's posts, on the outer side's back and on the inner side's tank face, and its top rail and
-    midrail along the outer side from its first post to its last."""
+    midrail along the outer side from its first post to its last, and along the inner side on the inside's full
+    guardrail."""
     faces: list[Face] = []
     heights = arrangement.heights
     for k in range(arrangement.platforms + (1 if arrangement.top_platform else 0)):
@@ -240,22 +247,23 @@ def _platform_handrails(arrangement, where, plan: Plan, rails: Rails) -> list[Fa
             for t, angle in zip(posts, angles, strict=True):
                 back = _side_back(lines, angle, side)
                 r0, r1 = (back, back + 2.0) if side == OUTER else (back - 2.0, back)
-                tall = heights.top - TOP_GAP_IN if side == OUTER else heights.inner
+                tall = heights.top - TOP_GAP_IN if side == OUTER or rails.inner_full else heights.inner
                 faces += _block(angle, angle + 2.0 / back, r0, r1, lines.top - CHANNEL_IN, floor + tall, POST_COLOR,
                                 f"Platform {k + 1}: {side} post {t} in along it")
-            if side != OUTER or len(angles) < 2:
+            if (side == INNER and not rails.inner_full) or len(angles) < 2:
                 continue
-            span = (angles[0], angles[-1] + 2.0 / lines.r_out)
+            span = (angles[0], angles[-1] + 2.0 / _side_back(lines, angles[-1], side))
+            word = "" if side == OUTER else "inside "
 
-            def out(angle, lines=lines):  # just outside the outer side's back, where the posts are
-                return _side_back(lines, angle, OUTER) + 1.0
+            def out(angle, lines=lines, side=side):  # just off the side's back, where the posts are
+                return _side_back(lines, angle, side) + (1.0 if side == OUTER else -1.0)
 
             if rails.top:
                 faces += _tube(*span, out, 2.0, 2.0, lambda _a, floor=floor: floor + heights.top, RAIL,
-                               f"Platform {k + 1}: top rail")
+                               f"Platform {k + 1}: {word}top rail")
             if rails.mid:
                 faces += _tube(*span, out, BAR_THK_IN, BAR_IN, lambda _a, floor=floor: floor + heights.platform_mid,
-                               RAIL, f"Platform {k + 1}: midrail")
+                               RAIL, f"Platform {k + 1}: {word}midrail")
     return faces
 
 

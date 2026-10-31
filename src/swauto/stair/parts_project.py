@@ -23,16 +23,11 @@ def stair_parts(stair, wall_in: float, *, platforms: int, top_platform: bool, po
     if ccw:
         raise ValueError("A stair that climbs counterclockwise is not built as parts yet: Create stair builds it.")
     left = []
-    if inner_rail is not None:
-        left.append("the inside handrail")
-    if any(side != "outer" for side, _pan in rail_splits):
-        left.append("the inside handrail's splices")
     parts = StairParts(
         stair, stair.shell_od_in, wall_in, platforms=platforms, posts=tuple(posts), ground_in=ground_in, turn=turn,
         top_platform=top_platform, top_rail=top_rail, mid_rail=mid_rail, post_in=post_in, mid_top=mid_top, grab=grab,
-        rail_top=rail_top, flight_mid=flight_mid,
-        rail_splits=tuple((side, pan) for side, pan in rail_splits if side == "outer"), braces=tuple(braces),
-        knees=knees, inner_clips=tuple(inner_clips), splits=splits,
+        rail_top=rail_top, flight_mid=flight_mid, rail_splits=tuple(tuple(split) for split in rail_splits),
+        braces=tuple(braces), knees=knees, inner_clips=tuple(inner_clips), splits=splits, inner_rail=inner_rail,
     )
     return parts, left
 

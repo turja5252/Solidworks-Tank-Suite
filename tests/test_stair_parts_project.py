@@ -19,8 +19,9 @@ def test_the_tab_becomes_the_parts_builds_stair_and_says_what_it_leaves_out():
     parts, left = stair_parts(StringerMock(treads=8), 0.1875, ccw=False, rail_splits=(("outer", 2), ("inner", 2)),
                               inner_rail=InnerRail(posts=((2,),)), **COMMON)
     assert parts.ground_in == -6.0 and parts.turn == 0.5 and parts.braces == (3,) and parts.inner_clips == (3,)
-    assert parts.rail_splits == (("outer", 2),)
-    assert left == ["the inside handrail", "the inside handrail's splices"]
+    assert parts.rail_splits == (("outer", 2), ("inner", 2))
+    assert parts.inner_rail == InnerRail(posts=((2,),))
+    assert left == []  # the inside handrail and its splices are built as parts too (2026-10-30)
     with pytest.raises(ValueError, match="counterclockwise"):
         stair_parts(StringerMock(treads=8), 0.1875, ccw=True, rail_splits=(), inner_rail=None, **COMMON)
 

@@ -198,15 +198,22 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         return {"rail_top": heights.top, "flight_mid": heights.flight_mid, "mid_top": heights.platform_mid,
                 "grab_top": heights.grab, "inner_top": heights.inner}[key]
 
+    def inner_full() -> bool:
+        """The inside handrail is the full guardrail (the Stairway tab's choice, through the rules), not STWE's pipe."""
+        game: Game | None = state["game"]
+        return game.rules.inner_full if game is not None else True
+
     def rail_flags() -> dict:
-        """The Stairway tab's top rail, midrail and grab rail boxes; all on without the tab."""
+        """The Stairway tab's top rail, midrail and grab rail boxes, and its inside handrail; all on (the grab rail
+        outside only) without the tab."""
         source = shared.get("stairway_inputs")
         try:
             given = source() if callable(source) else {}
         except (ValueError, tk.TclError):
             given = {}
         return {"top": bool(given.get("top_rail", True)), "mid": bool(given.get("mid_rail", True)),
-                "grab": bool(given.get("grab_rail", True)), "heights": rail_heights()}
+                "grab": bool(given.get("grab_rail", True)), "heights": rail_heights(), "inner_full": inner_full(),
+                "inner_grab": bool(given.get("inner_grab_rail", False))}
 
     # ------------------------------------------------------------------------------------------ geometry
 
@@ -462,7 +469,7 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
                     line(band, (x, knee.top[1]), (x, knee.bottom[1]), fill=_COLORS[KNEE], width=3,
                          tags=said(f"Platform {k + 1}: knee brace {label}"))
             posts = sorted(s.tread for s in current.of_kind(PLATFORM_POST, side) if s.flight == k)
-            if side == OUTER and len(posts) > 1:
+            if (side == OUTER or inner_full()) and len(posts) > 1:
                 ends = [view_x(arrangement, lines.phi_a + t / lines.r_mid, girth) for t in (posts[0], posts[-1])]
                 heights = rail_heights()
                 for above, name, rail in ((heights.top, "top rail", "Top rail"),
@@ -547,7 +554,7 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
     def draw_piece(band: dict, spot: Spot, posts: tuple[int, ...], outline: str = "#222222", tags=()) -> None:
         side, flight = band["side"], spot.flight
         dev = state["geo"]["devs"][side]
-        x, y = spot_xy(dev, spot, posts, rail_heights())
+        x, y = spot_xy(dev, spot, posts, rail_heights(), inner_full())
         cx, cy = lane_px(side, flight, x, y)
         if not _inside(band, (cx, cy)):
             return
@@ -559,7 +566,7 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
                  fill=_COLORS[spot.kind], width=6 if spot.kind == KNEE else 3, tags=tags)
             poly(band, corners, fill=_COLORS[spot.kind], outline=outline, width=2, tags=tags)
         if spot.kind == POST:
-            top = lane_px(side, flight, x, post_top(dev, side, x, rail_heights()))
+            top = lane_px(side, flight, x, post_top(dev, side, x, rail_heights(), inner_full()))
             canvas.create_line(cx, cy, top[0], max(top[1], band["box"][1]), fill=_COLORS[POST], width=7, tags=tags)
             canvas.create_line(cx, cy, top[0], max(top[1], band["box"][1]), fill=outline, width=1, tags=tags)
         elif spot.kind == KNEE:
@@ -725,7 +732,8 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         else:
             posts = tuple(s.tread for s in state["game"].plan.of_kind(POST, piece.side) if s.flight == flight)
             draw_piece(band, spot, posts, outline=_GOOD if ok else _BAD, tags=("ghost",))
-            cx, cy = lane_px(band["side"], flight, *spot_xy(state["geo"]["devs"][band["side"]], spot, posts))
+            cx, cy = lane_px(band["side"], flight, *spot_xy(state["geo"]["devs"][band["side"]], spot, posts,
+                                                            rail_heights(), inner_full()))
             where = f"Flight {flight + 1}, tread {tread}"
         canvas.create_oval(cx - 14, cy - 14, cx + 14, cy + 14, outline=_GOOD if ok else _BAD, width=3,
                            tags=("ghost",))

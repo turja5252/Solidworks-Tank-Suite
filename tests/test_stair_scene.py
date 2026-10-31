@@ -7,7 +7,7 @@ from swauto.stair.landings import StairArrangement
 from swauto.stair.scene import CLIP_COLOR, POST_COLOR, SHELL, TREAD, Face, Rails, scene
 from swauto.stair.splitter import SplitSettings
 from swauto.stair.stair_sw import stair_places
-from swauto.stair.stringer import StringerMock
+from swauto.stair.stringer import THICKNESS_IN, StringerMock
 from swauto.stretchout.model import x_of_angle
 from swauto.stretchout.view3d_gui import project
 from swauto.tank.spec import Course, TankSpec
@@ -99,14 +99,22 @@ def test_the_handrail_is_drawn_as_the_stairway_tab_asks():
     result = plan(arrangement, rules=Rules(sides=(OUTER, INNER)))
     faces = scene(arrangement, result)
     names = {f.label.split(",")[0] for f in faces}
-    assert {"Outer top rail", "Outer midrail", "Grab rail", "Inside pipe"} <= names
+    # Inside is the full guardrail by default, as outside (the user, 2026-10-30).
+    assert {"Outer top rail", "Outer midrail", "Grab rail", "Inside top rail", "Inside midrail"} <= names
+    assert "Inside pipe" not in names and "Inside grab rail" not in names
     layout = stair_places(STAIR, STAIR.shell_od_in).layout
     r_a, r_b = layout.inner_face_in, layout.inner_face_in + layout.clear_in
-    # Both pipes are over the treads, on their PC #34s: between the stringers.
-    for name in ("Grab rail", "Inside pipe"):
-        radii = [_radius(p) for f in faces if f.label.startswith(name) for p in f.points]
-        assert r_a < min(radii) and max(radii) < r_b, name
-    fewer = {f.label.split(",")[0] for f in scene(arrangement, result, rails=Rails(mid=False, grab=False))}
+    piped = scene(arrangement, result, rails=Rails(inner_full=False))
+    both = scene(arrangement, result, rails=Rails(inner_grab=True))
+    # The pipes are over the treads, on their PC #34s: between the stringers.
+    for name, drawn in (("Grab rail", faces), ("Inside pipe", piped), ("Inside grab rail", both)):
+        radii = [_radius(p) for f in drawn if f.label.startswith(name) for p in f.points]
+        assert radii and r_a < min(radii) and max(radii) < r_b, name
+    # The inside rails stand off the inner stringer's tank face, toward the shell.
+    radii = [_radius(p) for f in faces if f.label.startswith("Inside top rail") for p in f.points]
+    assert max(radii) <= r_a - THICKNESS_IN + 1e-6
+    fewer = {f.label.split(",")[0] for f in scene(arrangement, result, rails=Rails(mid=False, grab=False,
+                                                                                  inner_full=False))}
     assert "Outer midrail" not in fewer and "Grab rail" not in fewer
     assert {"Outer top rail", "Inside pipe"} <= fewer
 

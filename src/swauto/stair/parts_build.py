@@ -14,9 +14,10 @@ or its posts only moves components. Identical pieces (one family, one fingerprin
 shell plates ("Stair tread A.SLDPRT", "Stair stringer inner B.SLDPRT"), in the stair's own assembly, Stair.SLDASM
 (the user's choices, 2026-10-30).
 
-So far: the treads, each stringer with every tread's and post's bolt holes, the outer flight posts, each platform's
-frame members and supports, the stringer clips, the shell pads, and the outer handrail: the platform posts, toe
-plates, top rail, midrail, the closed end at the foot, the grab rail and the handrail splices (``rail_parts``).
+So far: the treads, each stringer with every tread's and post's bolt holes, the flight posts, each platform's
+frame members and supports, the stringer clips, the shell pads, and the handrails: the platform posts, toe plates,
+top rail, midrail, the closed end at the foot, the grab rail and the handrail splices (``rail_parts``), outside and,
+mirrored, inside; or inside, Elite STWE's pipe on its posts.
 """
 
 from __future__ import annotations
@@ -138,6 +139,7 @@ class StairParts:
     knees: bool = False  # each cross brace with a knee brace down to the shell
     inner_clips: tuple = ()  # treads with an inner clip above them
     splits: SplitSettings | None = None  # the stringer splitter's settings, as for create_stair
+    inner_rail: s.InnerRail | None = None  # the inside handrail, as for create_stair
 
     @property
     def where(self):
@@ -160,9 +162,36 @@ class StairParts:
         layout = self.where.layout
         return layout.inner_face_in + layout.clear_in
 
+    @property
+    def r_a(self) -> float:
+        """The inner stringer's walk face, where the inside handrail's posts are laid out."""
+        return self.where.layout.inner_face_in
+
     def flight_posts(self) -> list[Post]:
         where = self.where
         return _post_layout(where.places, where.per_flight, self.posts, self.r_b, self.rail_top) if self.posts else []
+
+    @property
+    def inner_post_top(self) -> float:
+        """How far over the inner stringer's top edge the rail its posts carry is: the top rail on the full
+        guardrail, STWE's rail line under the pipe otherwise."""
+        rail = self.inner_rail
+        return self.rail_top if rail is None or rail.full else rail.post_top
+
+    def inner_posts(self) -> list[Post]:
+        """The inside handrail's flight posts, on the inner stringer's tank face."""
+        rail = self.inner_rail
+        if rail is None or not any(rail.posts):
+            return []
+        where = self.where
+        return _post_layout(where.places, where.per_flight, rail.posts, self.r_a, self.inner_post_top)
+
+    def inner_pipe(self) -> GrabRail | None:
+        """The inside pipe on the inner posts: the full guardrail's grab rail, or STWE's pipe handrail."""
+        rail = self.inner_rail
+        if rail is None:
+            return None
+        return rail.grab if rail.full else GrabRail(top=rail.top)
 
     def platform_lines(self) -> list[tuple[int, object]]:
         """(k, plan lines) of each platform on the ground-0 stair, 1 the lowest, the top one last: past flight k's
@@ -199,23 +228,50 @@ class StairParts:
                      PLATFORM_MID_TOP_IN if self.mid_top is None else self.mid_top,
                      self.top_rail, self.mid_rail, self.stair.platform_specs, self.rail_top, self.flight_mid)
 
-    def rail_params(self) -> dict:
-        """What shapes the handrail's pieces."""
-        rails = self.rails()
-        return {"platforms": self.platforms, "top_platform": self.top_platform, "post_in": rails.post_in,
-                "mid_top": rails.mid_top, "top_rail": self.top_rail, "mid_rail": self.mid_rail,
-                "rail_top": self.rail_top, "flight_mid": rails.flights[0].flight_mid,
-                "splices": [list(split) for split in self.rail_splits],
-                "shapes": [shape_params(self.stair.platform(k - 1)) for k in range(1, rails.count + 1)]}
+    def inner_rails(self) -> Rails | None:
+        """The inside handrail's numbers, if it has posts: the outside's mirrored onto the inner stringer and channel
+        C, with its own rails and platform posts' distance in from the ends on the full guardrail; STWE's pipe
+        handrail has no rails and its platforms none."""
+        rail = self.inner_rail
+        if rail is None or not self.inner_posts():
+            return None
+        outer = self.rails()
+        return replace(outer, side=-1.0, top_rail=rail.full and rail.top_rail, mid_rail=rail.full and rail.mid_rail,
+                       railed=rail.full, post_in=outer.post_in if rail.post_in is None else rail.post_in)
+
+    def handrails(self) -> list[Rails]:
+        """Each side's handrail with posts on the platforms: the outside's with its flight posts, the inside's on its
+        full guardrail."""
+        out = [self.rails()] if self.posts else []
+        inner = self.inner_rails()
+        if inner is not None and inner.railed:
+            out.append(inner)
+        return out
+
+    def rail_params(self, inner: bool = False) -> dict:
+        """What shapes the handrail's pieces: the outside's, or with ``inner`` the inside's."""
+        rails = self.inner_rails() if inner else self.rails()
+        side = "inner" if inner else "outer"
+        params = {"platforms": self.platforms, "top_platform": self.top_platform, "post_in": rails.post_in,
+                  "mid_top": rails.mid_top, "top_rail": rails.top_rail, "mid_rail": rails.mid_rail,
+                  "rail_top": self.rail_top, "flight_mid": rails.flights[0].flight_mid,
+                  "splices": [list(split) for split in self.rail_splits if split[0] == side],
+                  "shapes": [shape_params(self.stair.platform(k - 1)) for k in range(1, rails.count + 1)]}
+        if inner and self.inner_rail is not None:
+            rail = self.inner_rail
+            params["inner"] = {"full": rail.full, "top": rail.top, "post_top": rail.post_top}
+        return params
 
     def seat_post_holes(self, k: int, dphi: float, dy: float) -> dict[str, list]:
-        """The handrail posts' bolt holes in platform ``k``'s channels by member ("D", and "A" and "B" for a narrow
-        stair's side posts), carried back from the real platform onto its seat; none without the handrail."""
-        if not self.posts:
-            return {}
-        return {member: [([_seat(p, dphi, dy) for p in points], _seat(axis, dphi, 0.0, shift=False))
-                         for points, axis in holes]
-                for member, holes in frame_holes(self.rails(), k).items()}
+        """The handrail posts' bolt holes in platform ``k``'s channels by member ("D", "C" for the inside handrail's,
+        and "A" and "B" for a narrow stair's side posts), carried back from the real platform onto its seat; none
+        without the handrail."""
+        out: dict[str, list] = {}
+        for rails in self.handrails():
+            for member, holes in frame_holes(rails, k).items():
+                out.setdefault(member, []).extend(([_seat(p, dphi, dy) for p in points],
+                                                   _seat(axis, dphi, 0.0, shift=False)) for points, axis in holes)
+        return out
 
 
 def _seat(point, dphi: float, dy: float, shift: bool = True) -> tuple[float, float, float]:
@@ -259,9 +315,10 @@ def bolt_points(place, radius: float) -> list[tuple[float, float, float]]:
             for a in (half - BOLT_FROM_FRONT_IN, half - BOLT_FROM_FRONT_IN - BOLT_SPACE_IN)]
 
 
-def post_hole_points(post: Post, r_b: float) -> list[tuple[float, float, float]]:
-    """A flight post's two bolt centres on its leg's outer face, where post_sw._holes puts them."""
-    way, face_r = _post_side(r_b, False)
+def post_hole_points(post: Post, r_b: float, inner: bool = False) -> list[tuple[float, float, float]]:
+    """A flight post's two bolt centres on its leg's outer face, where post_sw._holes puts them: ``r_b`` the walk face
+    of the stringer it is on, the outer one's or with ``inner`` the inner one's."""
+    way, face_r = _post_side(r_b, inner)
     return [_world(post.phi, face_r + way * THK_IN, HOLE_GAUGE_IN, post.foot + up) for up in HOLE_UP_IN]
 
 
@@ -396,14 +453,16 @@ def jobs(parts: StairParts, post_file: str = "", frame_file: str = "", knee_file
         tuple(parts.place(p.phi - first.phi, p.y0 - first.y0) for p in where.places),
     )]
     posts = parts.flight_posts()
+    inner_posts = parts.inner_posts()
     braced = brace_holes(where, parts.braces, parts.inner_clips, parts.shell_od)
     for k in range(len(where.offsets)):
         dphi, dy = parts.flight_move(k)
         # This flight's posts where they would stand on the first flight, where its stringers are modelled.
-        mine = tuple(replace(p, phi=p.phi - dphi, foot=p.foot - dy, cut=p.cut - dy) for p in posts
-                     if (p.index - 1) // where.per_flight == k)
+        mine = {side: tuple(replace(p, phi=p.phi - dphi, foot=p.foot - dy, cut=p.cut - dy) for p in laid
+                            if (p.index - 1) // where.per_flight == k)
+                for side, laid in (("In", inner_posts), ("Out", posts))}
         for side, word in (("In", "inner"), ("Out", "outer")):
-            holes = mine if side == "Out" else ()
+            holes = mine[side]
             extra = tuple(([_seat(p, dphi, dy) for p in points], _seat(axis, dphi, 0.0, shift=False))
                           for index, points, axis in braced[side] if (index - 1) // where.per_flight == k)
             params = {"version": PARTS_VERSION, "flight": flight, "side": side, "foot_holes": k > 0,
@@ -436,6 +495,14 @@ def jobs(parts: StairParts, post_file: str = "", frame_file: str = "", knee_file
             lambda model: _post(model, parts, seat, post_file),
             tuple(parts.place(p.phi - seat.phi, p.foot - seat.foot) for p in posts),
         ))
+    if inner_posts:
+        inner_seat = _post_layout(where.places, where.per_flight, (2,), parts.r_a, parts.inner_post_top)[0]
+        out.append(PartJob(
+            "Stair post", "Inside flight post", {"version": PARTS_VERSION, "flight": flight, "r_b": parts.r_a,
+                                                 "rail_top": parts.inner_post_top, "inner": True},
+            lambda model: _post(model, parts, inner_seat, post_file, inner=True),
+            tuple(parts.place(p.phi - inner_seat.phi, p.foot - inner_seat.foot) for p in inner_posts),
+        ))
     braces, knee_pads = brace_jobs(PartJob, where, parts.braces, parts.knees, parts.inner_clips, parts.shell_od,
                                    knee_file, clip4_file, {"version": PARTS_VERSION, "flight": flight}, parts.place)
     out.extend(braces)
@@ -459,6 +526,16 @@ def jobs(parts: StairParts, post_file: str = "", frame_file: str = "", knee_file
         if parts.grab is not None:
             out.extend(grab_jobs(PartJob, rails, parts.grab, posts, seat, common, parts.place, pairs))
         out.extend(splice_jobs(PartJob, rails, pairs, post_file, parts.grab, common, parts.place))
+    inner = parts.inner_rails()
+    if inner is not None:
+        common = {"version": PARTS_VERSION, "flight": flight, "rails": parts.rail_params(inner=True)}
+        pairs = split_pairs(inner, inner_posts, parts.rail_splits)
+        if inner.railed:
+            out.extend(rail_jobs(PartJob, inner, post_file, common, parts.place, pairs))
+        pipe = parts.inner_pipe()
+        if pipe is not None:
+            out.extend(grab_jobs(PartJob, inner, pipe, inner_posts, inner_seat, common, parts.place, pairs))
+        out.extend(splice_jobs(PartJob, inner, pairs, post_file, pipe, common, parts.place))
     return out
 
 
@@ -507,7 +584,8 @@ def _stringer(model, parts: StairParts, side: str, foot_holes: bool, posts: Sequ
     """One stringer (``side`` In or Out) where the first flight's stands, as every flight's is modelled: rolled and
     formed as the one-part build makes it, every tread's two bolt holes through it (a sketch square to it on the
     bolt lines), each of ``posts``' two holes (on the outer one, the posts moved onto the first flight), and
-    ``braces``' holes, the cross braces' caps' and the inner clips', moved onto it too. With the splitter's ``cuts``
+    ``braces``' holes, the cross braces' caps' and the inner clips', moved onto it too (on the inner one, the inside
+    handrail's ``posts``). With the splitter's ``cuts``
     it is cut at each joint (``split_parts``) and only its ``piece``-th piece from the bottom is kept."""
     where = parts.where
     layout = where.layout
@@ -522,8 +600,8 @@ def _stringer(model, parts: StairParts, side: str, foot_holes: bool, posts: Sequ
         if s._cut_both_ways(model, sketch, reach) is None:
             raise SolidWorksError(f"{name}: the bolt holes were not cut through the stringer.")
     for post in posts:
-        points = post_hole_points(post, parts.r_b)
-        name = f"ElitePost{post.index:02d}Holes"
+        points = post_hole_points(post, parts.r_a if side == "In" else parts.r_b, side == "In")
+        name = f"ElitePost{'In' if side == 'In' else ''}{post.index:02d}Holes"
         sketch = _sketch_through(model, points[0], _radial(post.phi), name,
                                  _circles(points, POST_HOLE_DIA_IN, name))
         if s._cut_both_ways(model, sketch, THK_IN + THICKNESS_IN + 0.1) is None:
@@ -536,13 +614,15 @@ def _stringer(model, parts: StairParts, side: str, foot_holes: bool, posts: Sequ
         keep_stringer_piece(model, piece, f"EliteSplit{side}")
 
 
-def _post(model, parts: StairParts, post: Post, profile: str) -> None:
-    """The post at its seat, shaped as post_sw shapes it, its two holes through its leg."""
-    way, face_r = _post_side(parts.r_b, False)
-    name = f"ElitePost{post.index:02d}"
+def _post(model, parts: StairParts, post: Post, profile: str, inner: bool = False) -> None:
+    """The post at its seat, shaped as post_sw shapes it, its two holes through its leg; with ``inner`` the inside
+    handrail's, on the inner stringer's tank face."""
+    walk = parts.r_a if inner else parts.r_b
+    way, face_r = _post_side(walk, inner)
+    name = f"ElitePost{'In' if inner else ''}{post.index:02d}"
     if _shaped_post(model, post, face_r, profile, name, way) is None:
         raise SolidWorksError(f"{name}: the post was not made.")
-    _holes(model, post, face_r, parts.r_b, name, way)  # no stringer here, so its check of the stringer fails
+    _holes(model, post, face_r, walk, name, way)  # no stringer here, so its check of the stringer fails
 
 
 def build(app, parts: StairParts, folder: Path, name: str = ASSEMBLY, progress=None,
@@ -564,8 +644,8 @@ def build(app, parts: StairParts, folder: Path, name: str = ASSEMBLY, progress=N
     knee_file = angle_profile(app) if frame_file or parts.braces else ""
     clip_file = clip_profile(app) if frame_file else ""
     clip4_file = clip_angle_profile(app) if parts.inner_clips else ""
-    todo = stair_items(jobs(parts, post_profile(app) if parts.posts else "", frame_file, knee_file, clip_file,
-                            clip4_file), built)
+    todo = stair_items(jobs(parts, post_profile(app) if parts.posts or parts.inner_posts() else "", frame_file,
+                            knee_file, clip_file, clip4_file), built)
     # The last build's files are this assembly's too: one whose shape is gone leaves it.
     project = Project(folder=folder, name=name, spec=TankSpec(), built={file: {} for file in built})
     # SolidWorks keeps one document per file name: a same-named part open from another folder would be overwritten.

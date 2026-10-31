@@ -64,20 +64,21 @@ ROUND_BAR_CHAMFER_IN = 0.25  # 45 degrees on its upper end, to lead the upper pi
 def add_rail_splits(
     model, places, per_flight: int, splits, *, r_a: float, r_b: float, profile: str, rails: bool = True,
     outer_pipe_top: float | None = GRAB_TOP_IN, inner_pipe_top: float | None = None, progress=None,
-    rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None,
+    rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None, inner_rails: bool = False,
 ) -> BraceResult:
     """Each split: ``splits`` are (side, low post, high post) with the posts from ``post_sw.post_layout`` (the outer
-    stringer's, or the inner one's), the split in the middle of the bay between them. On the outer side the top
-    rail and midrail get the bolted connectors when ``rails``, and the pipe, if ``outer_pipe_top`` is not None,
-    its round bar; on the inner side only the pipe (``inner_pipe_top``)."""
+    stringer's, or the inner one's), the split in the middle of the bay between them. The outer top rail and
+    midrail get the bolted connectors when ``rails``, the inside ones when ``inner_rails`` (the inside's full
+    guardrail), and a side's pipe its round bar if its top (``outer_pipe_top``, ``inner_pipe_top``) is not None."""
     made, missed = [], []
     for side, low, high in splits:
         inner = side == "inner"
         name = f"EliteRailSplit{'In' if inner else ''}{low.index:02d}"
         try:
             parts = []
-            if not inner and rails:
-                _connectors(model, places, per_flight, low, high, r_b, profile, name, rail_top, flight_mid)
+            if inner_rails if inner else rails:
+                _connectors(model, places, per_flight, low, high, r_a if inner else r_b, profile, name, rail_top,
+                            flight_mid, -1.0 if inner else 1.0)
                 parts.append("the top rail and midrail on two L2x2x1/4 connectors flat on the rails' outside, their "
                              "standing legs back to back with two 5/8 in bolts in 11/16 holes 12 in apart")
             top = inner_pipe_top if inner else outer_pipe_top
@@ -118,30 +119,46 @@ def connector_ends(flight, phi: float, face_r: float) -> tuple[float, float, tup
     return top, foot, up
 
 
+def connector_heel(face_r: float, side: float = 1.0) -> float:
+    """The radius of a connector's heel, whose flat leg lies on the rails' outside face ``face_r``. Inside that face
+    is concave toward the leg, so the flat leg stands off it by its sag and touches it at its far edge, as the
+    inside posts do on the inner stringer (``post_sw._post_side``)."""
+    return face_r if side > 0 else face_r - LEG_IN * LEG_IN / (2.0 * face_r) - 0.001
+
+
+def gap_radii(face_r: float, side: float = 1.0) -> tuple[float, float]:
+    """The radii a splice's gap is cut between: across the rails, whose outside face is ``face_r``, from a little on
+    their walk side to past their top leg, away from the walk (``side`` +1 outside, -1 inside)."""
+    return (face_r - 0.5, face_r + LEG_IN) if side > 0 else (face_r - LEG_IN, face_r + 0.5)
+
+
 def _connectors(model, places, per_flight: int, low: Post, high: Post, r_b: float, profile: str, name: str,
-                rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None) -> None:
-    face_r = r_b + s.THICKNESS_IN  # the rails' outside face, on the posts' walk side
-    flight = _flights(places, per_flight, r_b, (), rail_top, flight_mid)[(low.index - 1) // per_flight]
+                rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None, side: float = 1.0) -> None:
+    """The splice's gap through the rails and its two connectors. ``r_b`` is the walk face of the stringer the rails
+    are on, the outer one's (``side`` +1) or the inner one's (-1), where everything is mirrored toward the tank."""
+    face_r = r_b + side * s.THICKNESS_IN  # the rails' outside face, on the posts' walk side
+    flight = _flights(places, per_flight, r_b, (), rail_top, flight_mid, side)[(low.index - 1) // per_flight]
     phi = split_angle(low, high)
     top, foot, up = connector_ends(flight, phi, face_r)
     half = GAP_IN / 2.0 / face_r
-    s._sector_cut(model, (face_r - 0.5, face_r + LEG_IN), phi - half, phi + half, foot - BAR_IN,
+    s._sector_cut(model, gap_radii(face_r, side), phi - half, phi + half, foot - BAR_IN,
                   flight.top(phi) + 1.0, f"{name}Gap")
     s._rebuild(model)
     # Stood long enough to take both ends' slope over a leg, then cut parallel to the rails.
     climb = LEG_IN * flight.rise_per_rad / face_r + 0.5
     ys = (foot - climb, top + climb)
+    heel = connector_heel(face_r, side)
     for label, away in (("Low", -1.0), ("High", 1.0)):
         before = s._body_names(model)
         # The heel on the rails' outside face: the leg along the rails lies flat on them, the other stands out
         # square to them at the cut, back to back with the other connector's.
-        _upright_angle(model, phi, face_r, 1.0, away, ys, LEG_IN, profile, f"{name}{label}")
-        _trim(model, before, _world(phi, face_r, 0.0, top), up, f"{name}{label}Top")
-        _trim(model, before, _world(phi, face_r, 0.0, foot), tuple(-v for v in up), f"{name}{label}Foot")
-        body = _miter_piece(model, before, _world(phi, face_r, 0.0, foot))
-        standing_cutback(model, body, phi, face_r, away, top, foot, f"{name}{label}")
+        _upright_angle(model, phi, heel, side, away, ys, LEG_IN, profile, f"{name}{label}")
+        _trim(model, before, _world(phi, heel, 0.0, top), up, f"{name}{label}Top")
+        _trim(model, before, _world(phi, heel, 0.0, foot), tuple(-v for v in up), f"{name}{label}Foot")
+        body = _miter_piece(model, before, _world(phi, heel, 0.0, foot))
+        standing_cutback(model, body, phi, heel, away, top, foot, f"{name}{label}", side)
     middle = (foot + top) / 2.0
-    points = [_world(phi, face_r + HOLE_GAUGE_IN, -THK_IN, middle + d)
+    points = [_world(phi, heel + side * HOLE_GAUGE_IN, -THK_IN, middle + d)
               for d in (-BOLT_SPACE_IN / 2.0, BOLT_SPACE_IN / 2.0)]
     radius = BOLT_HOLE_IN / 2.0 * _INCH
 
@@ -157,18 +174,20 @@ def _connectors(model, places, per_flight: int, low: Post, high: Post, r_b: floa
         raise SolidWorksError(f"{name}: the connector bolt holes were not cut.")
 
 
-def standing_cutback(model, body, phi: float, face_r: float, away: float, top: float, foot: float, name: str) -> None:
+def standing_cutback(model, body, phi: float, face_r: float, away: float, top: float, foot: float, name: str,
+                     way: float = 1.0) -> None:
     """A connector's standing leg cut back 45 degrees from ``top`` at its root down to its toe, as the posts'
     outstanding legs are (``post_sw._cutback``). ``top`` is the connectors' top at the cut, so the two butted legs
     are cut back flush, one 45 degree face across both. Cut on ``body`` alone: the other connector's standing leg is
     right behind it, and the top climbs with the rails across the leg, so the cut reaches well over it.
-    ``away`` is the way its flat leg runs along the rails; ``foot`` is where its foot is at the cut.
+    ``away`` is the way its flat leg runs along the rails; ``foot`` is where its foot is at the cut. ``way`` is the
+    way its standing leg stands out: away from the tank (+1), or toward it on the inside (-1).
     """
     face_t = away * THK_IN
     normal = tuple(away * v for v in _travel(phi))
-    face = _face_at([body], _world(phi, face_r + THK_IN + LEG_IN / 2.0, face_t, foot + 2.5), normal)
-    root, past = face_r + THK_IN, face_r + LEG_IN + 0.5
-    corners = ((root, top + 0.5), (root, top), (past, top - (past - root)), (past, top + 0.5))
+    face = _face_at([body], _world(phi, face_r + way * (THK_IN + LEG_IN / 2.0), face_t, foot + 2.5), normal)
+    root, past = face_r + way * THK_IN, face_r + way * (LEG_IN + 0.5)
+    corners = ((root, top + 0.5), (root, top), (past, top - abs(past - root)), (past, top + 0.5))
 
     def draw(manager, to_sketch):
         pts = [to_sketch(_world(phi, r, face_t, y)) for r, y in corners]

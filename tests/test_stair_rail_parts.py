@@ -133,3 +133,65 @@ def test_a_spliced_flight_has_a_part_for_each_piece_of_its_rails_and_the_splice_
                   "Splice at post 9, high connector", "Splice at post 9, round bar", "Flight 1 top rail"):
         assert label in labels
     assert "Flight 2 top rail" not in labels
+
+
+def test_the_inside_full_guardrail_is_the_outsides_pieces_mirrored_onto_c():
+    from swauto.stair.stair_sw import InnerRail
+
+    parts = _parts(inner_rail=InnerRail(posts=(2, 4, 6)))
+    labels = [job.label for job in jobs(parts, "L2x2", "C4", "L3", "L6")]
+    for label in ("Inside flight post", "Platform 1 inside post A", "Platform 1 inside post B",
+                  "Platform 1 inside post M1", "Platform 1 inside toe plate", "Flight 1 inside top rail",
+                  "Flight 2 inside top rail", "Platform 1 inside rail end A", "Platform 1 inside top rail level B",
+                  "Platform 1 inside top rail", "Flight 1 inside midrail", "Platform 1 inside midrail level A",
+                  "Platform 1 inside midrail", "Inside foot end"):
+        assert label in labels
+    assert "Flight 1 inside grab rail" not in labels  # no inside grab rail unless asked
+    inner = parts.inner_rails()
+    for spot in post_spots(inner, 1):  # on C's tank side, its holes through the flat leg into C
+        points, axis = channel_holes(inner, spot)
+        assert spot.way == -1.0
+        for p in points:
+            assert p[0] * axis[0] + p[2] * axis[2] == pytest.approx(spot.heel_r - THK_IN)
+    built = {job.label: job for job in jobs(parts, "L2x2", "C4", "L3", "L6")}
+    assert len(built["Platform 1 side C"].params["post_holes"]) == 3
+    assert len(built["Flight 1 inner stringer"].params["posts"]) == 3  # the inside posts bolt through it
+    # Every inside piece has a file of its own: none shares an outside piece's.
+    outside = {job.fingerprint for job in jobs(_parts(), "L2x2", "C4", "L3", "L6")}
+    for job in jobs(parts, "L2x2", "C4", "L3", "L6"):
+        if "nside" in job.label:
+            assert job.fingerprint not in outside
+
+
+def test_the_inside_pipe_handrail_is_only_the_pipe_on_its_posts():
+    from swauto.stair.grab_sw import GrabRail
+    from swauto.stair.stair_sw import InnerRail
+
+    parts = _parts(inner_rail=InnerRail(posts=(2, 4, 6), full=False), rail_splits=(("inner", 9),))
+    labels = [job.label for job in jobs(parts, "L2x2", "C4", "L3", "L6")]
+    assert "Inside flight post" in labels and "Inside grab rail bracket" in labels
+    assert "Flight 1 inside grab rail" in labels and "Flight 2 inside grab rail piece 2 of 2" in labels
+    assert "Inside splice at post 9, round bar" in labels
+    assert not any(label.startswith("Platform 1 inside") or "inside top rail" in label for label in labels)
+    built = {job.label: job for job in jobs(parts, "L2x2", "C4", "L3", "L6")}
+    assert built["Platform 1 side C"].params["post_holes"] == []
+    # STWE's pipe runs from each flight's first tread to its top tread: no platform rail stops it.
+    from swauto.stair.rail_parts import grab_pipes
+
+    inner = parts.inner_rails()
+    for held in grab_pipes(inner, GrabRail(top=34.0), parts.inner_posts()):
+        _k, pipe, lo, hi = held
+        flight = pipe.flight
+        assert lo < flight.front(flight.first) + 0.01 and hi > flight.front(flight.last) - 0.01
+
+
+def test_on_a_stair_narrower_than_its_platform_the_inside_still_meets_c_at_its_corner():
+    from swauto.stair.stair_sw import InnerRail
+
+    labels = [job.label for job in jobs(_parts(tread_in=30.0, inner_rail=InnerRail(posts=(2, 4, 6))),
+                                        "L2x2", "C4", "L3", "L6")]
+    assert "Platform 1 side post A" in labels  # the outside wraps the corners
+    for label in ("Platform 1 inside post A", "Platform 1 inside rail end A", "Platform 1 inside top rail level A",
+                  "Platform 1 inside top rail", "Platform 1 inside toe plate"):
+        assert label in labels  # the inside does not
+    assert not any("inside side post" in label or "inside top rail run" in label for label in labels)

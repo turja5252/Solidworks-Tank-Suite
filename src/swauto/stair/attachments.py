@@ -124,6 +124,7 @@ class Rules:
     outer_rail_ft: float = OUTER_RAIL_FT
     inner_rail_ft: float = INNER_RAIL_FT
     ground_clip: bool = True
+    inner_full: bool = True  # the inside handrail is the full guardrail, on the outside's stock; else STWE's pipe
 
 
 @dataclass(frozen=True)
@@ -300,9 +301,10 @@ def applied(arrangement: StairArrangement, result: Plan) -> StairArrangement:
         shape = stair.platform(k)
         radials = tuple(sorted(float(s.tread) for s in result.of_kind(RADIAL) if s.flight == k))
         # The end posts stand where the build's post distance puts them; the plan's others go between.
-        posts = tuple(sorted(float(s.tread) for s in result.of_kind(PLATFORM_POST, OUTER) if s.flight == k
-                             and POST_CLEAR_IN <= s.tread <= shape.length_in - POST_CLEAR_IN))
-        shapes.append(replace(shape, radials=radials, posts=posts))
+        posts = {side: tuple(sorted(float(s.tread) for s in result.of_kind(PLATFORM_POST, side) if s.flight == k
+                                    and POST_CLEAR_IN <= s.tread <= shape.length_in - POST_CLEAR_IN))
+                 for side in (OUTER, INNER)}
+        shapes.append(replace(shape, radials=radials, posts=posts[OUTER], inner_posts=posts[INNER]))
     return replace(arrangement, stair=replace(stair, platform_specs=tuple(shapes)),
                    braces=tuple(sorted(s.pan(per_flight) for s in result.of_kind(KNEE))),
                    clips=tuple(sorted(s.pan(per_flight) for s in result.of_kind(CLIP))), splits=splits)
@@ -530,7 +532,8 @@ def _rail_splits(ctx: _Context, k: int, side: str, posts: list[int], pins: tuple
     last split reaches within its stock length, as few splits as that takes."""
     pinned = [p for p in pins if p.kind == RAIL_SPLIT and p.flight == k and p.side == side and p.tread in posts[:-1]]
     gone = {key[2] for key in ctx.removed if key[:2] == (RAIL_SPLIT, k) and key[3] == side}
-    stock = 12.0 * (ctx.rules.outer_rail_ft if side == OUTER else ctx.rules.inner_rail_ft)
+    # The full guardrail inside is the outside's angle and flat bar; STWE's inside handrail is pipe.
+    stock = 12.0 * (ctx.rules.outer_rail_ft if side == OUTER or ctx.rules.inner_full else ctx.rules.inner_rail_ft)
     step = rail_step_in(ctx.where, side)
     spots: list[Spot] = []
     if len(posts) < 2:

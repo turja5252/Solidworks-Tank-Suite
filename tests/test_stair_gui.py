@@ -354,3 +354,40 @@ def test_the_platform_shapes_are_read_into_the_stair(tk_window):
     sides.set(SIDES_STRAIGHT)
     _type(_entry(page, "Mid platforms: length"), "110")
     assert any("roll them" in str(w.cget("text")) for w in _widgets(page) if isinstance(w, ttk.Label))
+
+
+def test_the_stage_plan_counts_the_inside_full_guardrail_or_its_pipe():
+    from swauto.stair.grab_sw import GrabRail
+    from swauto.stair.stair_sw import InnerRail
+    from swauto.stair.stringer import PlatformSpec
+
+    common = {"platforms": 1, "posts": (2, 4, 6), "top_rail": True, "mid_rail": True, "shapes": (PlatformSpec(96.0),)}
+    full = {key for keys, _label in _stair_stage_plan(
+        13, inner_rail=InnerRail(posts=(2, 4, 6), grab=GrabRail()), **common) for key in keys}
+    for key in ("ElitePostIn09 placed", "ElitePlatform07PostInA placed", "ElitePlatform07PostInM1 holes cut",
+                "ElitePlatform07ToeIn placed", "EliteRailInF1 placed", "ElitePlatform07RailInB placed",
+                "ElitePlatform07MidIn placed", "EliteRailInBottomEnd placed", "EliteGrabInF2 placed",
+                "EliteGrabInBracket13 copied"):
+        assert key in full, key
+    piped = [label for _keys, label in _stair_stage_plan(
+        13, inner_rail=InnerRail(posts=(2, 4, 6), full=False), **common)]
+    assert "inside handrail pipe flight 1" in piped and "inside top rail flight 1" not in piped
+
+
+def test_the_inside_handrail_and_its_grab_rail_are_the_tabs_to_choose(tk_window):
+    page = ttk.Frame(tk_window)
+    shared: dict = {}
+    build_stringer_tab(page, tk.StringVar(master=tk_window), shared)
+    assert shared["stair_rules"]().inner_full  # the full guardrail by default
+    saved = shared["stairway_inputs"]()
+    assert saved["inside_handrail"] == "Full guardrail" and saved["inner_grab_rail"] is False
+    combo = next(w for w in _widgets(page) if isinstance(w, ttk.Combobox) and "Pipe handrail only" in w.cget("values"))
+    combo.set("Pipe handrail only")
+    assert not shared["stair_rules"]().inner_full
+    _box(page, "inside").invoke()
+    assert shared["stairway_inputs"]()["inner_grab_rail"] is True
+    other = ttk.Frame(tk_window)
+    fresh: dict = {}
+    build_stringer_tab(other, tk.StringVar(master=tk_window), fresh)
+    fresh["load_stairway"](shared["stairway_inputs"]())
+    assert not fresh["stair_rules"]().inner_full and fresh["stairway_inputs"]()["inner_grab_rail"] is True

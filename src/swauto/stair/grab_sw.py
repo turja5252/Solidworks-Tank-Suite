@@ -93,21 +93,25 @@ def add_grab_rails(
     model, places, per_flight: int, posts: list[Post], *, r_a: float, r_b: float, platforms: int,
     top_platform: bool, post_in: float = PLATFORM_POST_IN, mid_top: float = PLATFORM_MID_TOP_IN,
     grab: GrabRail = GrabRail(), platform_b: float | None = None, progress=None, inner: bool = False,
-    shapes: tuple = (), rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None,
+    shapes: tuple = (), rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None, railed: bool | None = None,
 ) -> BraceResult:
     """The pipe along every flight with its two caps, and a PC #34 to it from each flight post.
 
     ``places`` are every pan, lowest first; ``posts`` are the flight posts (``post_sw.post_layout``);
     ``post_in`` and ``mid_top`` place the platform midrail miters the pipe stops at. ``r_b`` is the
     outer stringer's walk face, ``platform_b`` the platform's when the treads are narrower. ``inner`` runs
-    the inside handrail's pipe instead, on the inner stringer's posts (Elite STWE): over the treads from each
-    flight's first tread's front edge to its top tread's, the inside platforms having no rail yet.
+    the pipe on the inner stringer's posts instead. Where that side's platforms have their rails (``railed``; None:
+    the outside's have, the inside's not) each flight's pipe stops at the midrail miters, as the outer one does: the
+    inside grab rail on the inside's full guardrail. Where they have none it runs over the treads from each flight's
+    first tread's front edge to its top tread's: Elite STWE's inside pipe handrail.
     """
+    if railed is None:
+        railed = not inner
     way, face_r = _post_side(r_a if inner else r_b, inner)  # the flight posts' walk side: against the stringer
     radius = face_r - way * (BRACKET_OVERALL_IN - BRACKET_IN / 2.0)  # over the middle of the PC #34's upright
     pb = r_b if platform_b is None else platform_b
-    flights = _flights(places, per_flight, r_a if inner else r_b, shapes, rail_top, flight_mid)
-    landings = 0 if inner else len(flights) - 1 + (1 if top_platform else 0)
+    flights = _flights(places, per_flight, r_a if inner else r_b, shapes, rail_top, flight_mid, way)
+    landings = len(flights) - 1 + (1 if top_platform else 0) if railed else 0
     prefix = "EliteGrabIn" if inner else "EliteGrab"
     pipes: list[tuple[_Pipe, float, float] | None] = []
     for k, flight in enumerate(flights):
@@ -115,7 +119,7 @@ def add_grab_rails(
         if not any((post.index - 1) // per_flight == k for post in posts):
             pipes.append(None)  # nothing would hold it: the rules or the game left this flight without posts
             continue
-        if k == 0 or inner:
+        if k == 0 or not railed:
             low = flight.front(flight.first)
         else:
             low = _miter_phi(flights[k - 1], flight, face_r, r_a, pb, post_in, mid_top, "B")
@@ -163,11 +167,12 @@ def add_grab_rails(
         _progress(progress, f"{name} {'copied' if copied else 'placed'}")
     with contextlib.suppress(Exception):
         s._hide_construction(model)
-    where = ("inner posts, rolled to a helix on each flight from its first tread's front edge to its top tread's"
-             if inner else "outer posts, rolled to a helix on each flight, from tread 1 and the midrail miters at the "
-             "platforms")
+    where = (f"{'inner' if inner else 'outer'} posts, rolled to a helix on each flight, from tread 1 and the midrail "
+             "miters at the platforms" if railed else
+             "inner posts, rolled to a helix on each flight from its first tread's front edge to its top tread's")
+    what = "Grab rail" if not inner else "Inside grab rail" if railed else "Inside handrail"
     note = (
-        f"{'Inside handrail' if inner else 'Grab rail'}: 1-1/2 in Sch 40 pipe {grab.top:g} in over the stringer's "
+        f"{what}: 1-1/2 in Sch 40 pipe {grab.top:g} in over the stringer's "
         f"top edge on the walk side of the {where}, "
         f"1-5/8 in round caps on both ends, and a PC #34 3/4 x 3/4 bracket under it from each flight post."
         + (f" No bracket at post(s) {', '.join(skipped)}: the pipe does not reach them." if skipped else "")

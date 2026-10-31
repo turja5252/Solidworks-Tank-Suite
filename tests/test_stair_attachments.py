@@ -119,15 +119,17 @@ def test_posts_stand_at_the_bottom_top_and_every_four_gaps_off_cuts_and_braces()
 
 def test_rails_are_split_mid_bay_within_their_stock_length():
     arrangement = _arrangement()
-    result = plan(arrangement, SHELL, Rules(sides=(OUTER, INNER)))
     where = stair_places(arrangement.stair, arrangement.stair.shell_od_in)
-    for side, stock_ft in ((OUTER, 40.0), (INNER, 20.0)):
-        posts = sorted(s.tread for s in result.of_kind(POST, side))
-        splits = sorted(s.tread for s in result.of_kind(RAIL_SPLIT, side))
-        assert splits and set(splits) <= set(posts)
-        ends = [posts[0]] + [(t + posts[posts.index(t) + 1]) / 2.0 for t in splits] + [posts[-1]]
-        step = rail_step_in(where, side)
-        assert max(b - a for a, b in zip(ends, ends[1:], strict=False)) * step <= stock_ft * 12.0 + 1e-6
+    # The inside full guardrail is the outside's angle and flat bar (40 ft); STWE's inside pipe comes in 20 ft.
+    for full, inner_ft in ((True, 40.0), (False, 20.0)):
+        result = plan(arrangement, SHELL, Rules(sides=(OUTER, INNER), inner_full=full))
+        for side, stock_ft in ((OUTER, 40.0), (INNER, inner_ft)):
+            posts = sorted(s.tread for s in result.of_kind(POST, side))
+            splits = sorted(s.tread for s in result.of_kind(RAIL_SPLIT, side))
+            assert splits and set(splits) <= set(posts)
+            ends = [posts[0]] + [(t + posts[posts.index(t) + 1]) / 2.0 for t in splits] + [posts[-1]]
+            step = rail_step_in(where, side)
+            assert max(b - a for a, b in zip(ends, ends[1:], strict=False)) * step <= stock_ft * 12.0 + 1e-6
 
 
 def test_pins_stay_and_the_rest_reflow():

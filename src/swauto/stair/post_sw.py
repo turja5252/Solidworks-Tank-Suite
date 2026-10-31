@@ -21,6 +21,9 @@ platform end (the lisp's "move posts inwards"), the other leg straight out. It r
 flights, with the outstanding leg cut back 45 degrees the same way, and bolts
 through the web with two 13/16 holes 1-3/4 in apart, one above the other on the
 channel's mid-depth, 1-1/8 in from the heel.
+
+The inside handrail's platform posts are the same on channel C, the inner side (the user, 2026-10-30: "same rule
+as outer"): on its tank side, the outstanding leg toward the shell.
 """
 
 from __future__ import annotations
@@ -37,6 +40,9 @@ from swauto.stair.heights import RAIL_TOP_IN  # the top rail's top edge above th
 from swauto.stair.platform_sw import (
     CHANNEL_IN,
     SECTIONS,
+    SHELL_CLIP_THK_IN,
+    TAB_FROM_END_IN,
+    TAB_THK_IN,
     WEB_IN,
     _cut,
     _hole_in,
@@ -63,6 +69,8 @@ HOLE_DIA_IN = 0.8125
 PLATFORM_POST_IN = 4.0  # heel in from the platform end, along the outer channel
 PLATFORM_FOOT_IN = 0.25  # above the channel bottom
 PLATFORM_HOLE_SPACE_IN = 1.75  # one above the other, centered on the channel's depth
+# Channel C's ends carry a shell tab and its shell clip on the tank side, where the inside handrail's end posts stand.
+INNER_POST_IN_MIN = TAB_FROM_END_IN + TAB_THK_IN + SHELL_CLIP_THK_IN + 0.25
 
 
 @dataclass(frozen=True)
@@ -171,7 +179,7 @@ def add_handrail_posts(
     note = (
         f"L2x2x1/4 handrail posts in front of tread{'s' if len(posts) > 1 else ''} {treads} on the "
         f"{'inner stringer, on its tank face' if inner else 'outer stringer'}, tops cut along the rail "
-        f"{TOP_GAP_IN:g} in under {'the pipe' if inner else 'the 42 in top rail'} and the outstanding leg "
+        f"{TOP_GAP_IN:g} in under the rail they carry and the outstanding leg "
         "cut back 45 degrees, two 13/16 holes each through the stringer."
         + (f" Holes missed at tread(s) {', '.join(missed)}." if missed else "")
     )
@@ -211,17 +219,24 @@ def side_post_heel(lines) -> float:
 def add_platform_posts(
     model, tread_index: int, *, phi: float, tread_top: float, r_a: float, r_b: float, profile: str,
     post_in: float = PLATFORM_POST_IN, stringer_b: float | None = None, progress=None, spec=None,
-    rail_top: float = RAIL_TOP_IN,
+    rail_top: float = RAIL_TOP_IN, inner: bool = False,
 ) -> BraceResult:
     """Posts at both ends of the outer channel of the platform after tread ``tread_index``,
     each with its heel ``post_in`` in from the platform end, and between them where ``spec`` (the
     platform's shape) puts them, along a straight outer channel or a rolled one. When the outer
     stringer's walk face ``stringer_b`` is in from the platform's ``r_b``, the end ones stand on the
-    side channels instead."""
-    lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b, stringer_b=stringer_b, spec=spec)
-    between = [] if spec is None else list(spec.post_positions())
+    side channels instead. With ``inner`` they go on channel C for the inside handrail, at the same places along
+    it; the inner stringer always meets C at its corner, so there are never side posts."""
+    try:
+        check_inner_post_in(post_in, inner)
+    except ValueError as exc:
+        raise SolidWorksError(str(exc)) from None
+    lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b, stringer_b=None if inner else stringer_b,
+                           spec=spec)
+    between = [] if spec is None else list(spec.post_positions(inner))
     ys = (lines.top - CHANNEL_IN + PLATFORM_FOOT_IN, tread_top + rail_top - TOP_GAP_IN)
-    name = f"ElitePlatform{tread_index:02d}Post"
+    name = f"ElitePlatform{tread_index:02d}Post{'In' if inner else ''}"
+    way = -1.0 if inner else 1.0
     middle = lines.top - CHANNEL_IN / 2.0
     hole_ys = (middle - PLATFORM_HOLE_SPACE_IN / 2.0, middle + PLATFORM_HOLE_SPACE_IN / 2.0)
     places = []  # (label, angle or None for an end post, away)
@@ -234,42 +249,57 @@ def add_platform_posts(
     missed = []
     for label, angle, away in places:
         tag = f"{name}{label}"
-        mid, web_r, heel_t = platform_post_frame(lines, label, angle, post_in)
-        _upright_angle(model, mid, web_r, 1.0, away, ys, LEG_IN, profile, tag, heel_t=heel_t)
-        _cutback(model, mid, web_r, heel_t, away, ys[0], ys[1], tag)
+        mid, web_r, heel_t = platform_post_frame(lines, label, angle, post_in, inner)
+        _upright_angle(model, mid, web_r, way, away, ys, LEG_IN, profile, tag, heel_t=heel_t)
+        _cutback(model, mid, web_r, heel_t, away, ys[0], ys[1], tag, inward=way)
         _progress(progress, f"{tag} placed")
-        holes = _platform_holes(model, mid, web_r, heel_t + away * HOLE_GAUGE_IN, hole_ys, tag)
+        back = lines.r_in if inner and lines.rolled else web_r  # a rolled C's post stands off its back by its sag
+        holes = _platform_holes(model, mid, web_r, heel_t + away * HOLE_GAUGE_IN, hole_ys, tag, way, back)
         if not holes:
             missed.append(label)
         _progress(progress, f"{tag} holes {'cut' if holes else 'missed'}")
     with contextlib.suppress(Exception):
         s._hide_construction(model)
-    ends = "" if side_note else f"{post_in:g} in in from both ends of the outer channel"
+    channel = "channel C, on its tank side" if inner else "the outer channel"
+    ends = "" if side_note else f"{post_in:g} in in from both ends" + ("" if inner else " of the outer channel")
     more = f"{len(between)} between, by the radials" if between else ""
     note = (
         (side_note + " " if side_note else "")
-        + (f"Platform after tread {tread_index}: L2x2x1/4 posts {ys[1] - ys[0]:.2f} in long, "
-           f"{', and '.join(part for part in (ends, more) if part)} on the outer channel, outstanding legs cut "
+        + (f"Platform after tread {tread_index}: L2x2x1/4 {'inside ' if inner else ''}posts {ys[1] - ys[0]:.2f} in "
+           f"long, {', and '.join(part for part in (ends, more) if part)} on {channel}, outstanding legs cut "
            "back 45 degrees, bolted through its web with two 13/16 holes 1-3/4 in apart." if places else "")
         + (f" Holes missed at {', '.join(missed)}." if missed else "")
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note.strip())
 
 
-def platform_post_frame(lines, label: str, angle: float | None, post_in: float) -> tuple[float, float, float]:
-    """Where a post on a platform's outer channel stands, as (frame angle, the channel back's radius on it, the
-    heel along the travel from it): an end post (``angle`` None) ``post_in`` in from its end, A or B by
-    ``label``, any other at ``angle``. A straight channel is framed on the platform's bisector, a rolled one
-    on the post's own radial line, where the arc runs square to it."""
+def check_inner_post_in(post_in: float, inner: bool = True) -> float:
+    """The inside platform posts' distance in from the ends, if it keeps them clear of the shell tabs and clips at C's
+    ends (the outer ones have none)."""
+    if inner and post_in < INNER_POST_IN_MIN - 1e-9:
+        raise ValueError(f"The inside platform posts must stand at least {INNER_POST_IN_MIN:g} in in from the ends, "
+                         "clear of the shell clips' tabs on channel C.")
+    return post_in
+
+
+def platform_post_frame(lines, label: str, angle: float | None, post_in: float,
+                        inner: bool = False) -> tuple[float, float, float]:
+    """Where a post on a platform's outer channel (with ``inner``, on channel C) stands, as (frame angle, its heel's
+    radius on it, the heel along the travel from it): an end post (``angle`` None) ``post_in`` in from its end, A or
+    B by ``label``, any other at ``angle``. A straight channel is framed on the platform's bisector, a rolled one
+    on the post's own radial line, where the arc runs square to it. The heel is on the channel's back, but on a
+    rolled C, whose back is concave where the post stands, the flat leg stands off it by its sag and touches it at
+    its end, as the inside posts do on the inner stringer (``_post_side``)."""
+    back = lines.r_in if inner else lines.r_out
     half = (lines.phi_b - lines.phi_a) / 2.0
     if lines.rolled:
         if angle is None:
-            angle = lines.phi_a + post_in / lines.r_out if label == "A" else lines.phi_b - post_in / lines.r_out
-        return angle, lines.r_out, 0.0
+            angle = lines.phi_a + post_in / back if label == "A" else lines.phi_b - post_in / back
+        return angle, back - (LEG_IN * LEG_IN / (2.0 * back) + 0.001 if inner else 0.0), 0.0
     mid = lines.phi_a + half
-    web_r = lines.r_out * math.cos(half)  # the outer channel's back, on the bisector
+    web_r = back * math.cos(half)  # the channel's back, on the bisector
     if angle is None:
-        end_t = lines.r_out * math.sin(half) - post_in
+        end_t = back * math.sin(half) - post_in
         if end_t < LEG_IN + 1.0:
             raise SolidWorksError(f"Platform posts {post_in:g} in from the ends would meet in the middle.")
         return mid, web_r, -end_t if label == "A" else end_t
@@ -325,9 +355,11 @@ def _side_holes(model, line_phi: float, r: float, away: float, hole_ys: tuple[fl
     return all(_hole_in(model, p) for p in points) and all(_channel_hole(model, p) for p in in_web)
 
 
-def _platform_holes(model, mid: float, web_r: float, t: float, hole_ys: tuple[float, float], name: str) -> bool:
-    """13/16 rounds through the post's flat leg and the outer channel's web."""
-    points = [_world(mid, web_r + THK_IN, t, y) for y in hole_ys]
+def _platform_holes(model, mid: float, web_r: float, t: float, hole_ys: tuple[float, float], name: str,
+                    way: float = 1.0, back: float | None = None) -> bool:
+    """13/16 rounds through the post's flat leg and the channel's web: the outer channel's, its back at the heel
+    ``web_r``, or with ``way`` -1 channel C's, its back at ``back``."""
+    points = [_world(mid, web_r + way * THK_IN, t, y) for y in hole_ys]
     radius = HOLE_DIA_IN / 2.0 * _INCH
 
     def draw(manager, to_sketch):
@@ -339,7 +371,8 @@ def _platform_holes(model, mid: float, web_r: float, t: float, hole_ys: tuple[fl
     face = _face_at(s._bodies(model), points[0], _radial(mid))
     if not _cut(model, face, f"{name}Holes", draw, THK_IN + WEB_IN + 0.1):
         return False
-    in_web = [_world(mid, web_r - WEB_IN / 2.0, t, y) for y in hole_ys]
+    back = web_r if back is None else back
+    in_web = [_world(mid, back - way * WEB_IN / 2.0, t, y) for y in hole_ys]
     return all(_hole_in(model, p) for p in points) and all(_channel_hole(model, p) for p in in_web)
 
 

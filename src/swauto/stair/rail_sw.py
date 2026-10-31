@@ -16,6 +16,11 @@ two 13/16 bolts 11-1/2 in apart.
 The platform's rail is its own piece between its two posts. The bottom flight starts one
 tread run below its first tread, where the stringer's top edge comes down to tread zero, as
 the lisp's automatic lower overhang does.
+
+The inside handrail is the same, mirrored (the user, 2026-10-30): along the inner stringer's tank face, every
+leg that reaches out from the walk reaching toward the tank, and on each platform along channel C, its posts on
+C's tank side. The inner stringer always meets C at its corner, so no inside platform has the narrow stair's
+corner pieces.
 """
 
 from __future__ import annotations
@@ -84,13 +89,14 @@ class _Flight:
     last: object
     rise_per_rad: float
     step: float
-    r_b: float
+    r_b: float  # the walk face of the stringer the rails are on
     platform: PlatformSpec = PlatformSpec()  # the shape of the platform after it, if there is one
     rail_top: float = RAIL_TOP_IN  # the top rail's top edge over the stringer's top edge, and over a platform's grating
     flight_mid: float = MID_TOP_IN  # the midrail's top edge over the stringer's top edge
+    side: float = 1.0  # +1 the outside handrail, on the outer stringer and channel D; -1 the inside, on the inner and C
 
     def front(self, place) -> float:
-        """Angle of a tread's front edge on the outer stringer, where the lisp develops it."""
+        """Angle of a tread's front edge on the stringer's walk face, where the lisp develops it."""
         return place.phi - TREAD_DEPTH_IN / 2.0 / self.r_b
 
     def top(self, phi: float) -> float:
@@ -121,23 +127,24 @@ def add_top_rails(
     model, places, per_flight: int, *, r_a: float, r_b: float, platforms: int, top_platform: bool, profile: str,
     post_in: float = PLATFORM_POST_IN, mid_top: float = PLATFORM_MID_TOP_IN, platform_b: float | None = None,
     progress=None, shapes: tuple = (), rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None,
+    inner: bool = False,
 ) -> BraceResult:
-    """The outer top rail along every flight and across every platform.
+    """The outer top rail along every flight and across every platform; with ``inner`` the inside one, on the inner
+    stringer and along each platform's channel C.
 
     ``places`` are every pan, lowest first; ``profile`` is the L2x2x1/4 file
     (``post_sw.post_profile``); ``post_in`` is where the platform posts stand in from the ends;
-    ``mid_top`` is the platform midrail's top, where the end pieces come down to. ``r_b`` is the
-    outer stringer's walk face, ``platform_b`` the platform's when the treads are narrower; ``shapes``
+    ``mid_top`` is the platform midrail's top, where the end pieces come down to. ``r_a`` and ``r_b`` are the
+    inner and outer stringers' walk faces, ``platform_b`` the platform's when the treads are narrower; ``shapes``
     the platforms' shapes, mid ones then the top one (a rolled platform's own rail is rolled too). ``rail_top`` is
     the rail's height and ``flight_mid`` the flights' midrail's (None: halfway up), for the joints.
     """
     check_platform_mid_top(mid_top, rail_top)
-    face_r = r_b + THICKNESS_IN
+    face_r, flights = _rails_on(places, per_flight, r_a, r_b, shapes, rail_top, flight_mid, inner)
     pb = r_b if platform_b is None else platform_b
-    flights = _flights(places, per_flight, r_b, shapes, rail_top, flight_mid)
     landings = len(flights) - 1 + (1 if top_platform else 0)
     for k, flight in enumerate(flights):
-        name = f"EliteRailF{k + 1}"
+        name = f"EliteRail{'In' if inner else ''}F{k + 1}"
         start = flight.front(flight.first) - (flight.step if k == 0 else OVERHANG_IN / face_r)
         end = flight.front(flight.last) + (OVERHANG_IN / face_r if k < landings else 0.0)
         bodies0 = s._body_names(model)
@@ -155,11 +162,12 @@ def add_top_rails(
     with contextlib.suppress(Exception):
         s._hide_construction(model)
     note = (
-        f"L2x2x1/4 outer top rail {rail_top:g} in above the stringer's top edge, rolled along {len(flights)} "
+        f"L2x2x1/4 {'inside' if inner else 'outer'} top rail {rail_top:g} in above the stringer's top edge, rolled "
+        f"along {len(flights)} "
         f"flight{'s' if len(flights) > 1 else ''}"
         + (
             f", with level pieces bolted to the posts at {landings} platform{'s' if landings > 1 else ''} "
-            "and each platform's own rail between its posts."
+            f"and each platform's own rail between its posts{' on channel C' if inner else ''}."
             if landings else "."
         )
     )
@@ -170,9 +178,10 @@ def add_mid_rails(
     model, places, per_flight: int, *, r_a: float, r_b: float, platforms: int, top_platform: bool,
     post_in: float = PLATFORM_POST_IN, mid_top: float = PLATFORM_MID_TOP_IN, platform_b: float | None = None,
     progress=None, shapes: tuple = (), rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None,
+    inner: bool = False,
 ) -> BraceResult:
     """The outer 2 x 1/4 flat bar midrail along every flight and across every platform, on the walk
-    side of the posts in line with the top rail's hanging leg.
+    side of the posts in line with the top rail's hanging leg; with ``inner`` the inside one.
 
     On a flight its top edge is ``flight_mid`` over the stringer's top edge (None: halfway up to the top rail,
     ``rail_top``); on a platform ``mid_top`` over the grating, so a flight's bar turns level where it climbs to
@@ -180,13 +189,12 @@ def add_mid_rails(
     with, so the top rail goes in first, with the same heights.
     """
     check_platform_mid_top(mid_top, rail_top)
-    face_r = r_b + THICKNESS_IN
+    face_r, flights = _rails_on(places, per_flight, r_a, r_b, shapes, rail_top, flight_mid, inner)
     pb = r_b if platform_b is None else platform_b
-    flights = _flights(places, per_flight, r_b, shapes, rail_top, flight_mid)
     landings = len(flights) - 1 + (1 if top_platform else 0)
     tops = (mid_top, flights[0].flight_mid)
     for k, flight in enumerate(flights):
-        name = f"EliteMidF{k + 1}"
+        name = f"EliteMid{'In' if inner else ''}F{k + 1}"
         climb = (mid_top - flight.flight_mid) / flight.rise_per_rad
         start = flight.front(flight.first) - flight.step if k == 0 else (
             flight.front(flight.first) + climb - OVERHANG_IN / face_r
@@ -207,7 +215,8 @@ def add_mid_rails(
     with contextlib.suppress(Exception):
         s._hide_construction(model)
     note = (
-        f"2 x 1/4 flat bar midrail {flights[0].flight_mid:g} in above the stringer's top edge along {len(flights)} "
+        f"2 x 1/4 flat bar {'inside ' if inner else ''}midrail {flights[0].flight_mid:g} in above the stringer's top "
+        f"edge along {len(flights)} "
         f"flight{'s' if len(flights) > 1 else ''}"
         + (
             f", level at {mid_top:g} in across {landings} platform{'s' if landings > 1 else ''} to the end "
@@ -219,57 +228,69 @@ def add_mid_rails(
 
 
 def add_bottom_end(model, places, per_flight: int, *, r_b: float, profile: str, progress=None,
-                   rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None) -> BraceResult:
+                   rail_top: float = RAIL_TOP_IN, flight_mid: float | None = None, inner: bool = False) -> BraceResult:
     """Close the rails' free end at the foot of the stair with HR_TOPMID's end rail.
 
     A vertical L2x2x1/4 drops from the top rail's low end to the midrail's bottom: the rail's
     section turned down about the radial, one leg in line with the rails 2 in back from the end,
     the other turned out under the top rail's top leg. It meets the top rail in a miter (the
     lisp's line G) from the rail's top at the end to its bottom 2 in in, and the midrail butts
-    against it. Both rails go in first.
+    against it. Both rails go in first. ``r_b`` is the walk face of the stringer the rails are on: the outer one's,
+    or with ``inner`` the inner one's.
     """
-    face_r = r_b + THICKNESS_IN
-    flight = _flights(places, per_flight, r_b, (), rail_top, flight_mid)[0]
+    side = -1.0 if inner else 1.0
+    face_r = r_b + side * THICKNESS_IN
+    flight = _flights(places, per_flight, r_b, (), rail_top, flight_mid, side)[0]
     stretch = 1.0 / math.cos(math.atan(flight.rise_per_rad / face_r))
     drop = flight.rail_top - flight.flight_mid
     end = flight.front(flight.first) - flight.step  # where the rails start, as add_top_rails starts them
-    inner = end + LEG_IN / face_r
-    name = "EliteRailBottomEnd"
+    back = end + LEG_IN / face_r
+    name = f"EliteRail{'In' if inner else ''}BottomEnd"
     corner = _world(end, face_r, 0.0, flight.top(end))
     along = flight.tangent(end, face_r)
     # Square to the bisector of up the rail and down the end piece.
     normal = _unit((along[0], along[1] + 1.0, along[2]))
     _trim(model, set(), corner, tuple(-v for v in normal), f"{name}RailMiter")
     _trim(
-        model, set(), _world(inner, face_r, 0.0, flight.top(inner) - drop), tuple(-v for v in _travel(inner)),
+        model, set(), _world(back, face_r, 0.0, flight.top(back) - drop), tuple(-v for v in _travel(back)),
         f"{name}MidTrim",
     )
     bodies0 = s._body_names(model)
-    ys = (flight.top(inner) - drop - BAR_IN * stretch, flight.top(end) + 0.5)
-    _upright_angle(model, end, face_r - THK_IN, 1.0, 1.0, ys, LEG_IN, profile, name)
+    ys = (flight.top(back) - drop - BAR_IN * stretch, flight.top(end) + 0.5)
+    _upright_angle(model, end, face_r - side * THK_IN, side, 1.0, ys, LEG_IN, profile, name)
     _trim(model, bodies0, corner, normal, f"{name}Miter")
     _progress(progress, f"{name} placed")
     with contextlib.suppress(Exception):
         s._hide_construction(model)
     note = (
-        "Rails closed at the foot of the stair with an L2x2x1/4 drop from the top rail, mitered to it, down "
-        "to the midrail's bottom; the midrail butts against it."
+        f"{'Inside rails' if inner else 'Rails'} closed at the foot of the stair with an L2x2x1/4 drop from the top "
+        "rail, mitered to it, down to the midrail's bottom; the midrail butts against it."
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
 
 
 def _flights(places, per_flight: int, r_b: float, shapes: tuple = (), rail_top: float = RAIL_TOP_IN,
-             flight_mid: float | None = None) -> list[_Flight]:
+             flight_mid: float | None = None, side: float = 1.0) -> list[_Flight]:
     """Each flight, with the shape of the platform after it (``shapes`` the platforms', from the lowest), and the
-    rails' heights (``flight_mid`` None: halfway up to ``rail_top``)."""
+    rails' heights (``flight_mid`` None: halfway up to ``rail_top``). ``r_b`` is the walk face of the stringer the
+    rails are on, the outer one's (``side`` +1) or the inner one's (-1)."""
     mid = rail_top / 2.0 if flight_mid is None else flight_mid
     flights = []
     for k, first in enumerate(range(0, len(places), per_flight)):
         a, b = places[first], places[first + 1]
         shape = shapes[k] if k < len(shapes) else PlatformSpec()
         flights.append(_Flight(places[first], places[first + per_flight - 1], (b.y1 - a.y1) / (b.phi - a.phi),
-                               b.phi - a.phi, r_b, shape, rail_top, mid))
+                               b.phi - a.phi, r_b, shape, rail_top, mid, side))
     return flights
+
+
+def _rails_on(places, per_flight: int, r_a: float, r_b: float, shapes: tuple, rail_top: float,
+              flight_mid: float | None, inner: bool) -> tuple[float, list[_Flight]]:
+    """(face_r, flights) of the outer rails or the ``inner`` ones: the rails' outside face, over the stringer's back
+    face (the outer one's outside face, the inner one's tank face), and every flight along that stringer."""
+    side = -1.0 if inner else 1.0
+    walk = r_a if inner else r_b
+    return walk + side * THICKNESS_IN, _flights(places, per_flight, walk, shapes, rail_top, flight_mid, side)
 
 
 # ------------------------------------------------------------------ the helix
@@ -279,7 +300,8 @@ def _helix_rail(
     model, flight: _Flight, face_r: float, start: float, end: float, name: str, section, drop: float = 0.0,
 ) -> None:
     """Sweep the slice of ``section`` in the radial plane at ``start`` along a helix to ``end``,
-    its top ``drop`` below the top rail's.
+    its top ``drop`` below the top rail's. Its "out" is away from the walk: out from the tank on the outer
+    stringer, in toward it on the inner one (``flight.side``).
 
     The slice is the true section stretched up by 1/cos of the slope, so the rolled section is square to it.
     """
@@ -295,7 +317,8 @@ def _helix_rail(
         data = [float(v) for v in com_value(com_value(sketch.ModelToSketchTransform).ArrayData)]
         _draw_section(
             model.SketchManager, section, name,
-            lambda out, up: s._to_sketch(data, [v * _INCH for v in _world(start, face_r + out, 0.0, top + up * stretch)])[:2],
+            lambda out, up: s._to_sketch(
+                data, [v * _INCH for v in _world(start, face_r + flight.side * out, 0.0, top + up * stretch)])[:2],
         )
     except Exception:
         s._recover(model)
@@ -359,13 +382,14 @@ def _draw_section(manager, section, name: str, at) -> None:
 
 @dataclass(frozen=True)
 class _Post:
-    """A platform post's heel along the outer channel, in the bisector frame of the platform."""
+    """A platform post's heel along the outer channel (or channel C), in the bisector frame of the platform."""
 
     mid: float  # bisector angle
-    web_r: float  # outer channel's back on the bisector
+    web_r: float  # the channel's back on the bisector
     heel_t: float  # heel along the channel from the bisector
     away: float  # toward the platform end it faces: -1 at A, +1 at B
     grating: float  # platform walking surface
+    way: float = 1.0  # its outstanding leg: +1 out from the tank (on D), -1 in toward it (on C)
 
     def world(self, n: float, t: float, y: float) -> tuple[float, float, float]:
         """n out from the channel's back, t along it from the heel."""
@@ -373,9 +397,10 @@ class _Post:
 
 
 def _post(flight: _Flight, r_a: float, r_b: float, post_in: float, side: str) -> _Post:
+    """The end post at ``side`` of the platform after ``flight``, on the channel along the flight's rails."""
     lines = platform_lines(phi=flight.last.phi, tread_top=flight.last.y1, r_a=r_a, r_b=r_b, spec=flight.platform)
-    mid, web_r, heel_t = platform_post_frame(lines, side, None, post_in)
-    return _Post(mid, web_r, heel_t, -1.0 if side == "A" else 1.0, flight.last.y1)
+    mid, web_r, heel_t = platform_post_frame(lines, side, None, post_in, inner=flight.side < 0)
+    return _Post(mid, web_r, heel_t, -1.0 if side == "A" else 1.0, flight.last.y1, flight.side)
 
 
 def _joint(
@@ -399,12 +424,29 @@ def _joint(
     if _narrow(lines):
         at_post = _sides(lines)[side].world(face_r, 0.0, top)
     else:
-        at_post = _post(below, r_a, r_b, post_in, side).world(0.0, 0.0, top)
+        at_post = _aim(_post(below, r_a, r_b, post_in, side), joint, top)
     level = _unit(tuple(at_post[i] - joint[i] for i in range(3)))
     if side == "B":
         level = tuple(-v for v in level)
     helix = rail.tangent(phi, face_r)
     return joint, _unit(tuple(helix[i] + level[i] for i in range(3)))
+
+
+def _aim(post: _Post, joint, top: float):
+    """Where a level piece from ``joint`` runs to at ``post``, at height ``top``: the post's heel. On the inside the
+    straight piece comes in from the tank side of channel C (between the flight and the post it bows toward the tank,
+    as outside it bows away from the end piece), so there it runs to a point a little to the walk side of the heel:
+    its hanging leg, on the line's walk side, then clears the end piece's leg along C, meeting its far edge."""
+    heel = post.world(0.0, 0.0, top)
+    if post.way > 0:
+        return heel
+    radial, travel = _radial(post.mid), _travel(post.mid)
+    off = sum(joint[i] * radial[i] for i in range(3)) - post.web_r  # out from C's back: under 0 on the tank side
+    run = sum(joint[i] * travel[i] for i in range(3)) - post.heel_t
+    tip = post.away * LEG_IN  # the end piece's leg along C reaches this far toward the end
+    if off >= 0.0 or abs(run - tip) < 1e-9:
+        return heel
+    return post.world(-off * tip / (run - tip), 0.0, top)
 
 
 def _landing(
@@ -414,7 +456,7 @@ def _landing(
     if _narrow(_lines_of(below, r_a, r_b)):
         _corner_landing(model, below, above, face_r, r_a, r_b, profile, mid_top, progress)
         return
-    tag = f"ElitePlatform{below.last.index:02d}Rail"
+    tag = f"ElitePlatform{below.last.index:02d}Rail{'In' if below.side < 0 else ''}"
     sides = ("A", "B") if above is not None else ("A",)
     posts = {side: _post(below, r_a, r_b, post_in, side) for side in ("A", "B")}
     for side in sides:
@@ -426,12 +468,14 @@ def _landing(
     a, b = posts["A"], posts["B"]
     top = a.grating + below.rail_top
     lines = _lines_of(below, r_a, r_b)
+    way = below.side
     if lines.rolled:
-        heel = lines.r_out - THK_IN
-        _rolled_angle(model, heel, a.mid + THK_IN / heel, b.mid - THK_IN / heel, top, profile, tag)
+        heel = lines.r_out - THK_IN if way > 0 else lines.r_in + THK_IN
+        _rolled_angle(model, heel, a.mid + THK_IN / heel, b.mid - THK_IN / heel, top, profile, tag, way)
     else:
         _level_angle(
-            model, a.world(-THK_IN, THK_IN, top), b.world(-THK_IN, -THK_IN, top), _radial(a.mid), profile, tag,
+            model, a.world(-way * THK_IN, THK_IN, top), b.world(-way * THK_IN, -THK_IN, top),
+            tuple(way * v for v in _radial(a.mid)), profile, tag,
         )
     _progress(progress, f"{tag} placed")
 
@@ -443,18 +487,21 @@ def _mid_landing(
     if _narrow(_lines_of(below, r_a, r_b)):
         _corner_mid_landing(model, below, above, face_r, r_a, r_b, mid_top, progress)
         return
-    tag = f"ElitePlatform{below.last.index:02d}Mid"
+    tag = f"ElitePlatform{below.last.index:02d}Mid{'In' if below.side < 0 else ''}"
     for side in ("A", "B") if above is not None else ("A",):
         _mid_level(model, below, above, side, face_r, r_a, r_b, post_in, mid_top, f"{tag}Level{side}")
         _progress(progress, f"{tag}{side} placed")
     a, b = (_post(below, r_a, r_b, post_in, side) for side in ("A", "B"))
     top = a.grating + mid_top
     lines = _lines_of(below, r_a, r_b)
+    way = below.side
     if lines.rolled:
-        r = lines.r_out
-        _rolled_band(model, r - BAR_THK_IN, r, a.mid + THK_IN / r, b.mid - THK_IN / r, top - BAR_IN, BAR_IN, tag)
+        r = lines.r_out if way > 0 else lines.r_in  # the channel's back; the bar is on its walk side
+        r0, r1 = (r - BAR_THK_IN, r) if way > 0 else (r, r + BAR_THK_IN)
+        _rolled_band(model, r0, r1, a.mid + THK_IN / r, b.mid - THK_IN / r, top - BAR_IN, BAR_IN, tag)
     else:
-        _flat_bar(model, a.world(0.0, THK_IN, top), b.world(0.0, -THK_IN, top), _radial(a.mid), tag)
+        _flat_bar(model, a.world(0.0, THK_IN, top), b.world(0.0, -THK_IN, top), tuple(way * v for v in _radial(a.mid)),
+                  tag)
     _progress(progress, f"{tag} placed")
 
 
@@ -463,9 +510,9 @@ def _mid_level(model, below, above, side: str, face_r, r_a, r_b, post_in, mid_to
     post = _post(below, r_a, r_b, post_in, side)
     joint, normal = _joint(below, above, face_r, r_a, r_b, post_in, side, mid_top, below.flight_mid)
     top = joint[1]
-    at_post = post.world(0.0, 0.0, top)
+    at_post = _aim(post, joint, top)
     along = _unit(tuple(at_post[i] - joint[i] for i in range(3)))
-    out = _outward(along, post.mid)
+    out = _outward(along, post.mid, post.way)
     past = [joint[i] - OVERHANG_IN * along[i] for i in range(3)]
     stop = [at_post[i] - (WELD_GAP_IN + BAR_THK_IN * _skew(along, post.mid)) * along[i] for i in range(3)]
     a, b = (past, stop) if side == "A" else (stop, past)
@@ -474,10 +521,11 @@ def _mid_level(model, below, above, side: str, face_r, r_a, r_b, post_in, mid_to
     _trim(model, bodies0, joint, tuple(-v for v in normal) if side == "A" else normal, f"{name}Trim")
 
 
-def _outward(along, mid: float) -> tuple[float, float, float]:
-    """Level and square to ``along``, away from the tank."""
+def _outward(along, mid: float, way: float = 1.0) -> tuple[float, float, float]:
+    """Level and square to ``along``, away from the walk: away from the tank (``way`` +1), or toward it (-1) on the
+    inside."""
     out = (along[2], 0.0, -along[0])
-    if out[0] * _radial(mid)[0] + out[2] * _radial(mid)[2] < 0:
+    if way * (out[0] * _radial(mid)[0] + out[2] * _radial(mid)[2]) < 0:
         out = (-out[0], 0.0, -out[2])
     return out
 
@@ -544,10 +592,10 @@ def _end_piece(model, post: _Post, profile: str, mid_top: float, name: str, rail
     from the platform midrail's bottom up to the posts' weld gap under the top rail, cut back 45 degrees
     with the post and bolted to it at its middle."""
     ys = (post.grating + mid_top - BAR_IN, post.grating + rail_top - TOP_GAP_IN)
-    _upright_angle(model, post.mid, post.web_r, 1.0, post.away, ys, LEG_IN, profile, name, heel_t=post.heel_t)
-    _cutback(model, post.mid, post.web_r, post.heel_t, post.away, ys[0], ys[1], name)
+    _upright_angle(model, post.mid, post.web_r, post.way, post.away, ys, LEG_IN, profile, name, heel_t=post.heel_t)
+    _cutback(model, post.mid, post.web_r, post.heel_t, post.away, ys[0], ys[1], name, inward=post.way)
     middle = (ys[0] + post.grating + rail_top) / 2.0  # the span up to the top rail's top, as the lisp centers it
-    centers = [post.world(HOLE_GAUGE_IN, post.away * THK_IN, middle + dy)
+    centers = [post.world(post.way * HOLE_GAUGE_IN, post.away * THK_IN, middle + dy)
                for dy in (END_BOLT_SPACE_IN / 2.0, -END_BOLT_SPACE_IN / 2.0)]
     radius = HOLE_DIA_IN / 2.0 * _INCH
 
@@ -569,11 +617,9 @@ def _end_piece(model, post: _Post, profile: str, mid_top: float, name: str, rail
 def _level_piece(model, post: _Post, joint, normal, side: str, profile: str, name: str) -> None:
     """Straight level rail from the miter at ``joint`` to the end piece, square-cut a hair short of the post."""
     top = joint[1]
-    at_post = post.world(0.0, 0.0, top)
+    at_post = _aim(post, joint, top)
     along = _unit(tuple(at_post[i] - joint[i] for i in range(3)))
-    out = (along[2], 0.0, -along[0])
-    if out[0] * _radial(post.mid)[0] + out[2] * _radial(post.mid)[2] < 0:
-        out = (-out[0], 0.0, -out[2])
+    out = _outward(along, post.mid, post.way)
     # The square end turns off the post face by the piece's angle to the channel; stop short by what that sweeps.
     skew = math.acos(min(1.0, abs(along[0] * _travel(post.mid)[0] + along[2] * _travel(post.mid)[2])))
     short = LEG_IN * math.tan(skew) + 0.05
@@ -585,10 +631,13 @@ def _level_piece(model, post: _Post, joint, normal, side: str, profile: str, nam
     _trim(model, bodies0, joint, tuple(-v for v in normal) if side == "A" else normal, f"{name}Trim")
 
 
-def _rolled_angle(model, heel_r: float, a0: float, a1: float, top: float, profile: str, name: str) -> None:
+def _rolled_angle(model, heel_r: float, a0: float, a1: float, top: float, profile: str, name: str,
+                  way: float = 1.0) -> None:
     """L2x2 rolled about the tank axis, its heel on the arc of radius ``heel_r`` at ``top`` from angle ``a0`` to
-    ``a1``: one leg straight down, the other out away from the tank, as the flights' top rail is rolled leg out
-    (Elite STWC). Turned a quarter at a time until it lies so."""
+    ``a1``: one leg straight down, the other out away from the tank (``way`` +1, as the flights' top rail is rolled
+    leg out, Elite STWC) or in toward it (-1, the inside rail on channel C). Turned a quarter at a time until it lies
+    so."""
+    near, far = (heel_r, heel_r + LEG_IN) if way > 0 else (heel_r - LEG_IN, heel_r)
     plane = s._offset_from(model, s._plane(model, "Top"), top, f"{name}Pln")
 
     def draw():
@@ -613,12 +662,12 @@ def _rolled_angle(model, heel_r: float, a0: float, a1: float, top: float, profil
             continue
         radii = [math.hypot(p[0], p[2]) for p in points]
         ys = [p[1] for p in points]
-        if (abs(min(radii) - heel_r) < 0.05 and abs(max(radii) - heel_r - LEG_IN) < 0.05
+        if (abs(min(radii) - near) < 0.05 and abs(max(radii) - far) < 0.05
                 and abs(max(ys) - top) < 0.05 and abs(top - min(ys) - LEG_IN) < 0.05):
             placed = True
             break
     if not placed:
-        raise SolidWorksError(f"{name}: could not turn the rolled rail with a leg down and a leg out.")
+        raise SolidWorksError(f"{name}: could not turn the rolled rail with a leg down and a leg off the walk.")
     with contextlib.suppress(Exception):
         rename_feature(feature, name)
     _clear_selection(model)
@@ -692,8 +741,10 @@ def _level_angle(model, a, b, out, profile: str, name: str) -> None:
 
 
 def _lines_of(flight: _Flight, r_a: float, r_b: float):
-    return platform_lines(phi=flight.last.phi, tread_top=flight.last.y1, r_a=r_a, r_b=r_b, stringer_b=flight.r_b,
-                          spec=flight.platform)
+    """The platform after ``flight``. The inner stringer always meets channel C at its corner, so on the inside it is
+    never the narrow stair's."""
+    return platform_lines(phi=flight.last.phi, tread_top=flight.last.y1, r_a=r_a, r_b=r_b,
+                          stringer_b=flight.r_b if flight.side > 0 else None, spec=flight.platform)
 
 
 def _narrow(lines) -> bool:
@@ -717,11 +768,12 @@ def _sides(lines) -> dict[str, _Side]:
     return {"A": _Side(lines.phi_a, -1.0), "B": _Side(lines.phi_b, 1.0)}
 
 
-def _outer_run(lines):
-    """The bisector angle, and points ``n`` out from the outer channel's back, ``s`` along it toward B."""
+def _outer_run(lines, inner: bool = False):
+    """The bisector angle, and points ``n`` out from the outer channel's back (with ``inner`` channel C's), ``s``
+    along it toward B."""
     half = (lines.phi_b - lines.phi_a) / 2.0
     mid = lines.phi_a + half
-    web_r = lines.r_out * math.cos(half)
+    web_r = (lines.r_in if inner else lines.r_out) * math.cos(half)
     return mid, lambda n, s, y: _world(mid, web_r + n, s, y)
 
 
@@ -904,9 +956,10 @@ def _wrap(model, lines, y: float, section, tag: str, stop_r: float | None = None
 
 def add_toe_plates(
     model, places, per_flight: int, *, r_a: float, r_b: float, platforms: int, top_platform: bool,
-    platform_b: float | None = None, progress=None, shapes: tuple = (),
+    platform_b: float | None = None, progress=None, shapes: tuple = (), inner: bool = False,
 ) -> BraceResult:
-    """A 1/4 x 6 toe plate standing on each platform's outer channel, its face flush with the channel's back.
+    """A 1/4 x 6 toe plate standing on each platform's outer channel, its face flush with the channel's back; with
+    ``inner`` on channel C, flush with its back.
 
     It runs corner to corner; on a stair narrower than the platform it wraps round both outer corners and
     back along each side, past the side post to 1/4 in outside the stringer, so the platform's edge stays
@@ -918,10 +971,13 @@ def add_toe_plates(
     for k in range(1, count + 1):
         last = places[k * per_flight - 1]
         shape = shapes[k - 1] if k - 1 < len(shapes) else None
-        lines = platform_lines(phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=pb, stringer_b=r_b, spec=shape)
-        tag = f"ElitePlatform{last.index:02d}Toe"
+        lines = platform_lines(phi=last.phi, tread_top=last.y1, r_a=r_a, r_b=pb, stringer_b=None if inner else r_b,
+                               spec=shape)
+        tag = f"ElitePlatform{last.index:02d}Toe{'In' if inner else ''}"
         y = lines.top + TOE_IN
-        if _narrow(lines):
+        if inner:
+            _inner_toe(model, lines, y, tag)
+        elif _narrow(lines):
             narrow = True
             _wrap(model, lines, y, TOE_SECTION, tag, lines.stringer_b + THICKNESS_IN + THK_IN)
         elif lines.rolled:
@@ -932,10 +988,21 @@ def add_toe_plates(
             _flat_bar(model, outer(0.0, -end, y), outer(0.0, end, y), _radial(mid), tag, TOE_SECTION)
         _progress(progress, f"{tag} placed")
     note = (
-        f"1/4 x 6 toe plate{'s' if count > 1 else ''} on the outer channel of {count} platform{'s' if count > 1 else ''}"
+        f"1/4 x 6 toe plate{'s' if count > 1 else ''} on the {'inner channel C' if inner else 'outer channel'} of "
+        f"{count} platform{'s' if count > 1 else ''}"
         + (", wrapped round the outer corners and back past the side posts to the stringers." if narrow else ", corner to corner.")
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
+
+
+def _inner_toe(model, lines, y: float, name: str) -> None:
+    """The toe plate on channel C, corner to corner, its face flush with C's back: rolled on a rolled platform."""
+    if lines.rolled:
+        _rolled_band(model, lines.r_in, lines.r_in + TOE_THK_IN, lines.phi_a, lines.phi_b, lines.top, TOE_IN, name)
+        return
+    mid, run = _outer_run(lines, inner=True)
+    end = lines.r_in * math.sin((lines.phi_b - lines.phi_a) / 2.0)
+    _flat_bar(model, run(0.0, -end, y), run(0.0, end, y), tuple(-v for v in _radial(mid)), name, TOE_SECTION)
 
 
 # ------------------------------------------------------------------ miters

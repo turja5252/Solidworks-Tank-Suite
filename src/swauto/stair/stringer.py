@@ -47,7 +47,8 @@ class PlatformSpec:
     the centreline (None: equal bays). The ends carry a knee brace and a shell clip, and so do enough radials between
     that no two supports are more than ``support_spacing_in`` apart (Chris Samm, 2026-10-30): ``supports`` are those
     radials, the same way (None: the fewest that do, nearest the middle of their bays). ``posts`` are the outer
-    side's posts between its two end posts, the same way (None: one beside each radial). ``channel`` is the
+    side's posts between its two end posts, the same way (None: one beside each radial), and ``inner_posts`` the
+    inner side's, for the inside handrail. ``channel`` is the
     frame's channel, C4 or C6 (``PLATFORM_CHANNELS``), every member of it the same; ``knee`` the type of all its knee
     braces (``PLATFORM_KNEES``; stair.knee2 has type 2)."""
 
@@ -58,6 +59,7 @@ class PlatformSpec:
     radials: tuple[float, ...] | None = None
     posts: tuple[float, ...] | None = None
     supports: tuple[float, ...] | None = None
+    inner_posts: tuple[float, ...] | None = None
     support_spacing_in: float = SUPPORT_SPACING_IN
     channel: str = "C4"
     knee: int = 1
@@ -86,11 +88,12 @@ class PlatformSpec:
             return tuple(sorted(along for along in self.supports if any(abs(along - r) < 1e-6 for r in radials)))
         return held_radials(radials, self.length_in, self.support_spacing_in)
 
-    def post_positions(self) -> tuple[float, ...]:
-        """The outer side's posts between its end posts, in from A along the centreline: where they were put, or
-        one beside each radial."""
-        if self.posts is not None:
-            return tuple(sorted(self.posts))
+    def post_positions(self, inner: bool = False) -> tuple[float, ...]:
+        """The outer side's posts between its end posts (with ``inner`` the inner side's), in from A along the
+        centreline: where they were put, or one beside each radial."""
+        posts = self.inner_posts if inner else self.posts
+        if posts is not None:
+            return tuple(sorted(posts))
         return tuple(along + POST_BESIDE_IN for along in self.radial_positions())
 
     def validate(self) -> None:

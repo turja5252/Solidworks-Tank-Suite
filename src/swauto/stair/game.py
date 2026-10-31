@@ -194,9 +194,10 @@ def _step(centers: list[float]) -> float:
 
 
 def spot_xy(dev: DevelopedStringer, spot: Spot, posts: tuple[int, ...] = (),
-            heights: RailHeights = RailHeights()) -> tuple[float, float]:
+            heights: RailHeights = RailHeights(), inner_full: bool = True) -> tuple[float, float]:
     """Where a placed item is drawn on its lane: a post's foot, a clip's middle, a knee brace's top, a cut's
-    middle, a rail split at rail height (``heights``) in the middle of its bay (up to the next of ``posts``)."""
+    middle, a rail split at rail height (``heights``) in the middle of its bay (up to the next of ``posts``): the top
+    rail's, or inside without the full guardrail (``inner_full``) the pipe's."""
     centers = dev.tread_centers
     x, y = centers[min(spot.tread, len(centers)) - 1]
     step = _step([c[0] for c in centers])
@@ -213,7 +214,7 @@ def spot_xy(dev: DevelopedStringer, spot: Spot, posts: tuple[int, ...] = (),
     above = [t for t in sorted(posts) if t > spot.tread]
     high = spot_xy(dev, Spot(POST, 0, above[0])) if above else (low[0] + step, low[1] + rise)
     x = (low[0] + high[0]) / 2.0
-    if spot.side == INNER:
+    if spot.side == INNER and not inner_full:
         return x, edge_y(dev, x) + heights.inner - PIPE_OD_IN / 2.0
     return x, edge_y(dev, x) + heights.top - ANGLE_IN / 2.0
 
@@ -225,9 +226,11 @@ def edge_y(dev: DevelopedStringer, x: float) -> float:
     return max(_crossings(dev.outline, middle)) + (x - middle) * math.tan(dev.pitch_rad)
 
 
-def post_top(dev: DevelopedStringer, side: str, x: float, heights: RailHeights = RailHeights()) -> float:
-    """A post's top cut at ``x``: under the top rail outside, under the pipe's bracket inside."""
-    if side == INNER:
+def post_top(dev: DevelopedStringer, side: str, x: float, heights: RailHeights = RailHeights(),
+             inner_full: bool = True) -> float:
+    """A post's top cut at ``x``: under the top rail, or inside without the full guardrail (``inner_full``) under the
+    pipe's bracket."""
+    if side == INNER and not inner_full:
         return edge_y(dev, x) + heights.inner - (INNER_PIPE_TOP_IN - INNER_POST_TOP_IN)
     return edge_y(dev, x) + heights.top - TOP_GAP_IN
 
@@ -245,18 +248,21 @@ class Rail:
 
 
 def lane_rails(dev: DevelopedStringer, side: str, posts: tuple[int, ...], top: bool = True, mid: bool = True,
-               grab: bool = True, heights: RailHeights = RailHeights()) -> list[Rail]:
-    """The flight's handrail on ``side``'s lane, as the build runs it: outside, the top rail and the midrail from
-    the first post to the last and the grab rail pipe from tread 1's front edge to the top tread's; inside, the
-    pipe alone, as long. Nothing without posts on that side."""
+               grab: bool = True, heights: RailHeights = RailHeights(), inner_full: bool = True,
+               inner_grab: bool = False) -> list[Rail]:
+    """The flight's handrail on ``side``'s lane, as the build runs it: the top rail and the midrail from the first
+    post to the last and the grab rail pipe (outside ``grab``, inside ``inner_grab``) from tread 1's front edge to the
+    top tread's; inside without the full guardrail (``inner_full``), STWE's pipe alone, as long. Nothing without
+    posts on that side."""
     if not posts:
         return []
     feet = [spot_xy(dev, Spot(POST, 0, t))[0] for t in sorted(posts)]
     fronts = (dev.tread_centers[0][0] - TREAD_DEPTH_IN / 2.0, dev.tread_centers[-1][0] - TREAD_DEPTH_IN / 2.0)
-    wanted = [("Pipe", heights.inner, PIPE_OD_IN, fronts)] if side == INNER else (
+    piped = inner_grab if side == INNER else grab
+    wanted = [("Pipe", heights.inner, PIPE_OD_IN, fronts)] if side == INNER and not inner_full else (
         ([("Top rail", heights.top, ANGLE_IN, (feet[0], feet[-1]))] if top else [])
         + ([("Midrail", heights.flight_mid, BAR_IN, (feet[0], feet[-1]))] if mid else [])
-        + ([("Grab rail", heights.grab, PIPE_OD_IN, fronts)] if grab else []))
+        + ([("Grab rail", heights.grab, PIPE_OD_IN, fronts)] if piped else []))
     return [Rail(name, a, edge_y(dev, a) + above, b, edge_y(dev, b) + above, tall)
             for name, above, tall, (a, b) in wanted if b > a]
 

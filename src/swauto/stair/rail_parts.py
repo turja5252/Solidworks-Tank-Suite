@@ -8,7 +8,9 @@ its end piece's two, and the channel has the posts' (``frame_holes``, cut in the
 
 As stair_sw._handrail_posts builds it: the platform posts and toe plates with the flight posts, the top rail and
 midrail when asked, and the foot's closed end with both; on a stair narrower than its platforms, the side posts and
-the corner pieces instead of the end posts and level pieces.
+the corner pieces instead of the end posts and level pieces. The inside handrail's full guardrail is the same pieces
+mirrored onto the inner stringer and channel C (``Rails.side`` -1), and its pipe handrail (Elite STWE) only the pipe
+on its posts.
 """
 
 from __future__ import annotations
@@ -47,7 +49,9 @@ END_HOLE_DEPTH_IN = 2.0 * THK_IN + 0.1  # through an end piece's leg and the pos
 class Rails:
     """The outer handrail's numbers on the ground-0 stair, as stair_sw._handrail_posts hands them on: ``r_b`` the
     outer stringer's walk face, ``pb`` the platforms' outer walk face (a platform is always full width); the top
-    rail's height and the flights' midrail's (None: halfway up to it)."""
+    rail's height and the flights' midrail's (None: halfway up to it). With ``side`` -1 the inside handrail's, on
+    the inner stringer (``r_a``) and channel C; ``railed`` is whether this side's platforms have their rails, where a
+    pipe on its flight posts stops at the midrail's miters (the inside's pipe handrail, Elite STWE, has none)."""
 
     places: tuple
     per_flight: int
@@ -63,14 +67,37 @@ class Rails:
     shapes: tuple = ()
     rail_top: float = RAIL_TOP_IN
     flight_mid: float | None = None
+    side: float = 1.0
+    railed: bool = True
+
+    @property
+    def inner(self) -> bool:
+        return self.side < 0
+
+    @property
+    def walk(self) -> float:
+        """The walk face of the stringer this side's posts are on."""
+        return self.r_a if self.inner else self.r_b
 
     @property
     def face_r(self) -> float:
-        return self.r_b + THICKNESS_IN
+        """The rails' outside face, over the stringer's back face."""
+        return self.walk + self.side * THICKNESS_IN
 
     @property
     def flights(self) -> list:
-        return r._flights(self.places, self.per_flight, self.r_b, self.shapes, self.rail_top, self.flight_mid)
+        return r._flights(self.places, self.per_flight, self.walk, self.shapes, self.rail_top, self.flight_mid,
+                          self.side)
+
+    @property
+    def word(self) -> str:
+        """The pieces' labels' word for the side: none outside."""
+        return "inside " if self.inner else ""
+
+    @property
+    def tag(self) -> str:
+        """The pieces' names' mark for the side: none outside."""
+        return "In" if self.inner else ""
 
     @property
     def count(self) -> int:
@@ -85,10 +112,10 @@ class Rails:
         return self.shapes[k - 1] if k - 1 < len(self.shapes) else None
 
     def lines(self, k: int):
-        """Platform ``k`` (1 the lowest), as the handrail sees it."""
+        """Platform ``k`` (1 the lowest), as the handrail sees it: the inside's never the narrow stair's."""
         last = self.places[k * self.per_flight - 1]
-        return platform_lines(phi=last.phi, tread_top=last.y1, r_a=self.r_a, r_b=self.pb, stringer_b=self.r_b,
-                              spec=self.shape(k))
+        return platform_lines(phi=last.phi, tread_top=last.y1, r_a=self.r_a, r_b=self.pb,
+                              stringer_b=None if self.inner else self.r_b, spec=self.shape(k))
 
     def tread_top(self, k: int) -> float:
         return self.places[k * self.per_flight - 1].y1
@@ -104,7 +131,8 @@ class Rails:
 @dataclass(frozen=True)
 class PostSpot:
     """A post on platform ``k``: on the outer channel (``side`` False: its frame angle, the channel back's radius
-    there, the heel along the travel and the way its flat leg runs) or, on a narrow stair, on side channel A or B."""
+    there, the heel along the travel and the way its flat leg runs) or, on a narrow stair, on side channel A or B.
+    ``way`` is the way its outstanding leg stands: off the walk, out from the tank on D (+1), in toward it on C."""
 
     k: int
     label: str
@@ -114,6 +142,7 @@ class PostSpot:
     heel_t: float
     away: float
     ys: tuple[float, float]
+    way: float = 1.0
 
 
 def post_spots(rails: Rails, k: int) -> list[PostSpot]:
@@ -131,12 +160,12 @@ def post_spots(rails: Rails, k: int) -> list[PostSpot]:
         places = []
     else:
         places = [("A", None, 1.0), ("B", None, -1.0)]
-    between = [] if spec is None else list(spec.post_positions())
+    between = [] if spec is None else list(spec.post_positions(rails.inner))
     places += [(f"M{i}", lines.phi_a + along / lines.r_mid, 1.0) for i, along in enumerate(between, start=1)]
     ys = (foot, tread_top + rails.rail_top - TOP_GAP_IN)
     for label, angle, away in places:
-        mid, web_r, heel_t = platform_post_frame(lines, label, angle, rails.post_in)
-        out.append(PostSpot(k, label, False, mid, web_r, heel_t, away, ys))
+        mid, web_r, heel_t = platform_post_frame(lines, label, angle, rails.post_in, rails.inner)
+        out.append(PostSpot(k, label, False, mid, web_r, heel_t, away, ys, rails.side))
     return out
 
 
@@ -153,7 +182,7 @@ def channel_holes(rails: Rails, spot: PostSpot) -> tuple[list, tuple[float, floa
         points = [_world(spot.phi, spot.heel_r + HOLE_GAUGE_IN, spot.away * THK_IN, y) for y in hole_ys]
         return points, _travel(spot.phi)
     t = spot.heel_t + spot.away * HOLE_GAUGE_IN
-    return [_world(spot.phi, spot.heel_r + THK_IN, t, y) for y in hole_ys], _radial(spot.phi)
+    return [_world(spot.phi, spot.heel_r + spot.way * THK_IN, t, y) for y in hole_ys], _radial(spot.phi)
 
 
 def end_holes(rails: Rails, spot: PostSpot) -> tuple[list, tuple[float, float, float]] | None:
@@ -169,7 +198,7 @@ def end_holes(rails: Rails, spot: PostSpot) -> tuple[list, tuple[float, float, f
         return ([side.world(spot.heel_r - THK_IN, t, middle + dy)
                  for dy in (r.END_BOLT_SPACE_IN / 2.0, -r.END_BOLT_SPACE_IN / 2.0)], _radial(side.phi))
     post = _rail_post(rails, spot.k, spot.label)
-    return ([post.world(HOLE_GAUGE_IN, post.away * THK_IN, middle + dy)
+    return ([post.world(post.way * HOLE_GAUGE_IN, post.away * THK_IN, middle + dy)
              for dy in (r.END_BOLT_SPACE_IN / 2.0, -r.END_BOLT_SPACE_IN / 2.0)], _travel(post.mid))
 
 
@@ -181,9 +210,10 @@ def build_post(model, rails: Rails, spot: PostSpot, profile: str, name: str) -> 
     """The post (post_sw.add_platform_posts' steps): the L2x2 up from the channel, its outstanding leg cut back 45
     degrees (not a side post's), its two holes to the channel and, where the top rail's end piece bolts to it,
     that piece's two."""
-    _upright_angle(model, spot.phi, spot.heel_r, 1.0, spot.away, spot.ys, LEG_IN, profile, name, heel_t=spot.heel_t)
+    _upright_angle(model, spot.phi, spot.heel_r, spot.way, spot.away, spot.ys, LEG_IN, profile, name,
+                   heel_t=spot.heel_t)
     if not spot.side:
-        _cutback(model, spot.phi, spot.heel_r, spot.heel_t, spot.away, spot.ys[0], spot.ys[1], name)
+        _cutback(model, spot.phi, spot.heel_r, spot.heel_t, spot.away, spot.ys[0], spot.ys[1], name, inward=spot.way)
     points, axis = channel_holes(rails, spot)
     _holes_through(model, points[0], axis, points, HOLE_DIA_IN, POST_HOLE_DEPTH_IN, f"{name}Channel")
     end = end_holes(rails, spot)
@@ -193,11 +223,11 @@ def build_post(model, rails: Rails, spot: PostSpot, profile: str, name: str) -> 
 
 
 def frame_holes(rails: Rails, k: int) -> dict[str, list[tuple[list, tuple[float, float, float]]]]:
-    """The posts' holes in platform ``k``'s channels, by member: "D" the outer side, "A" and "B" the ends (a narrow
-    stair's side posts)."""
+    """The posts' holes in platform ``k``'s channels, by member: "D" the outer side ("C" the inner, for the inside
+    handrail), "A" and "B" the ends (a narrow stair's side posts)."""
     out: dict[str, list] = {}
     for spot in post_spots(rails, k):
-        out.setdefault(spot.label if spot.side else "D", []).append(channel_holes(rails, spot))
+        out.setdefault(spot.label if spot.side else "C" if rails.inner else "D", []).append(channel_holes(rails, spot))
     return out
 
 
@@ -214,7 +244,9 @@ def build_toe(model, rails: Rails, k: int, piece: str, name: str) -> None:
     narrow stair the ``piece`` of its wrap, "A" or "B" (a return) or "run"."""
     lines = rails.lines(k)
     y = lines.top + r.TOE_IN
-    if r._narrow(lines):
+    if rails.inner:
+        r._inner_toe(model, lines, y, name)
+    elif r._narrow(lines):
         wrap_piece(model, lines, y, r.TOE_SECTION, name, piece, lines.stringer_b + THICKNESS_IN + THK_IN)
     elif lines.rolled:
         r._rolled_band(model, lines.r_out - r.TOE_THK_IN, lines.r_out, lines.phi_a, lines.phi_b, lines.top, r.TOE_IN,
@@ -262,12 +294,12 @@ def foot_cuts(rails: Rails):
     face_r = rails.face_r
     drop = flight.rail_top - flight.flight_mid
     end = flight.front(flight.first) - flight.step
-    inner = end + LEG_IN / face_r
+    back = end + LEG_IN / face_r
     corner = _world(end, face_r, 0.0, flight.top(end))
     along = flight.tangent(end, face_r)
     normal = r._unit((along[0], along[1] + 1.0, along[2]))
     return ((corner, tuple(-v for v in normal)),
-            (_world(inner, face_r, 0.0, flight.top(inner) - drop), tuple(-v for v in _travel(inner))))
+            (_world(back, face_r, 0.0, flight.top(back) - drop), tuple(-v for v in _travel(back))))
 
 
 def build_top_rail(model, rails: Rails, k: int, foot: bool, name: str) -> None:
@@ -308,9 +340,10 @@ def build_end_piece(model, rails: Rails, k: int, side: str, profile: str, name: 
     else:
         post = _rail_post(rails, k, side)
         ys = (post.grating + rails.mid_top - r.BAR_IN, post.grating + rails.rail_top - TOP_GAP_IN)
-        _upright_angle(model, post.mid, post.web_r, 1.0, post.away, ys, LEG_IN, profile, name, heel_t=post.heel_t)
-        _cutback(model, post.mid, post.web_r, post.heel_t, post.away, ys[0], ys[1], name)
-        spot = PostSpot(k, side, False, post.mid, post.web_r, post.heel_t, post.away, ys)
+        _upright_angle(model, post.mid, post.web_r, post.way, post.away, ys, LEG_IN, profile, name,
+                       heel_t=post.heel_t)
+        _cutback(model, post.mid, post.web_r, post.heel_t, post.away, ys[0], ys[1], name, inward=post.way)
+        spot = PostSpot(k, side, False, post.mid, post.web_r, post.heel_t, post.away, ys, post.way)
     holes = end_holes(rails, spot)
     if holes is None:
         raise SolidWorksError(f"{name}: no post to bolt to.")
@@ -349,12 +382,13 @@ def build_platform_rail(model, rails: Rails, k: int, piece: str, profile: str, n
     top = rails.tread_top(k) + rails.rail_top
     if not r._narrow(lines):
         a, b = (_rail_post(rails, k, side) for side in ("A", "B"))
+        way = rails.side
         if lines.rolled:
-            heel = lines.r_out - THK_IN
-            r._rolled_angle(model, heel, a.mid + THK_IN / heel, b.mid - THK_IN / heel, top, profile, name)
+            heel = lines.r_out - THK_IN if way > 0 else lines.r_in + THK_IN
+            r._rolled_angle(model, heel, a.mid + THK_IN / heel, b.mid - THK_IN / heel, top, profile, name, way)
         else:
-            r._level_angle(model, a.world(-THK_IN, THK_IN, top), b.world(-THK_IN, -THK_IN, top), _radial(a.mid),
-                           profile, name)
+            r._level_angle(model, a.world(-way * THK_IN, THK_IN, top), b.world(-way * THK_IN, -THK_IN, top),
+                           tuple(way * v for v in _radial(a.mid)), profile, name)
         return
     heel_r = side_post_heel(lines)
     sides = r._sides(lines)
@@ -425,12 +459,15 @@ def build_platform_mid(model, rails: Rails, k: int, piece: str, name: str) -> No
         wrap_piece(model, lines, top, r.BAR_SECTION, name, piece)
         return
     a, b = (_rail_post(rails, k, side) for side in ("A", "B"))
+    way = rails.side
     if lines.rolled:
-        radius = lines.r_out
-        r._rolled_band(model, radius - r.BAR_THK_IN, radius, a.mid + THK_IN / radius, b.mid - THK_IN / radius,
-                       top - r.BAR_IN, r.BAR_IN, name)
+        radius = lines.r_out if way > 0 else lines.r_in
+        r0, r1 = (radius - r.BAR_THK_IN, radius) if way > 0 else (radius, radius + r.BAR_THK_IN)
+        r._rolled_band(model, r0, r1, a.mid + THK_IN / radius, b.mid - THK_IN / radius, top - r.BAR_IN, r.BAR_IN,
+                       name)
     else:
-        r._flat_bar(model, a.world(0.0, THK_IN, top), b.world(0.0, -THK_IN, top), _radial(a.mid), name)
+        r._flat_bar(model, a.world(0.0, THK_IN, top), b.world(0.0, -THK_IN, top),
+                    tuple(way * v for v in _radial(a.mid)), name)
 
 
 # ------------------------------------------------------------------------------------------------- the foot
@@ -444,10 +481,10 @@ def build_foot(model, rails: Rails, profile: str, name: str) -> None:
     stretch = 1.0 / math.cos(math.atan(flight.rise_per_rad / face_r))
     drop = flight.rail_top - flight.flight_mid
     end = flight.front(flight.first) - flight.step
-    inner = end + LEG_IN / face_r
+    back = end + LEG_IN / face_r
     (corner, normal), _mid = foot_cuts(rails)
-    ys = (flight.top(inner) - drop - r.BAR_IN * stretch, flight.top(end) + 0.5)
-    _upright_angle(model, end, face_r - THK_IN, 1.0, 1.0, ys, LEG_IN, profile, name)
+    ys = (flight.top(back) - drop - r.BAR_IN * stretch, flight.top(end) + 0.5)
+    _upright_angle(model, end, face_r - rails.side * THK_IN, rails.side, 1.0, ys, LEG_IN, profile, name)
     r._trim(model, set(), corner, tuple(-v for v in normal), f"{name}Miter")
 
 
@@ -460,64 +497,68 @@ def rail_jobs(job, rails: Rails, profile: str, common: dict, place, pairs=()) ->
     midrail spliced at ``pairs`` ((low post, high post) each) are a part for each piece."""
     home = (place(),)
     narrow = {k: r._narrow(rails.lines(k)) for k in range(1, rails.count + 1)}
+    w, t = rails.word, rails.tag  # "inside " and "In" on the inside, nothing outside
     out = []
 
-    def add(family, label, piece, build):
-        out.append(job(family, label, dict(common, piece=piece), build, home))
+    def add(family, label, piece, build, **more):
+        # The side is in the piece's name, so an inside piece never shares a file with an outside one.
+        out.append(job(family, label, dict(common, piece=f"{w}{piece}", **more), build, home))
 
     for k in range(1, rails.count + 1):
         for spot in post_spots(rails, k):
             where = f"{'side post' if spot.side else 'post'} {spot.label}"
-            add("Stair platform post", f"Platform {k} {where}", f"post {k} {spot.label} {spot.side}",
+            add("Stair platform post", f"Platform {k} {w}{where}", f"post {k} {spot.label} {spot.side}",
                 lambda model, spot=spot, k=k: build_post(model, rails, spot, profile,
-                                                         f"ElitePlatform{k}Post{spot.label}"))
+                                                         f"ElitePlatform{k}Post{t}{spot.label}"),
+                at=[spot.phi, spot.heel_r, spot.heel_t])
         for piece in ("A", "B", "run") if narrow[k] else ("run",):
-            label = f"Platform {k} toe plate" + (f" {piece}" if narrow[k] else "")
+            label = f"Platform {k} {w}toe plate" + (f" {piece}" if narrow[k] else "")
             add("Stair toe plate", label, f"toe {k} {piece}",
-                lambda model, k=k, piece=piece: build_toe(model, rails, k, piece, f"ElitePlatform{k}Toe{piece}"))
+                lambda model, k=k, piece=piece: build_toe(model, rails, k, piece, f"ElitePlatform{k}Toe{t}{piece}"))
     flights = rails.flights
     foot = rails.top_rail and rails.mid_rail
     if rails.top_rail:
         for k in range(len(flights)):
             cuts = flight_cuts(rails, pairs, k)
             for i, suffix in _pieces(cuts):
-                add("Stair top rail", f"Flight {k + 1} top rail{suffix}", f"top rail {k + 1} {i}",
+                add("Stair top rail", f"Flight {k + 1} {w}top rail{suffix}", f"top rail {k + 1} {i}",
                     lambda model, k=k, cuts=cuts, i=i: build_spliced(
-                        model, lambda m: build_top_rail(m, rails, k, foot and k == 0, f"EliteRailF{k + 1}"),
-                        lambda m, phi, nm: rail_gap(m, rails, k, phi, nm), cuts, i, f"EliteRailF{k + 1}"))
+                        model, lambda m: build_top_rail(m, rails, k, foot and k == 0, f"EliteRail{t}F{k + 1}"),
+                        lambda m, phi, nm: rail_gap(m, rails, k, phi, nm), cuts, i, f"EliteRail{t}F{k + 1}"))
         for k in range(1, rails.landings + 1):
             for side in rails.sides_met(k):
-                add("Stair rail end", f"Platform {k} rail end {side}", f"end {k} {side}",
+                add("Stair rail end", f"Platform {k} {w}rail end {side}", f"end {k} {side}",
                     lambda model, k=k, side=side: build_end_piece(model, rails, k, side, profile,
-                                                                  f"ElitePlatform{k}RailEnd{side}"))
-                add("Stair top rail", f"Platform {k} top rail level {side}", f"level {k} {side}",
+                                                                  f"ElitePlatform{k}Rail{t}End{side}"))
+                add("Stair top rail", f"Platform {k} {w}top rail level {side}", f"level {k} {side}",
                     lambda model, k=k, side=side: build_level(model, rails, k, side, profile,
-                                                              f"ElitePlatform{k}RailLevel{side}"))
+                                                              f"ElitePlatform{k}Rail{t}Level{side}"))
             for piece in ("A", "B", "run") if narrow[k] else ("run",):
-                label = f"Platform {k} top rail" + (f" {piece}" if narrow[k] else "")
+                label = f"Platform {k} {w}top rail" + (f" {piece}" if narrow[k] else "")
                 add("Stair top rail", label, f"platform rail {k} {piece}",
                     lambda model, k=k, piece=piece: build_platform_rail(model, rails, k, piece, profile,
-                                                                        f"ElitePlatform{k}Rail{piece}"))
+                                                                        f"ElitePlatform{k}Rail{t}{piece}"))
     if rails.mid_rail:
         for k in range(len(flights)):
             cuts = flight_cuts(rails, pairs, k)
             for i, suffix in _pieces(cuts):
-                add("Stair midrail", f"Flight {k + 1} midrail{suffix}", f"midrail {k + 1} {i}",
+                add("Stair midrail", f"Flight {k + 1} {w}midrail{suffix}", f"midrail {k + 1} {i}",
                     lambda model, k=k, cuts=cuts, i=i: build_spliced(
-                        model, lambda m: build_midrail(m, rails, k, foot and k == 0, f"EliteMidF{k + 1}"),
-                        lambda m, phi, nm: rail_gap(m, rails, k, phi, nm), cuts, i, f"EliteMidF{k + 1}"))
+                        model, lambda m: build_midrail(m, rails, k, foot and k == 0, f"EliteMid{t}F{k + 1}"),
+                        lambda m, phi, nm: rail_gap(m, rails, k, phi, nm), cuts, i, f"EliteMid{t}F{k + 1}"))
         for k in range(1, rails.landings + 1):
             for side in rails.sides_met(k):
-                add("Stair midrail", f"Platform {k} midrail level {side}", f"mid level {k} {side}",
+                add("Stair midrail", f"Platform {k} {w}midrail level {side}", f"mid level {k} {side}",
                     lambda model, k=k, side=side: build_mid_level(model, rails, k, side,
-                                                                  f"ElitePlatform{k}MidLevel{side}"))
+                                                                  f"ElitePlatform{k}Mid{t}Level{side}"))
             for piece in ("A", "B", "run") if narrow[k] else ("run",):
-                label = f"Platform {k} midrail" + (f" {piece}" if narrow[k] else "")
+                label = f"Platform {k} {w}midrail" + (f" {piece}" if narrow[k] else "")
                 add("Stair midrail", label, f"platform mid {k} {piece}",
                     lambda model, k=k, piece=piece: build_platform_mid(model, rails, k, piece,
-                                                                       f"ElitePlatform{k}Mid{piece}"))
+                                                                       f"ElitePlatform{k}Mid{t}{piece}"))
     if foot:
-        add("Stair rail end", "Foot end", "foot", lambda model: build_foot(model, rails, profile, "EliteRailBottomEnd"))
+        add("Stair rail end", f"{'Inside foot' if rails.inner else 'Foot'} end", "foot",
+            lambda model: build_foot(model, rails, profile, f"EliteRail{t}BottomEnd"))
     return out
 
 
@@ -526,19 +567,21 @@ def rail_jobs(job, rails: Rails, profile: str, common: dict, place, pairs=()) ->
 
 def grab_pipes(rails: Rails, grab, posts) -> list:
     """Each flight's grab rail pipe as grab_sw.add_grab_rails runs it: (flight, pipe, low end, high end), or None
-    for a flight with no post to hold it."""
-    way, face_r = _post_side(rails.r_b, False)
+    for a flight with no post to hold it. Where the side's platforms have no rails (``Rails.railed``: STWE's inside
+    pipe handrail) each runs from its first tread's front edge to its top tread's."""
+    way, face_r = _post_side(rails.walk, rails.inner)
     radius = face_r - way * (g.BRACKET_OVERALL_IN - g.BRACKET_IN / 2.0)
     flights = rails.flights
+    landings = rails.landings if rails.railed else 0
     out = []
     for k, flight in enumerate(flights):
         if not any((post.index - 1) // rails.per_flight == k for post in posts):
             out.append(None)
             continue
-        low = flight.front(flight.first) if k == 0 else g._miter_phi(
+        low = flight.front(flight.first) if k == 0 or not rails.railed else g._miter_phi(
             flights[k - 1], flight, face_r, rails.r_a, rails.pb, rails.post_in, rails.mid_top, "B")
         high = g._miter_phi(flight, None, face_r, rails.r_a, rails.pb, rails.post_in, rails.mid_top, "A") if (
-            k < rails.landings) else flight.front(flight.last)
+            k < landings) else flight.front(flight.last)
         pipe = g._Pipe(flight, radius, grab.top)
         lo, hi = pipe.end(low, grab.low, -1.0), pipe.end(high, grab.high, 1.0)
         if hi - lo < flight.step / 2.0:
@@ -566,7 +609,7 @@ def bracket_posts(rails: Rails, grab, posts) -> list:
 def build_bracket(model, rails: Rails, grab, post, name: str) -> None:
     """The PC #34 under the pipe at ``post`` (grab_sw._bracket), on the pipe as every flight's runs: one piece, turned
     and raised with its post."""
-    way, face_r = _post_side(rails.r_b, False)
+    way, face_r = _post_side(rails.walk, rails.inner)
     radius = face_r - way * (g.BRACKET_OVERALL_IN - g.BRACKET_IN / 2.0)
     flight = rails.flights[(post.index - 1) // rails.per_flight]
     pipe = g._Pipe(flight, radius, grab.top)
@@ -578,6 +621,7 @@ def grab_jobs(job, rails: Rails, grab, posts, seat, common: dict, place, pairs=(
     its two caps where they are, and the one PC #34 modelled at the flight posts' seat and put under every post the
     pipe reaches."""
     out = []
+    w, t = rails.word, rails.tag
     params = dict(common, grab=[grab.top, grab.low, grab.high])
     for held in grab_pipes(rails, grab, posts):
         if held is None:
@@ -585,21 +629,23 @@ def grab_jobs(job, rails: Rails, grab, posts, seat, common: dict, place, pairs=(
         k, pipe, lo, hi = held
         cuts = flight_cuts(rails, pairs, k)
         for i, suffix in _pieces(cuts):
-            out.append(job("Stair grab rail", f"Flight {k + 1} grab rail{suffix}",
-                           dict(params, piece=f"pipe {k + 1} {i}"),
+            out.append(job("Stair grab rail", f"Flight {k + 1} {w}grab rail{suffix}",
+                           dict(params, piece=f"{w}pipe {k + 1} {i}"),
                            lambda model, pipe=pipe, lo=lo, hi=hi, k=k, cuts=cuts, i=i: build_spliced(
-                               model, lambda m: g._pipe(m, pipe, lo, hi, f"EliteGrabF{k + 1}"),
-                               lambda m, phi, nm: pipe_gap(m, rails, grab, k, phi, nm), cuts, i, f"EliteGrabF{k + 1}"),
+                               model, lambda m: g._pipe(m, pipe, lo, hi, f"EliteGrab{t}F{k + 1}"),
+                               lambda m, phi, nm: pipe_gap(m, rails, grab, k, phi, nm), cuts, i,
+                               f"EliteGrab{t}F{k + 1}"),
                            (place(),)))
         for end, phi, way in (("low", lo, -1.0), ("high", hi, 1.0)):
-            out.append(job("Stair grab rail cap", f"Flight {k + 1} grab rail cap {end}",
-                           dict(params, piece=f"cap {k + 1} {end}"),
+            out.append(job("Stair grab rail cap", f"Flight {k + 1} {w}grab rail cap {end}",
+                           dict(params, piece=f"{w}cap {k + 1} {end}"),
                            lambda model, pipe=pipe, phi=phi, way=way, k=k, end=end:
-                           g._cap(model, pipe, phi, way, f"EliteGrabF{k + 1}Cap{end.title()}"), (place(),)))
+                           g._cap(model, pipe, phi, way, f"EliteGrab{t}F{k + 1}Cap{end.title()}"), (place(),)))
     held = bracket_posts(rails, grab, posts)
     if held:
-        out.append(job("Stair grab rail bracket", "Grab rail bracket", dict(params, piece="bracket"),
-                       lambda model: build_bracket(model, rails, grab, seat, "EliteGrabBracket"),
+        out.append(job("Stair grab rail bracket", f"{'Inside grab' if rails.inner else 'Grab'} rail bracket",
+                       dict(params, piece=f"{w}bracket"),
+                       lambda model: build_bracket(model, rails, grab, seat, f"EliteGrab{t}Bracket"),
                        tuple(place(p.phi - seat.phi, p.foot - seat.foot) for p in held)))
     return out
 
@@ -608,12 +654,13 @@ def grab_jobs(job, rails: Rails, grab, posts, seat, common: dict, place, pairs=(
 
 
 def split_pairs(rails: Rails, posts, wanted) -> list:
-    """The outer handrail's splices as stair_sw._rail_splits pairs them: (low post, high post) for each wanted
-    ("outer", pan of the post below the bay) whose bay has a post either side, in its flight."""
+    """The side's handrail splices as stair_sw._rail_splits pairs them: (low post, high post) for each wanted
+    (side, pan of the post below the bay), "outer" or "inner" as ``rails`` is, whose bay has a post either side, in
+    its flight."""
     mine = sorted(posts, key=lambda p: p.index)
     out = []
     for side, pan in wanted:
-        if side != "outer":
+        if side != ("inner" if rails.inner else "outer"):
             continue
         low = next((p for p in mine if p.index == pan), None)
         high = next((p for p in mine if p.index > pan
@@ -633,13 +680,13 @@ def rail_gap(model, rails: Rails, k: int, phi: float, name: str) -> None:
     flight = rails.flights[k]
     _top, foot, _up = rs.connector_ends(flight, phi, rails.face_r)
     half = rs.GAP_IN / 2.0 / rails.face_r
-    s._sector_cut(model, (rails.face_r - 0.5, rails.face_r + LEG_IN), phi - half, phi + half, foot - r.BAR_IN,
+    s._sector_cut(model, rs.gap_radii(rails.face_r, rails.side), phi - half, phi + half, foot - r.BAR_IN,
                   flight.top(phi) + 1.0, name)
     s._rebuild(model)
 
 
 def _grab_pipe(rails: Rails, grab, k: int):
-    way, face_r = _post_side(rails.r_b, False)
+    way, face_r = _post_side(rails.walk, rails.inner)
     return g._Pipe(rails.flights[k], face_r - way * (g.BRACKET_OVERALL_IN - g.BRACKET_IN / 2.0), grab.top)
 
 
@@ -702,12 +749,13 @@ def build_connector(model, rails: Rails, k: int, phi: float, away: float, profil
     top, foot, up = rs.connector_ends(flight, phi, face_r)
     climb = LEG_IN * flight.rise_per_rad / face_r + 0.5
     ys = (foot - climb, top + climb)
-    _upright_angle(model, phi, face_r, 1.0, away, ys, LEG_IN, profile, name)
-    r._trim(model, set(), _world(phi, face_r, 0.0, top), up, f"{name}Top")
-    r._trim(model, set(), _world(phi, face_r, 0.0, foot), tuple(-v for v in up), f"{name}Foot")
-    rs.standing_cutback(model, s._bodies(model)[0], phi, face_r, away, top, foot, name)
+    heel = rs.connector_heel(face_r, rails.side)
+    _upright_angle(model, phi, heel, rails.side, away, ys, LEG_IN, profile, name)
+    r._trim(model, set(), _world(phi, heel, 0.0, top), up, f"{name}Top")
+    r._trim(model, set(), _world(phi, heel, 0.0, foot), tuple(-v for v in up), f"{name}Foot")
+    rs.standing_cutback(model, s._bodies(model)[0], phi, heel, away, top, foot, name, rails.side)
     middle = (foot + top) / 2.0
-    points = [_world(phi, face_r + HOLE_GAUGE_IN, -THK_IN, middle + d)
+    points = [_world(phi, heel + rails.side * HOLE_GAUGE_IN, -THK_IN, middle + d)
               for d in (-rs.BOLT_SPACE_IN / 2.0, rs.BOLT_SPACE_IN / 2.0)]
     _holes_through(model, points[0], tuple(-v for v in _travel(phi)), points, rs.BOLT_HOLE_IN, END_HOLE_DEPTH_IN,
                    f"{name}Holes")
@@ -720,22 +768,23 @@ def build_round_bar(model, rails: Rails, grab, k: int, phi: float, name: str) ->
 
 
 def splice_jobs(job, rails: Rails, pairs, profile: str, grab, common: dict, place) -> list:
-    """Each outer splice's two connectors (with the top rail or midrail) and its round bar (with the grab rail)."""
+    """Each of the side's splices' two connectors (with the top rail or midrail) and its round bar (with a pipe)."""
     out = []
+    w, t = rails.word, rails.tag
     for low, high in pairs:
         k = (low.index - 1) // rails.per_flight
         phi = rs.split_angle(low, high)
-        tag = f"Splice at post {low.index}"
+        tag = f"{'Inside splice' if rails.inner else 'Splice'} at post {low.index}"
         if rails.top_rail or rails.mid_rail:
             for label, away in (("low", -1.0), ("high", 1.0)):
                 out.append(job("Stair splice connector", f"{tag}, {label} connector",
-                               dict(common, piece=f"connector {low.index} {label}"),
+                               dict(common, piece=f"{w}connector {low.index} {label}"),
                                lambda model, k=k, phi=phi, away=away, low=low, label=label:
                                build_connector(model, rails, k, phi, away, profile,
-                                               f"EliteRailSplit{low.index:02d}{label.title()}"), (place(),)))
+                                               f"EliteRailSplit{t}{low.index:02d}{label.title()}"), (place(),)))
         if grab is not None:
-            out.append(job("Stair splice round bar", f"{tag}, round bar", dict(common, piece=f"bar {low.index}"),
+            out.append(job("Stair splice round bar", f"{tag}, round bar", dict(common, piece=f"{w}bar {low.index}"),
                            lambda model, k=k, phi=phi, low=low:
-                           build_round_bar(model, rails, grab, k, phi, f"EliteRailSplit{low.index:02d}PipeBar"),
+                           build_round_bar(model, rails, grab, k, phi, f"EliteRailSplit{t}{low.index:02d}PipeBar"),
                            (place(),)))
     return out
