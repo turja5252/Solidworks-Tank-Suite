@@ -54,6 +54,7 @@ from swauto.stair.platform_sw import (
     _travel,
     _web_holes,
     _world,
+    clip_reach,
     platform_knees,
 )
 from swauto.stair.stringer_sw import _create_circle
@@ -65,18 +66,6 @@ C_FACE_IN = TAB_FROM_END_IN + TAB_THK_IN  # along the channel from the support: 
 def _plane_angle(point) -> float:
     """The stair's plan angle of a point (inches): 0 on +Z, as _world counts it."""
     return math.atan2(-point[0], point[2])
-
-
-def clip_reach(end, shell_r: float) -> float:
-    """How far the shell clip runs out from the channel web toward the shell, to the pad's outside face, along the
-    tab's line (platform_sw._shell_clip_and_pad)."""
-    qx, qz = _pad_point(end, shell_r)
-    phi_q = math.atan2(-qx, qz)
-    normal = (-math.sin(phi_q), math.cos(phi_q))
-    px, pz = end.world(C_FACE_IN, 0.0, 0.0)[0], end.world(C_FACE_IN, 0.0, 0.0)[2]
-    face_x, face_z = qx + SHELL_PAD_THK_IN * normal[0], qz + SHELL_PAD_THK_IN * normal[1]
-    return ((face_x - px) * normal[0] + (face_z - pz) * normal[1]) / (
-        end.inward[0] * normal[0] + end.inward[1] * normal[1])
 
 
 def pad_centres(lines, shell_r: float) -> list[tuple[float, float, float]]:

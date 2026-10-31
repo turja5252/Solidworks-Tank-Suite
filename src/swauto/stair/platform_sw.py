@@ -1114,17 +1114,30 @@ def _pad_point(end: _ChannelEnd, shell_r: float) -> tuple[float, float]:
     return px + s_near * end.inward[0], pz + s_near * end.inward[1]
 
 
+def clip_reach(end: _ChannelEnd, shell_r: float) -> float:
+    """How far the shell clip runs out from the channel web toward the shell, along the tab's line: to the pad's
+    outside face. Its end is square to the tab's line and the pad flat on the shell where the clip's mid-plane meets
+    it, which on a straight platform's inner side is a few degrees off square, so it stops where its nearer edge
+    meets the pad (run out to it at its face on the tab, its other edge went 0.03 in into the pad; found
+    2026-10-31)."""
+    qx, qz = _pad_point(end, shell_r)
+    phi_q = math.atan2(-qx, qz)
+    normal = (-math.sin(phi_q), math.cos(phi_q))
+    face_x, face_z = qx + SHELL_PAD_THK_IN * normal[0], qz + SHELL_PAD_THK_IN * normal[1]
+    reaches = []
+    for c in (TAB_FROM_END_IN + TAB_THK_IN, TAB_FROM_END_IN + TAB_THK_IN + SHELL_CLIP_THK_IN):  # its two edges
+        px, pz = end.world(c, 0.0, 0.0)[0], end.world(c, 0.0, 0.0)[2]
+        reaches.append(((face_x - px) * normal[0] + (face_z - pz) * normal[1])
+                       / (end.inward[0] * normal[0] + end.inward[1] * normal[1]))
+    return min(reaches)
+
+
 def _shell_clip_and_pad(model, end: _ChannelEnd, shell_r: float, tag: str) -> None:
     """Shell clip on the tab's face toward the platform middle, then the pad flat on the shell behind it."""
     c_face = TAB_FROM_END_IN + TAB_THK_IN
     qx, qz = _pad_point(end, shell_r)
     phi_q = math.atan2(-qx, qz)
-    normal = (-math.sin(phi_q), math.cos(phi_q))
-    # Out along the tab's line from the web to the pad's outside face.
-    px, pz = end.world(c_face, 0.0, 0.0)[0], end.world(c_face, 0.0, 0.0)[2]
-    face_x, face_z = qx + SHELL_PAD_THK_IN * normal[0], qz + SHELL_PAD_THK_IN * normal[1]
-    reach = ((face_x - px) * normal[0] + (face_z - pz) * normal[1]) / (end.inward[0] * normal[0] + end.inward[1] * normal[1])
-    h0, h1 = SHELL_CLIP_SHORT_IN, reach
+    h0, h1 = SHELL_CLIP_SHORT_IN, clip_reach(end, shell_r)
     depth, pad_tall = end.section.depth_in, end.section.pad_tall_in
     y0, y1 = end.top - depth, end.top
     y_mid = end.top - depth / 2.0
