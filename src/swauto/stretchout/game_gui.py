@@ -52,7 +52,7 @@ from swauto.stair.game import (
     view_x,
 )
 from swauto.stair.landings import PLATFORM, PLATFORM_KNEE_PAD, PLATFORM_PAD, platform_frame, shell_marks
-from swauto.stair.platform_sw import CHANNEL_IN, GRATING_IN, platform_knees
+from swauto.stair.platform_sw import GRATING_IN, platform_knees
 from swauto.stair.post_sw import RAIL_TOP_IN, TOP_GAP_IN
 from swauto.stair.rail_sw import PLATFORM_MID_TOP_IN
 from swauto.stair.stair_sw import stair_places
@@ -440,8 +440,9 @@ def build_game(parent, shared: dict, status_var: tk.StringVar) -> ttk.Frame:
         if anchor is None or not _inside(band, to_px(band, *anchor)):
             return
         cx, cy = to_px(band, *anchor)
-        if spot.kind == RADIAL:  # the radial channel's end, seen from outside: 4 in deep under the grating
-            low = to_px(band, anchor[0], anchor[1] - CHANNEL_IN)[1]
+        if spot.kind == RADIAL:  # the radial channel's end, seen from outside: 4 or 6 in deep under the grating
+            depth = state["geo"]["platforms"][spot.flight].section.depth_in
+            low = to_px(band, anchor[0], anchor[1] - depth)[1]
             canvas.create_rectangle(cx - 4, min(cy, low - 6), cx + 4, max(low, cy + 6), fill=_COLORS[RADIAL],
                                     outline=outline, width=2, tags=tags)
         else:

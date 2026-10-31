@@ -31,6 +31,7 @@ PLATFORM_LENGTH_IN = 36.0  # along the centreline: the lisp launcher's "centerli
 PLATFORM_SPACING_IN = 48.0
 SUPPORT_SPACING_IN = 96.0
 POST_BESIDE_IN = 4.0  # a platform post toward B from a radial, clear of the radial's coped end and its bolts
+PLATFORM_CHANNELS = ("C4", "C6")  # a platform frame's channel: C4x5.4 or C6x8.2 (the user, 2026-10-30)
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,8 @@ class PlatformSpec:
     the centreline (None: equal bays). The ends carry a knee brace and a shell clip, and so do enough radials between
     that no two supports are more than ``support_spacing_in`` apart (Chris Samm, 2026-10-30): ``supports`` are those
     radials, the same way (None: the fewest that do, nearest the middle of their bays). ``posts`` are the outer
-    side's posts between its two end posts, the same way (None: one beside each radial)."""
+    side's posts between its two end posts, the same way (None: one beside each radial). ``channel`` is the
+    frame's channel, C4 or C6 (``PLATFORM_CHANNELS``), every member of it the same."""
 
     length_in: float = PLATFORM_LENGTH_IN
     width_in: float = TREAD_PLATE_IN
@@ -55,6 +57,7 @@ class PlatformSpec:
     posts: tuple[float, ...] | None = None
     supports: tuple[float, ...] | None = None
     support_spacing_in: float = SUPPORT_SPACING_IN
+    channel: str = "C4"
 
     @property
     def is_rolled(self) -> bool:
@@ -95,6 +98,8 @@ class PlatformSpec:
                              "the stair's own platform.")
         if not 12.0 <= self.spacing_in <= 240.0:
             raise ValueError("The most between a platform's radials must be 12 to 240 in.")
+        if self.channel not in PLATFORM_CHANNELS:
+            raise ValueError(f"A platform's channel must be {' or '.join(PLATFORM_CHANNELS)}, not {self.channel}.")
 
 
 def held_radials(radials: tuple[float, ...], length_in: float, spacing_in: float) -> tuple[float, ...]:

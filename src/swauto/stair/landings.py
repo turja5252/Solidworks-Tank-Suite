@@ -19,8 +19,6 @@ from swauto.stair.development import develop_both
 from swauto.stair.inner_clip_sw import MIN_GAP_IN, clip_pad, clip_phi
 from swauto.stair.inner_clip_sw import PAD_TALL_IN as CLIP_PAD_TALL_IN
 from swauto.stair.platform_sw import (
-    CHANNEL_IN,
-    SHELL_PAD_TALL_IN,
     SHELL_PAD_THK_IN,
     TAB_OUT_IN,
     platform_knees,
@@ -120,7 +118,7 @@ def shell_marks(arrangement: StairArrangement) -> tuple[list[Mark], list[str]]:
         lines, last = platform_frame(arrangement, where, k)
         name = platform_name(arrangement, k)
         marks.append(Mark(PLATFORM, f"{name} (after tread {last.index})",
-                          _box(lines.phi_a, lines.phi_b, lines.top - CHANNEL_IN, lines.top)))
+                          _box(lines.phi_a, lines.phi_b, lines.top - lines.section.depth_in, lines.top)))
         found, said = platform_pad_marks(lines, shell_r, name)
         marks += found
         notes += said
@@ -142,7 +140,7 @@ def platform_name(arrangement: StairArrangement, k: int) -> str:
 
 
 def platform_pad_marks(lines, shell_r: float, name: str) -> tuple[list[Mark], list[str]]:
-    """The shell pads of a platform's supports (both ends and every radial between): a shell clip pad by each on
+    """The shell pads of a platform's supports (both ends and every held radial between): a shell clip pad by each on
     the inner side and a knee brace pad under each on the outer side, and notes where the shell leaves no room."""
     marks: list[Mark] = []
     notes: list[str] = []
@@ -151,7 +149,7 @@ def platform_pad_marks(lines, shell_r: float, name: str) -> tuple[list[Mark], li
     else:
         for label, angle, y in shell_pads(lines, shell_r):
             marks.append(Mark(PLATFORM_PAD, f"{name} shell clip pad {label}", center=(angle, y),
-                              size=(PAD_WIDE_IN, SHELL_PAD_TALL_IN)))
+                              size=(PAD_WIDE_IN, lines.section.pad_tall_in)))
     try:
         knees = platform_knees(lines, shell_r)
     except SolidWorksError as exc:

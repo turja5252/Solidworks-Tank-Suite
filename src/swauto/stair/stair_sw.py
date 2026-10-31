@@ -189,7 +189,8 @@ def create_stair_on_tank(
 
 
 def _platform_profiles(app) -> tuple[str, str, str]:
-    """C4x5.4 for the platform frames, L6x6x3/8 for the stringer clips, L3x3x3/8 for the knee braces."""
+    """C4x5.4 for the platform frames (a C6 platform's file is beside it), L6x6x3/8 for the stringer clips,
+    L3x3x3/8 for the knee braces."""
     from swauto.stair.brace_sw import angle_profile
     from swauto.stair.platform_sw import clip_profile, platform_profile
 
@@ -899,7 +900,7 @@ def _platforms(
     model, layout, places, per_flight: int, platforms: int, top_platform: bool, profiles, shell_od: float, progress,
     shapes: tuple = (),
 ) -> str:
-    """C4 frame past the top tread of each flight below a mid platform (and past the
+    """C4 (or C6) frame past the top tread of each flight below a mid platform (and past the
     last one for a top platform), of its shape in ``shapes``, the 6x6 clips where the
     stringers meet it, the shell clips by both ends of its inner channel and every
     radial between, and the knee braces under the outer channel at the same."""
@@ -950,10 +951,10 @@ def _platforms(
         after.append(str(last.index))
         if "Missed" in clips.note:
             missed.append(clips.note.split("Missed: ", 1)[1].rstrip("."))
-    if any(spec.is_rolled or spec.radial_positions() or spec.extra_in for spec in shapes):
+    if any(spec.is_rolled or spec.radial_positions() or spec.extra_in or spec.channel != "C4" for spec in shapes):
         note = " ".join(frames) + (
             " L6x6x3/8 clips at every stringer end that meets them, shell clips by both ends of each inner channel "
-            "and every radial, and L3x3x3/8 knee braces to the shell under the outer channel at the same."
+            "and every held radial, and L3x3x3/8 knee braces to the shell under the outer channel at the same."
         )
     else:
         note = (

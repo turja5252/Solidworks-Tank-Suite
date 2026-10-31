@@ -1,4 +1,4 @@
-"""A platform's supports as parts (partify, 2026-10-30): at each support (both ends and every radial between, as
+"""A platform's supports as parts (partify, 2026-10-30): at each support (both ends and every held radial between, as
 ``platform_sw._Lines.supports``) the shell tab welded to the inner channel, the shell clip bolted to it and its pad on
 the shell; and under the outer channel the hanger, the knee brace and its clip and pad on the shell.
 
@@ -7,9 +7,10 @@ add_platform_knee_braces), but sketched on planes from the same numbers instead 
 it, and each cuts its own bolt holes, so no part needs another. Shared files:
 
 * every shell pad, at the shell clips and under the knees, of every platform: one 1/4 x 4 x 6 plate, flat on the shell
-  at its middle, turned about the tank axis and lifted to each;
-* on a rolled platform the pieces at A and at every radial between are one piece turned about the tank axis; B's are
-  their mirror image, so they have files of their own;
+  at its middle, turned about the tank axis and lifted to each (a C6 platform's shell clip pads are 8 in tall, a
+  file of their own);
+* on a rolled platform the pieces at A and at every held radial between are one piece turned about the tank axis;
+  B's are their mirror image, so they have files of their own;
 * on a straight platform each support's pieces have their own files (their reach changes along the chords).
 
 Each is modelled at a seat its shape fixes (``parts_build``): a platform's pieces as if it were the first platform,
@@ -29,7 +30,6 @@ from swauto.stair.brace_sw import CLIP_THK_IN as KNEE_CLIP_THK_IN
 from swauto.stair.brace_sw import KNEE_HOLE_DIA_IN, LEG_THK_IN, _draw_pad, _extrude_to, _knee_angle, knee_pad
 from swauto.stair.grab_sw import _sketch_through
 from swauto.stair.platform_sw import (
-    CHANNEL_IN,
     CLIP_GAUGES_IN,
     CLIP_LEG_IN,
     CLIP_THK_IN,
@@ -78,30 +78,40 @@ def clip_reach(end, shell_r: float) -> float:
         end.inward[0] * normal[0] + end.inward[1] * normal[1])
 
 
-def pad_centres(lines, shell_r: float) -> list[tuple[float, float]]:
-    """(plan angle, height) of the middle of every shell pad of a platform: its shell clips' then its knees'."""
+def pad_centres(lines, shell_r: float) -> list[tuple[float, float, float]]:
+    """(plan angle, height, how tall) of the middle of every shell pad of a platform: its shell clips' (as tall as
+    its channel's ``Section.pad_tall_in``) then its knees' (SHELL_PAD_TALL_IN)."""
     centres = []
     for end in _channel_ends(lines):
         qx, qz = _pad_point(end, shell_r)
-        centres.append((math.atan2(-qx, qz), end.top - CHANNEL_IN / 2.0))
+        centres.append((math.atan2(-qx, qz), end.top - end.section.depth_in / 2.0, end.section.pad_tall_in))
     for _label, frame, knee, _back in platform_knees(lines, shell_r):
         t_mid, y = knee_pad(knee)
-        centres.append((_plane_angle(frame.world(shell_r, t_mid, y)), y))
+        centres.append((_plane_angle(frame.world(shell_r, t_mid, y)), y, SHELL_PAD_TALL_IN))
     return centres
 
 
-def pad_job(job, platforms: list, shell_r: float, common: dict, place, more=()):
-    """The one shell pad piece (``job`` the PartJob class): modelled flat on the shell at angle 0 and height 0, and
-    put by ``place(turn, lift)`` at every pad of every platform (``platforms`` are (k, lines) on the ground-0
-    stair), its shell clips' and its knees', and at ``more`` (plan angle, height), the stair's knee braces'."""
-    centres = [c for _k, lines in platforms for c in pad_centres(lines, shell_r)] + list(more)
-    return job("Stair shell pad", "Shell pad", dict(common, piece="shell pad", shell_od=shell_r),
-               lambda model: build_pad(model, 0.0, 0.0, shell_r, "EliteShellPad"),
-               tuple(place(phi, y) for phi, y in centres))
+def pad_jobs(job, platforms: list, shell_r: float, common: dict, place, more=()) -> list:
+    """The shell pad pieces (``job`` the PartJob class), one for each height of pad: each modelled flat on the shell
+    at angle 0 and height 0, and put by ``place(turn, lift)`` at every pad of that height of every platform
+    (``platforms`` are (k, lines) on the ground-0 stair), its shell clips' and its knees', and at ``more`` (plan
+    angle, height), the stair's knee braces', which are SHELL_PAD_TALL_IN."""
+    centres = [c for _k, lines in platforms for c in pad_centres(lines, shell_r)]
+    centres += [(phi, y, SHELL_PAD_TALL_IN) for phi, y in more]
+    out = []
+    for tall in sorted({c[2] for c in centres}):
+        label = "Shell pad" if tall == SHELL_PAD_TALL_IN else f"Shell pad {tall:g} in tall"
+        params = dict(common, piece="shell pad", shell_od=shell_r)
+        if tall != SHELL_PAD_TALL_IN:
+            params["tall"] = tall
+        out.append(job("Stair shell pad", label, params,
+                       lambda model, tall=tall: build_pad(model, 0.0, 0.0, shell_r, "EliteShellPad", tall),
+                       tuple(place(phi, y) for phi, y, high in centres if high == tall)))
+    return out
 
 
 def support_groups(lines) -> list[tuple[str, list[int]]]:
-    """Which supports share files: (file tag, indexes into supports()). Rolled: A with every radial between (one
+    """Which supports share files: (file tag, indexes into supports()). Rolled: A with every held radial between (one
     piece turned about the axis), B alone. Straight: each on its own."""
     supports = lines.supports()
     if lines.rolled:
@@ -139,7 +149,7 @@ def _holes_through(model, plane_point, normal, points, dia_in: float, depth_in: 
 
 
 def _shell_bolts(end) -> list[tuple[float, float, float]]:
-    y_mid = end.top - CHANNEL_IN / 2.0
+    y_mid = end.top - end.section.depth_in / 2.0
     return [end.world(C_FACE_IN, SHELL_BOLT_OUT_IN, y_mid + dy) for dy in (SHELL_BOLT_SPACE_IN / 2.0,
                                                                           -SHELL_BOLT_SPACE_IN / 2.0)]
 
@@ -147,13 +157,13 @@ def _shell_bolts(end) -> list[tuple[float, float, float]]:
 def build_tab(model, end, name: str) -> None:
     """3/8 tab square to the inner channel's web back, out toward the shell, with its two bolt holes."""
     c0, c1 = TAB_FROM_END_IN, C_FACE_IN
-    y0, y1 = end.top - CHANNEL_IN, end.top
+    y0, y1 = end.top - end.section.depth_in, end.top
     y_mid = (y0 + y1) / 2.0
     corners = [end.world(c, 0.0, y) for c, y in ((c0, y0), (c1, y0), (c1, y1), (c0, y1))]
     sketch = _sketch_through(model, end.world((c0 + c1) / 2.0, 0.0, y_mid), (end.inward[0], 0.0, end.inward[1]),
                              name, _outline(corners, name))
-    _extrude_to(model, sketch, TAB_OUT_IN, end.world((c0 + c1) / 2.0, TAB_OUT_IN / 2.0, y_mid), CHANNEL_IN + 0.1,
-                name)
+    _extrude_to(model, sketch, TAB_OUT_IN, end.world((c0 + c1) / 2.0, TAB_OUT_IN / 2.0, y_mid),
+                end.section.depth_in + 0.1, name)
     _holes_through(model, _shell_bolts(end)[0], (end.along[0], 0.0, end.along[1]), _shell_bolts(end), HOLE_DIA_IN,
                    TAB_THK_IN + 0.05, name)
 
@@ -161,33 +171,35 @@ def build_tab(model, end, name: str) -> None:
 def build_shell_clip(model, end, shell_r: float, name: str) -> None:
     """3/8 shell clip on the tab's face toward the platform middle, from just short of the web out to the pad."""
     h0, h1 = SHELL_CLIP_SHORT_IN, clip_reach(end, shell_r)
-    y0, y1 = end.top - CHANNEL_IN, end.top
+    y0, y1 = end.top - end.section.depth_in, end.top
     y_mid = (y0 + y1) / 2.0
     corners = [end.world(C_FACE_IN, h, y) for h, y in ((h0, y0), (h1, y0), (h1, y1), (h0, y1))]
     along = (end.along[0], 0.0, end.along[1])
     sketch = _sketch_through(model, end.world(C_FACE_IN, (h0 + h1) / 2.0, y_mid), along, name,
                              _outline(corners, name))
     _extrude_to(model, sketch, SHELL_CLIP_THK_IN,
-                end.world(C_FACE_IN + SHELL_CLIP_THK_IN / 2.0, (h0 + h1) / 2.0, y_mid), CHANNEL_IN + 0.1, name)
+                end.world(C_FACE_IN + SHELL_CLIP_THK_IN / 2.0, (h0 + h1) / 2.0, y_mid), end.section.depth_in + 0.1,
+                name)
     _holes_through(model, _shell_bolts(end)[0], along, _shell_bolts(end), HOLE_DIA_IN, SHELL_CLIP_THK_IN + 0.05,
                    name)
 
 
-def build_pad(model, phi: float, y: float, shell_r: float, name: str) -> None:
-    """1/4 x 4 x 6 pad with full-radius ends, flat on the shell at its middle."""
+def build_pad(model, phi: float, y: float, shell_r: float, name: str, tall: float = SHELL_PAD_TALL_IN) -> None:
+    """1/4 x 4 pad ``tall`` (6 in) with full-radius ends, flat on the shell at its middle."""
     radial = _radial(phi)
 
     def draw(manager, to_sketch):
-        _draw_pad(manager, lambda t, yy: to_sketch(_world(phi, shell_r, t, yy)), 0.0, y, SHELL_PAD_TALL_IN, name)
+        _draw_pad(manager, lambda t, yy: to_sketch(_world(phi, shell_r, t, yy)), 0.0, y, tall, name)
 
     sketch = _sketch_through(model, _world(phi, shell_r, 0.0, y), radial, name, draw)
     _extrude_to(model, sketch, SHELL_PAD_THK_IN, _world(phi, shell_r + SHELL_PAD_THK_IN / 2.0, 0.0, y),
-                SHELL_PAD_TALL_IN + 0.1, name)
+                tall + 0.1, name)
 
 
-def build_hanger(model, frame, knee, back: float, top: float, name: str) -> None:
-    """3/8 hanger under the outer channel (platform_sw._hanger), with the knee's top bolt hole."""
-    _hanger(model, frame, back, top, knee.side, name)
+def build_hanger(model, frame, knee, back: float, bottom: float, name: str) -> None:
+    """3/8 hanger under the outer channel (its bottom at ``bottom``; platform_sw._hanger), with the knee's top bolt
+    hole."""
+    _hanger(model, frame, back, bottom, knee.side, name)
     r1, y1 = knee.top
     point = frame.world(r1, 0.0, y1)
     _holes_through(model, point, frame.travel, [point], KNEE_HOLE_DIA_IN, HANGER_THK_IN + 0.1, name)
@@ -280,7 +292,7 @@ def support_jobs(job, k: int, seat, shell_r: float, knee_file: str, common: dict
     """The PartJobs (``job`` the PartJob class) of platform ``k``'s tabs, shell clips, hangers, knees and knee
     clips, modelled on ``seat`` (its lines as if it were the first platform) and put by ``place(turn)``, the real
     platform turned ``turn`` more; ``common`` is what shapes them all. The pads are one job for the whole stair
-    (``pad_job``)."""
+    (``pad_jobs``)."""
     supports = seat.supports()
     ends = _channel_ends(seat)
     knees = platform_knees(seat, shell_r)
@@ -300,7 +312,7 @@ def support_jobs(job, k: int, seat, shell_r: float, knee_file: str, common: dict
                 lambda model, end=end, name=name: build_shell_clip(model, end, shell_r, f"{name}ShellClip"), places),
             job("Stair platform hanger", f"Platform {k} hanger {at}", dict(params, piece="hanger"),
                 lambda model, frame=frame, knee=knee, back=back, name=name:
-                build_hanger(model, frame, knee, back, seat.top, f"{name}Hanger"), places),
+                build_hanger(model, frame, knee, back, seat.top - seat.section.depth_in, f"{name}Hanger"), places),
             job("Stair platform knee", f"Platform {k} knee brace {at}", dict(params, piece="knee"),
                 lambda model, frame=frame, knee=knee, name=name: build_knee(model, frame, knee, knee_file,
                                                                            f"{name}Knee"), places),

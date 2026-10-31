@@ -37,9 +37,8 @@ from swauto.stair.brace_parts import brace_holes, brace_jobs
 from swauto.stair.brace_sw import CAP_THK_IN, HOLE_DIA_IN, angle_profile
 from swauto.stair.grab_sw import GrabRail, _sketch_through
 from swauto.stair.inner_clip_sw import clip_angle_profile
-from swauto.stair.platform_parts import _holes_through, clip_jobs, clip_sides, pad_job, support_jobs, web_holes
+from swauto.stair.platform_parts import _holes_through, clip_jobs, clip_sides, pad_jobs, support_jobs, web_holes
 from swauto.stair.platform_sw import (
-    CHANNEL_IN,
     _arc_member,
     _frame,
     _radial,
@@ -50,6 +49,7 @@ from swauto.stair.platform_sw import (
     clip_profile,
     platform_lines,
     platform_profile,
+    section_file,
 )
 from swauto.stair.post_sw import (
     HOLE_GAUGE_IN,
@@ -241,7 +241,7 @@ def flight_params(where) -> dict:
 def shape_params(spec: PlatformSpec) -> dict:
     """What shapes a platform's pieces."""
     return {"length_in": spec.length_in, "width_in": spec.width_in, "rolled": spec.is_rolled,
-            "radials": list(spec.radial_positions())}
+            "radials": list(spec.radial_positions()), "channel": spec.channel}
 
 
 def bolt_points(place, radius: float) -> list[tuple[float, float, float]]:
@@ -281,8 +281,9 @@ def platform_jobs(parts: StairParts, frame_file: str) -> list[PartJob]:
     out = []
     flight = flight_params(parts.where)
     for k, lines, dphi, dy in parts.platform_seats():
-        base = lines.top - CHANNEL_IN
+        base = lines.top - lines.section.depth_in
         name = f"ElitePlatform{k}"
+        channel_file = section_file(frame_file, lines.section)
         common = {"version": PARTS_VERSION, "flight": flight, "shape": shape_params(parts.stair.platform(k - 1))}
         home = (parts.place(dphi, dy),)
         clips = clip_sides(k, parts.platforms)
@@ -294,36 +295,39 @@ def platform_jobs(parts: StairParts, frame_file: str) -> list[PartJob]:
                                _then_holes(build, holes, f"{name}{piece}"), home))
 
         if lines.rolled:
-            member("C", f"Platform {k} side C", lambda model, lines=lines, base=base, name=name:
-                   _arc_member(model, lines.r_in, lines.phi_a, lines.phi_b, base, 0.0, frame_file, f"{name}C"))
-            member("D", f"Platform {k} side D", lambda model, lines=lines, base=base, name=name:
-                   _arc_member(model, lines.r_out, lines.phi_a, lines.phi_b, base + CHANNEL_IN, math.pi, frame_file,
-                               f"{name}D"))
+            member("C", f"Platform {k} side C", lambda model, lines=lines, base=base, name=name, file=channel_file:
+                   _arc_member(model, lines.r_in, lines.phi_a, lines.phi_b, base, 0.0, file, f"{name}C",
+                               lines.section))
+            member("D", f"Platform {k} side D", lambda model, lines=lines, base=base, name=name, file=channel_file:
+                   _arc_member(model, lines.r_out, lines.phi_a, lines.phi_b, base + lines.section.depth_in, math.pi,
+                               file, f"{name}D", lines.section))
             ends = [lines.supports()[0], lines.supports()[-1]]
         else:
             for side in "ABCD":
                 holes = (side,) if side in clips else ()
                 member(side, f"Platform {k} side {side}",
-                       lambda model, lines=lines, base=base, name=name, side=side, holes=holes:
-                       _straight_side(model, lines, base, frame_file, name, side, holes), holes=bool(holes))
+                       lambda model, lines=lines, base=base, name=name, side=side, holes=holes, file=channel_file:
+                       _straight_side(model, lines, base, file, name, side, holes), holes=bool(holes))
             ends = []
         for label, angle, way in ends:
             holes = (label,) if label in clips else ()
             member(label, f"Platform {k} radial {label}",
-                   lambda model, lines=lines, base=base, angle=angle, way=way, label=label, name=name, holes=holes:
-                   _end_radial(model, lines, angle, way, base, frame_file, name, label, holes), holes=bool(holes))
+                   lambda model, lines=lines, base=base, angle=angle, way=way, label=label, name=name, holes=holes,
+                   file=channel_file: _end_radial(model, lines, angle, way, base, file, name, label, holes),
+                   holes=bool(holes))
         between = lines.members()[1:-1]
         if between and lines.rolled:
             label, angle, way = between[0]
             out.append(PartJob(CHANNELS, f"Platform {k} radials between", dict(common, piece="between"),
-                               lambda model, lines=lines, base=base, angle=angle, way=way, name=name:
-                               _radial_member(model, lines, angle, way, base, frame_file, f"{name}R"),
+                               lambda model, lines=lines, base=base, angle=angle, way=way, name=name,
+                               file=channel_file: _radial_member(model, lines, angle, way, base, file, f"{name}R"),
                                tuple(parts.place(dphi + a - angle, dy) for _label, a, _way in between)))
         else:
             for label, angle, way in between:
                 out.append(PartJob(CHANNELS, f"Platform {k} radial {label}", dict(common, piece=label),
-                                   lambda model, lines=lines, base=base, angle=angle, way=way, label=label, name=name:
-                                   _radial_member(model, lines, angle, way, base, frame_file, f"{name}{label}"),
+                                   lambda model, lines=lines, base=base, angle=angle, way=way, label=label, name=name,
+                                   file=channel_file:
+                                   _radial_member(model, lines, angle, way, base, file, f"{name}{label}"),
                                    home))
     return out
 
@@ -344,7 +348,7 @@ def _straight_side(model, lines, base: float, frame_file: str, name: str, side: 
                                               (lines.r_out, lines.phi_b), (lines.r_in, lines.phi_b))]
     if _signed_area(outline) < 0:
         outline.reverse()  # counterclockwise in the sketch puts the flanges inside
-    _frame(model, outline, base, frame_file, name)
+    _frame(model, outline, base, frame_file, name, lines.section)
     bodies = s._bodies(model)
 
     def where(body):
@@ -441,7 +445,7 @@ def jobs(parts: StairParts, post_file: str = "", frame_file: str = "", knee_file
         out.extend(clip_jobs(PartJob, platforms, parts.platforms, clip_file,
                              {"version": PARTS_VERSION, "flight": flight}, parts.place))
     if platforms or knee_pads:
-        out.append(pad_job(PartJob, platforms, parts.shell_od, {"version": PARTS_VERSION}, parts.place, knee_pads))
+        out.extend(pad_jobs(PartJob, platforms, parts.shell_od, {"version": PARTS_VERSION}, parts.place, knee_pads))
     if posts:
         common = {"version": PARTS_VERSION, "flight": flight, "rails": parts.rail_params()}
         rails = parts.rails()

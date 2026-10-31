@@ -276,3 +276,59 @@ def test_the_cope_outline_is_the_channel_section_grown_a_sixteenth_all_round():
     nx, ny = 1.0 / math.sqrt(37.0), 6.0 / math.sqrt(37.0)
     assert (a[0] - 0.4180) * nx + (a[1] - 0.3737) * ny == pytest.approx(COPE_GAP_IN, abs=1e-3) or \
         (b[0] - 0.4180) * nx + (b[1] - 0.3737) * ny == pytest.approx(COPE_GAP_IN, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------------------------- C6 platforms
+
+
+def test_a_platform_channel_is_c4_or_c6_typed_one_per_platform():
+    from swauto.stair.stringer_gui import platform_channels
+
+    assert PlatformSpec().channel == "C4"
+    PlatformSpec(channel="C6").validate()
+    with pytest.raises(ValueError, match="C4 or C6"):
+        PlatformSpec(channel="C8").validate()
+    assert platform_channels("c4, 6", "Mid platform channels") == ["C4", "C6"]
+    with pytest.raises(ValueError, match="C4 or C6"):
+        platform_channels("C5", "Mid platform channels")
+
+
+def test_a_c6_platform_keeps_its_top_and_drops_its_bottom_and_knee_braces_2_in():
+    c4, c6 = _lines(PlatformSpec(150.0)), _lines(PlatformSpec(150.0, channel="C6"))
+    assert (c4.section.name, c6.section.name) == ("C4x5.4", "C6x8.2")
+    assert c6.top == c4.top  # flush with the treads under the grating
+    assert c6.top - c6.section.depth_in == pytest.approx(c4.top - c4.section.depth_in - 2.0)
+    # The hanger hangs from the channel's bottom, so each knee brace and its pad sit 2 in lower.
+    for (_l4, _f4, k4, _b4), (_l6, _f6, k6, _b6) in zip(platform_knees(c4, STAIR.shell_od_in),
+                                                        platform_knees(c6, STAIR.shell_od_in), strict=True):
+        assert k6.top == pytest.approx((k4.top[0], k4.top[1] - 2.0))
+        assert k6.bottom == pytest.approx((k4.bottom[0], k4.bottom[1] - 2.0))
+    # The shell clips' pads stay on the channel's middle and reach 1 in past its top and bottom: 8 in on a C6.
+    for (_l4, a4, y4), (_l6, a6, y6) in zip(shell_pads(c4, STAIR.shell_od_in), shell_pads(c6, STAIR.shell_od_in),
+                                            strict=True):
+        assert a6 == pytest.approx(a4) and y6 == pytest.approx(y4 - 1.0)
+    assert (c4.section.pad_tall_in, c6.section.pad_tall_in) == (6.0, 8.0)
+    arrangement = StairArrangement(StringerMock(treads=21, platform_specs=(PlatformSpec(150.0, channel="C6"),)),
+                                   platforms=1)
+    pads = [m for m in shell_marks(arrangement)[0] if "shell clip pad" in m.label]
+    assert pads and all(m.size[1] == 8.0 for m in pads)
+
+
+def test_a_c6_cope_is_the_c6_library_section_grown_a_sixteenth_all_round():
+    from swauto.stair.platform_sw import C6, COPE_GAP_IN, _grown_section
+
+    loop = _grown_section(COPE_GAP_IN, C6)
+    for shape, following in zip(loop, loop[1:] + loop[:1], strict=True):
+        assert shape[-1] == pytest.approx(following[1], abs=1e-9)
+    points = [p for shape in loop for p in shape[1:]]
+    ts, ys = [p[0] for p in points], [p[1] for p in points]
+    assert min(ts) == pytest.approx(-COPE_GAP_IN) and max(ts) == pytest.approx(1.920 + COPE_GAP_IN)
+    assert min(ys) == pytest.approx(-COPE_GAP_IN) and max(ys) == pytest.approx(6.0 + COPE_GAP_IN)
+    assert any(shape[0] == "line" and shape[1][0] == pytest.approx(0.200 + COPE_GAP_IN)
+               and shape[2][0] == pytest.approx(0.200 + COPE_GAP_IN) for shape in loop)
+    # The library's C6x8.2 inside face runs through (0.4507, 0.4446) at 1:6; grown, it is a sixteenth off it.
+    (_kind, a, b), = [shape for shape in loop if shape[0] == "line" and abs(shape[1][0] - shape[2][0]) > 0.5
+                      and abs(shape[1][1] - shape[2][1]) > 0.1 and shape[1][1] < 3.0]
+    nx, ny = 1.0 / math.sqrt(37.0), 6.0 / math.sqrt(37.0)
+    assert (b[1] - a[1]) / (b[0] - a[0]) == pytest.approx(-1.0 / 6.0, rel=1e-3)
+    assert (a[0] - 0.4507) * nx + (a[1] - 0.4446) * ny == pytest.approx(COPE_GAP_IN, abs=1e-3)

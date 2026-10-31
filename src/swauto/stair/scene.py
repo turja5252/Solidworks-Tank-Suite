@@ -321,7 +321,7 @@ def _platform(lines, shell_r: float, label: str) -> list[Face]:
     """The deck between the platform's sides, rolled or straight, a dark rib along each radial between its ends,
     and at every support the knee brace under the outer side and the shell clip off the inner one, each to its pad
     on the shell."""
-    y0, y1 = lines.top - CHANNEL_IN, lines.top
+    y0, y1 = lines.top - lines.section.depth_in, lines.top
     if lines.rolled:
         faces = _block(lines.phi_a, lines.phi_b, lines.r_in, lines.r_out, y0, y1, PLATFORM, label)
     else:
@@ -340,9 +340,10 @@ def _platform(lines, shell_r: float, label: str) -> list[Face]:
         faces += _strut((r1, frame.phi, k1), (r2, frame.phi, k2), KNEE_COLOR, f"{label}: knee brace {name}")
         faces += _block(frame.phi - 2.0 / shell_r, frame.phi + 2.0 / shell_r, shell_r, shell_r + 0.6, k2 - 3.0,
                         k2 + 3.0, KNEE_COLOR, f"{label}: knee brace pad {name}")
+    half = lines.section.pad_tall_in / 2.0
     for name, angle, y in shell_pads(lines, shell_r):
         faces += _strut((lines.r_in, angle, y), (shell_r + 0.6, angle, y), CLIP_COLOR, f"{label}: shell clip {name}")
-        faces += _block(angle - 2.0 / shell_r, angle + 2.0 / shell_r, shell_r, shell_r + 0.6, y - 3.0, y + 3.0,
+        faces += _block(angle - 2.0 / shell_r, angle + 2.0 / shell_r, shell_r, shell_r + 0.6, y - half, y + half,
                         CLIP_COLOR, f"{label}: shell clip pad {name}")
     return faces
 

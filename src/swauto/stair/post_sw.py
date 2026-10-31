@@ -35,6 +35,7 @@ from swauto.stair import stair_sw as s
 from swauto.stair.brace_sw import BraceResult, _cylinder_radii, _face_at, _progress
 from swauto.stair.platform_sw import (
     CHANNEL_IN,
+    SECTIONS,
     WEB_IN,
     _cut,
     _hole_in,
@@ -348,7 +349,7 @@ def _channel_hole(model, point_in) -> bool:
             box = s._box_in(body)
         except Exception:
             continue
-        if abs(box[4] - box[1] - CHANNEL_IN) > 0.05 or not all(
+        if all(abs(box[4] - box[1] - section.depth_in) > 0.05 for section in SECTIONS.values()) or not all(
             box[i] - 0.1 <= point_in[i] <= box[i + 3] + 0.1 for i in range(3)
         ):
             continue

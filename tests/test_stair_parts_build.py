@@ -148,7 +148,7 @@ def test_one_shell_pad_file_lands_on_every_pad_of_every_platform():
     pad = _job(jobs(parts, "", "C4x5.4", "L3x3", "L6x6"), "Shell pad")
     centres = [c for _k, lines in parts.platform_lines() for c in pad_centres(lines, parts.shell_od)]
     assert len(pad.placements) == len(centres) == 3 * 2 * len(parts.platform_lines()[0][1].supports())
-    for placement, (phi, y) in zip(pad.placements, centres, strict=True):
+    for placement, (phi, y, _tall) in zip(pad.placements, centres, strict=True):
         assert placed(placement, _world(0.0, parts.shell_od, 0.0, 0.0)) == pytest.approx(
             _world(phi, parts.shell_od, 0.0, y), abs=1e-9)
 
@@ -226,10 +226,45 @@ def test_every_job_builds_its_own_piece_even_after_later_jobs_are_made(monkeypat
 
     seen = {}
     monkeypatch.setattr(pb, "_post", lambda model, parts, post, profile: seen.setdefault("post", post))
-    monkeypatch.setattr(pp, "build_pad", lambda model, phi, y, shell_r, name: seen.setdefault("pad", (phi, y)))
+    monkeypatch.setattr(pp, "build_pad", lambda model, phi, y, shell_r, name, tall: seen.setdefault("pad", (phi, y)))
     parts = _platform_parts(PlatformSpec(96.0), posts=(2, 4, 6))
     built = pb.jobs(parts, "L2x2", "C4x5.4", "L3x3")
     _job(built, "Flight post").build(None)
     _job(built, "Shell pad").build(None)
     assert isinstance(seen["post"], Post) and seen["post"] == parts.flight_posts()[0]
     assert seen["pad"] == (0.0, 0.0)
+
+
+def test_a_c6_platform_gets_c6_channels_and_8_in_shell_clip_pads_and_keeps_its_stringer_clips(monkeypatch):
+    from pathlib import Path
+
+    import swauto.stair.parts_build as pb
+    from swauto.stair.platform_parts import clip_frame
+
+    made = []
+    monkeypatch.setattr(pb, "_arc_member", lambda model, r, a0, a1, y, turn, profile, name, section:
+                        made.append((Path(profile).name, section.name)))
+    parts = _platform_parts(PlatformSpec(150.0, channel="C6"))
+    built = pb.jobs(parts, "", r"C:\lib\c channel\C4x5.4.SLDLFP", "L3x3", "L6x6")
+    for job in built:
+        if job.label in ("Platform 1 side C", "Platform 1 side D"):
+            job.build(None)
+    assert made == [("C6x8.2.SLDLFP", "C6x8.2")] * 2
+    pads = {job.label: job for job in built if job.family == "Stair shell pad"}
+    (_k, lines), = parts.platform_lines()
+    assert sorted(pads) == ["Shell pad", "Shell pad 8 in tall"]
+    assert len(pads["Shell pad 8 in tall"].placements) == len(pads["Shell pad"].placements) == len(lines.supports())
+    (_k4, c4), = _platform_parts(PlatformSpec(150.0)).platform_lines()
+    for side in ("A", "B"):
+        for label in ("In", "Out"):
+            assert clip_frame(lines, side, label) == clip_frame(c4, side, label)  # on the same holes as on a C4
+
+
+def test_c4_and_c6_platforms_never_share_a_channel_file():
+    stair = replace(StringerMock(treads=13), platform_specs=(PlatformSpec(96.0), PlatformSpec(96.0, channel="C6"),
+                                                             PlatformSpec(96.0)))
+    parts = StairParts(stair, StringerMock().shell_od_in, 0.1875, platforms=2, top_platform=True)
+    items = stair_items(jobs(parts, "", "C4x5.4", "L3x3", "L6x6"))
+    sides = {item.label: len(item.placements) for item in items if item.params["family"] == "Stair platform channel"
+             and " side C" in item.label}
+    assert sides == {"Platform 1 side C and 1 more alike": 2, "Platform 2 side C": 1}  # 1 and 3 alike, 2 a C6

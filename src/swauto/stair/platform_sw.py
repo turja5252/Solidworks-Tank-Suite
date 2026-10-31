@@ -1,4 +1,4 @@
-"""Mid platform frame: C4x5.4 channels mitered at all four corners, on an open stair part.
+"""Mid platform frame: C4x5.4 (or C6x8.2) channels mitered at all four corners, on an open stair part.
 
 From Stair Platform Top View.lsp (RADIALPLATFORM, Mid, straight connectors),
 SpiralShellPlatform.lsp, and Platform_Sideview.lsp. In plan the outside of the
@@ -11,11 +11,18 @@ web on that outline and flanges in. The 1-1/4 in grating that goes on top is
 flush with the tread top, so the channels' top is 1-1/4 in below it and their
 bottom is level with the bottom of the stringer's end drop.
 
+A platform's frame can be C6x8.2 instead (PlatformSpec.channel; the user,
+2026-10-30). Its top is where a C4's is, so it reaches 2 in lower. The stringer
+end holes, the clips on them and the handrail posts stay where they are on a C4
+(a C6 has more web); the tab and shell clip are the channel's full depth, the
+shell pad 2 in taller than the channel, and the hanger hangs from the channel's
+bottom, so the knee brace sits 2 in lower.
+
 Each stringer end at a platform is tied to the radial channel by an L6x6x3/8
 clip 2-1/2 in tall on the walk side of the stringer: one leg flat on the
 stringer, the other flat on the channel web, heel in the corner. Both legs have
 two 13/16 holes 2-3/16 and 4-11/16 in from the heel, on the stringer end hole
-line 2-3/4 in below the channel top, so the clip is flush with the channel
+line 2-3/4 in below the channel top, so the clip is flush with a C4's
 bottom. The web has 13/16 rounds at the inner stringer and 1-5/8 slots along
 the channel at the outer stringer; the clips have rounds only.
 
@@ -107,11 +114,41 @@ HANGER_BOLT_DOWN_IN = 3.5  # below the channel bottom
 
 
 @dataclass(frozen=True)
+class Section:
+    """A platform frame's channel as this SolidWorks' ansi inch weldment library draws it: its depth, web and flange
+    width, and its rounds as an end face reads them (as TIP_ROUND and ROOT_ROUND). All a platform's channels are
+    one section."""
+
+    name: str
+    depth_in: float
+    web_in: float
+    flange_in: float
+    tip_round: tuple[tuple[float, float], float]
+    root_round: tuple[tuple[float, float], float]
+
+    @property
+    def profile(self) -> tuple[str, str, str]:
+        return ("ansi inch", "C Channel", f"{self.name}.SLDLFP")
+
+    @property
+    def pad_tall_in(self) -> float:
+        """The shell pad by the inner channel: 1 in past its top and bottom, 6 in on a C4 and 8 on a C6."""
+        return self.depth_in + SHELL_PAD_TALL_IN - CHANNEL_IN
+
+
+C4 = Section("C4x5.4", CHANNEL_IN, WEB_IN, FLANGE_IN, TIP_ROUND, ROOT_ROUND)
+# The C6x8.2 library sketch read the same way (2026-10-30); its flanges' inside faces slope 1:6 as a C4's do.
+C6 = Section("C6x8.2", 6.0, 0.200, 1.920, ((1.8000, 0.0980), 0.1200), ((0.5000, 0.7405), 0.3000))
+SECTIONS = {"C4": C4, "C6": C6}
+
+
+@dataclass(frozen=True)
 class _Lines:
     """Plan lines of one platform: radial sides A and B; the walk faces of a full-width stair's stringers, the
     frame's inside (the outer one further out on a wider platform); the channel top; the outer stringer's walk
     face, which is further in when the treads are narrower than the platform or the platform wider than the
-    stair; whether the sides C and D are rolled about the tank axis; and the radials between A and B."""
+    stair; whether the sides C and D are rolled about the tank axis; the radials between A and B; and the channel
+    every member is."""
 
     phi_a: float
     phi_b: float
@@ -122,6 +159,7 @@ class _Lines:
     rolled: bool = False
     radials: tuple[float, ...] = ()
     held: tuple[float, ...] | None = None  # the radials with a knee brace and shell clip (None: all of them)
+    section: Section = C4
 
     @property
     def r_in(self) -> float:
@@ -168,7 +206,7 @@ def platform_lines(
     return _Lines(
         phi_a, phi_a + spec.length_in / r_mid, r_a, r_b, tread_top - GRATING_IN, stringer, spec.is_rolled,
         tuple(phi_a + along / r_mid for along in spec.radial_positions()),
-        tuple(phi_a + along / r_mid for along in spec.support_positions()),
+        tuple(phi_a + along / r_mid for along in spec.support_positions()), SECTIONS[spec.channel],
     )
 
 
@@ -183,6 +221,11 @@ def _library(app, parts) -> str:
 def platform_profile(app) -> str:
     """The C4x5.4 file in this SolidWorks' weldment library."""
     return _library(app, PROFILE)
+
+
+def section_file(profile: str, section: Section) -> str:
+    """``section``'s file in the weldment library folder that ``profile`` (a C channel's file) is in."""
+    return os.path.join(os.path.dirname(profile), section.profile[-1])
 
 
 def clip_profile(app) -> str:
@@ -226,7 +269,8 @@ def place_mid_platform(
     """
     lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b, spec=spec)
     r_in, r_out, phi_a, phi_b = lines.r_in, lines.r_out, lines.phi_a, lines.phi_b
-    base = lines.top - CHANNEL_IN
+    base = lines.top - lines.section.depth_in
+    profile = section_file(profile, lines.section)
     name = f"ElitePlatform{tread_index:02d}"
     if lines.rolled:
         _rolled_frame(model, lines, base, profile, name)
@@ -234,7 +278,7 @@ def place_mid_platform(
         outline = [s._plan_xy(r, a) for r, a in ((r_in, phi_a), (r_out, phi_a), (r_out, phi_b), (r_in, phi_b))]
         if _signed_area(outline) < 0:
             outline.reverse()  # counterclockwise in the sketch puts the flanges inside
-        _frame(model, outline, base, profile, name)
+        _frame(model, outline, base, profile, name, lines.section)
         for label, angle, side in lines.members()[1:-1]:
             _radial_member(model, lines, angle, side, base, profile, f"{name}{label}")
     _progress(progress, f"{name} frame placed")
@@ -247,16 +291,16 @@ def place_mid_platform(
     between = f", with {radials} radial{'s' if radials > 1 else ''} between them, coped" if radials else ""
     if lines.rolled:
         note = (
-            f"Platform after tread {tread_index}: C4x5.4 frame {length:g} in along its centreline, the inner and "
-            f"outer sides rolled about the tank flanges in, {r_in * (phi_b - phi_a):.3f} in long rolled to "
-            f"{r_in:.3f} in and {r_out * (phi_b - phi_a):.3f} in long rolled to {r_out:.3f} in (web backs), the "
-            f"radial ends between their webs, coped{between}. "
+            f"Platform after tread {tread_index}: {lines.section.name} frame {length:g} in along its centreline, "
+            f"the inner and outer sides rolled about the tank flanges in, {r_in * (phi_b - phi_a):.3f} in long "
+            f"rolled to {r_in:.3f} in and {r_out * (phi_b - phi_a):.3f} in long rolled to {r_out:.3f} in (web "
+            f"backs), the radial ends between their webs, coped{between}. "
         )
     else:
         inner = 2.0 * r_in * math.sin((phi_b - phi_a) / 2.0)
         outer = 2.0 * r_out * math.sin((phi_b - phi_a) / 2.0)
         note = (
-            f"Platform after tread {tread_index}: C4x5.4 frame mitered at all four corners{between}, "
+            f"Platform after tread {tread_index}: {lines.section.name} frame mitered at all four corners{between}, "
             f"{length:g} in along its centreline. Outside lengths: two radial sides "
             f"{r_out - r_in:.3f} in, inner side {inner:.3f} in, outer side {outer:.3f} in. "
         )
@@ -269,16 +313,18 @@ def _rolled_frame(model, lines: _Lines, base: float, profile: str, name: str) ->
     (D is hung from a plane at its top: SolidWorks turns a channel's flanges toward the axis by hanging it), then
     A, B and each radial between their webs. One closed loop does not do: SolidWorks 2013 silently leaves out the
     arc whose flanges face the axis."""
-    _arc_member(model, lines.r_in, lines.phi_a, lines.phi_b, base, 0.0, profile, f"{name}C")
-    _arc_member(model, lines.r_out, lines.phi_a, lines.phi_b, base + CHANNEL_IN, math.pi, profile, f"{name}D")
+    _arc_member(model, lines.r_in, lines.phi_a, lines.phi_b, base, 0.0, profile, f"{name}C", lines.section)
+    _arc_member(model, lines.r_out, lines.phi_a, lines.phi_b, base + lines.section.depth_in, math.pi, profile,
+                f"{name}D", lines.section)
     for label, angle, side in lines.members():
         _radial_member(model, lines, angle, side, base, profile, f"{name}{label}")
 
 
-def _arc_member(model, r: float, a0: float, a1: float, y: float, turn: float, profile: str, name: str):
-    """One C4x5.4 rolled about the tank axis on the arc of radius ``r`` (its web's back) from angle ``a0`` to
-    ``a1``, its sketch on a level plane at ``y``: standing on it with its flanges away from the axis (``turn``
-    0), or hung under it with its flanges toward the axis (``turn`` pi)."""
+def _arc_member(model, r: float, a0: float, a1: float, y: float, turn: float, profile: str, name: str,
+                section: Section = C4):
+    """One channel of ``section`` (``profile`` its file) rolled about the tank axis on the arc of radius ``r`` (its
+    web's back) from angle ``a0`` to ``a1``, its sketch on a level plane at ``y``: standing on it with its flanges
+    away from the axis (``turn`` 0), or hung under it with its flanges toward the axis (``turn`` pi)."""
     plane = s._offset_from(model, s._plane(model, "Top"), y, f"{name}Pln")
 
     def draw():
@@ -286,20 +332,21 @@ def _arc_member(model, r: float, a0: float, a1: float, y: float, turn: float, pr
         if model.SketchManager.Create3PointArc(a[0], a[1], 0.0, b[0], b[1], 0.0, m[0], m[1], 0.0) is None:
             raise SolidWorksError(f"{name}: arc failed.")
 
-    body = _channel_member(model, s._sketch_on(model, plane, f"{name}Sk", draw), profile, turn, name)
+    body = _channel_member(model, s._sketch_on(model, plane, f"{name}Sk", draw), profile, turn, name, section)
     reach = _radii(body)
-    flanges = (r, r + FLANGE_IN) if turn == 0.0 else (r - FLANGE_IN, r)
+    flanges = (r, r + section.flange_in) if turn == 0.0 else (r - section.flange_in, r)
     if abs(reach[0] - flanges[0]) > 0.05 or abs(reach[1] - flanges[1]) > 0.05:
         raise SolidWorksError(f"{name}: the rolled channel's flanges went the wrong way.")
     return body
 
 
 def _radial_member(model, lines: _Lines, angle: float, side: float, base: float, profile: str, name: str) -> None:
-    """A C4x5.4 on the radial line at ``angle`` (its web's back) between the inner side's web and the outer
+    """A channel on the radial line at ``angle`` (its web's back) between the inner side's web and the outer
     side's, flanges toward ``side`` (+1 toward B), standing on the frame's bottom; then its ends coped top and
     bottom clear of the sides' flanges."""
-    near = _inner_back(lines, angle) + WEB_IN
-    far = _outer_back(lines, angle) - WEB_IN
+    section = lines.section
+    near = _inner_back(lines, angle) + section.web_in
+    far = _outer_back(lines, angle) - section.web_in
     plane = s._offset_from(model, s._plane(model, "Top"), base, f"{name}Pln")
     start, end = (far, near) if side > 0 else (near, far)  # drawn in toward the axis, its flanges come out toward B
 
@@ -309,10 +356,10 @@ def _radial_member(model, lines: _Lines, angle: float, side: float, base: float,
             raise SolidWorksError(f"{name}: radial line failed.")
 
     before = s._body_names(model)
-    body = _channel_member(model, s._sketch_on(model, plane, f"{name}Sk", draw), profile, 0.0, name)
+    body = _channel_member(model, s._sketch_on(model, plane, f"{name}Sk", draw), profile, 0.0, name, section)
     turns = [math.remainder(a - angle, 2.0 * math.pi) for a in _angles(body)]  # off its line, whole turns aside
     toward = max(turns) if side > 0 else -min(turns)
-    if toward < 0.9 * FLANGE_IN / far:
+    if toward < 0.9 * section.flange_in / far:
         raise SolidWorksError(f"{name}: the radial channel's flanges went the wrong way.")
     for inner in (True, False):
         _cope(model, before, lines, angle, side, base, inner, f"{name}Cope{'C' if inner else 'D'}")
@@ -323,7 +370,8 @@ def _radial_member(model, lines: _Lines, angle: float, side: float, base: float,
     radii = [math.hypot(p[0], p[2]) for p in _vertices(made[0])]
     if min(radii) < near + COPE_GAP_IN - 0.01 or max(radii) > far - COPE_GAP_IN + 0.01:
         raise SolidWorksError(f"{name}: the copes did not stand its ends off the side channels' webs.")
-    if min(radii) > _inner_back(lines, angle) + FLANGE_IN or max(radii) < _outer_back(lines, angle) - FLANGE_IN:
+    if (min(radii) > _inner_back(lines, angle) + section.flange_in
+            or max(radii) < _outer_back(lines, angle) - section.flange_in):
         raise SolidWorksError(f"{name}: the copes took its ends back past the side channels' flanges.")
     with contextlib.suppress(Exception):
         made[0].Name = name  # a cut names the body after itself
@@ -339,7 +387,7 @@ def _cope(model, before: set[str], lines: _Lines, angle: float, side: float, bas
     width, and cut both ways from it on the radial alone. A rolled side's section is the same in every radial
     plane, and the side curves less than 3/1000 in across half a flange; a straight side's is the same all along
     it."""
-    reach = FLANGE_IN / 2.0  # the middle of the radial's flange width, off its web's back
+    reach = lines.section.flange_in / 2.0  # the middle of the radial's flange width, off its web's back
     if lines.rolled:
         radius = lines.r_in if inner else lines.r_out
         plane_phi = angle + side * reach / radius
@@ -361,7 +409,7 @@ def _cope(model, before: set[str], lines: _Lines, angle: float, side: float, bas
             return _world(mid, chord_r + out * t, along, base + y)
 
     def draw(manager, to_sketch):
-        for shape in _grown_section(COPE_GAP_IN):
+        for shape in _grown_section(COPE_GAP_IN, lines.section):
             points = [to_sketch(at(*p)) for p in shape[1:]]
             if shape[0] == "line":
                 (ax, ay), (bx, by) = points
@@ -384,15 +432,15 @@ def _cope(model, before: set[str], lines: _Lines, angle: float, side: float, bas
     s._rebuild(model)
 
 
-def _grown_section(gap: float) -> list[tuple]:
-    """The C4x5.4 section grown ``gap`` all round, as a closed run of ("line", a, b) and ("arc", a, middle, b) in
-    (t, y): t across from the web's back toward the flanges, y up from the bottom. The square corners grow round;
-    the tip round grows by the gap and the root round, on the open side, shrinks by it."""
-    (tip_x, tip_y), tip_r = TIP_ROUND
-    (root_x, root_y), root_r = ROOT_ROUND
+def _grown_section(gap: float, section: Section = C4) -> list[tuple]:
+    """The channel's section grown ``gap`` all round, as a closed run of ("line", a, b) and ("arc", a, middle, b)
+    in (t, y): t across from the web's back toward the flanges, y up from the bottom. The square corners grow
+    round; the tip round grows by the gap and the root round, on the open side, shrinks by it."""
+    (tip_x, tip_y), tip_r = section.tip_round
+    (root_x, root_y), root_r = section.root_round
     ux, uy = 1.0 / math.sqrt(37.0), 6.0 / math.sqrt(37.0)  # out of the flange, square to its 1:6 inside face
     s2 = math.sqrt(0.5)
-    width, tall, web = FLANGE_IN, CHANNEL_IN, WEB_IN
+    width, tall, web = section.flange_in, section.depth_in, section.web_in
 
     def on(cx: float, cy: float, r: float, angle: float) -> tuple[float, float]:
         return cx + r * math.cos(angle), cy + r * math.sin(angle)
@@ -455,8 +503,10 @@ def _cut_both_ways_in(model, sketch, depth_in: float, body):
     return feature if feature not in (None, False) else None
 
 
-def _channel_member(model, sketch, profile: str, turn: float, name: str):
-    """A C4x5.4 structural member on the one segment of ``sketch``, turned ``turn`` about its path; its body."""
+def _channel_member(model, sketch, profile: str, turn: float, name: str, section: Section = C4):
+    """A structural member of ``section`` (``profile`` its file) on the one segment of ``sketch``, turned ``turn``
+    about its path; its body."""
+    _have_profile(profile, name)
     before = s._body_names(model)
     s._select_segments(model, sketch, name, 1)
     try:
@@ -483,9 +533,15 @@ def _channel_member(model, sketch, profile: str, turn: float, name: str):
     if len(bodies) != 1:
         raise SolidWorksError(f"{name}: expected one channel, got {len(bodies)} bodies.")
     box = s._box_in(bodies[0])
-    if abs(box[4] - box[1] - CHANNEL_IN) > 0.01:
-        raise SolidWorksError(f"{name}: the channel is {box[4] - box[1]:.3f} in tall, not {CHANNEL_IN:g}.")
+    if abs(box[4] - box[1] - section.depth_in) > 0.01:
+        raise SolidWorksError(f"{name}: the channel is {box[4] - box[1]:.3f} in tall, not {section.depth_in:g}.")
     return bodies[0]
+
+
+def _have_profile(profile: str, name: str) -> None:
+    """Say plainly when a channel's weldment profile is missing from the library."""
+    if not os.path.isfile(profile):
+        raise SolidWorksError(f"{name}: the weldment profile {os.path.basename(profile)} is not at {profile}.")
 
 
 def _vertices(body) -> list[list[float]]:
@@ -517,13 +573,15 @@ def _signed_area(points) -> float:
     return 0.5 * sum(ax * by - bx * ay for (ax, ay), (bx, by) in zip(points, points[1:] + points[:1]))
 
 
-def _frame(model, outline, base: float, profile: str, name: str) -> None:
-    """Closed loop on a level plane at the channels' bottom, then one structural member on all four lines.
+def _frame(model, outline, base: float, profile: str, name: str, section: Section = C4) -> None:
+    """Closed loop on a level plane at the channels' bottom, then one structural member of ``section`` on all
+    four lines.
 
     SolidWorks miters the corners of a closed loop and sets each channel with
     its web back on the line, its flanges toward the inside, standing up from
     the sketch plane.
     """
+    _have_profile(profile, name)
     plane = s._offset_from(model, s._plane(model, "Top"), base, f"{name}Pln")
 
     def draw():
@@ -551,8 +609,8 @@ def _frame(model, outline, base: float, profile: str, name: str) -> None:
         with contextlib.suppress(Exception):
             if str(body.Name) not in bodies_before:
                 channels.append(s._box_in(body))
-    if len(channels) != 4 or any(abs(box[4] - box[1] - CHANNEL_IN) > 0.01 for box in channels):
-        raise SolidWorksError(f"{name}: expected four 4 in channels, got {len(channels)} bodies.")
+    if len(channels) != 4 or any(abs(box[4] - box[1] - section.depth_in) > 0.01 for box in channels):
+        raise SolidWorksError(f"{name}: expected four {section.depth_in:g} in channels, got {len(channels)} bodies.")
     _clear_selection(model)
     with contextlib.suppress(Exception):
         if sketch.Select2(False, 0):
@@ -667,7 +725,7 @@ def _channel_face(model, lines: _Lines, line_phi: float):
     """Back of the radial channel web on this side: the platform outline's radial plane."""
     mid = (lines.r_a + lines.r_b) / 2.0
     frame = [b for b in s._bodies(model) if str(b.Name).startswith("ElitePlatform")]
-    return _face_at(frame, _world(line_phi, mid, 0.0, lines.top - CHANNEL_IN / 2.0), _travel(line_phi))
+    return _face_at(frame, _world(line_phi, mid, 0.0, lines.top - lines.section.depth_in / 2.0), _travel(line_phi))
 
 
 def _web_holes(model, lines: _Lines, line_phi: float, hole_y: float, name: str) -> bool:
@@ -687,7 +745,7 @@ def _web_holes(model, lines: _Lines, line_phi: float, hole_y: float, name: str) 
             bx, by = to_sketch(_world(line_phi, lines.stringer_b, 0.0, hole_y))
             s._slot_along(model, sx, sy, ax - bx, ay - by, SLOT_IN * _INCH, radius)
 
-    if not _cut(model, _channel_face(model, lines, line_phi), name, draw, WEB_IN + 0.06):
+    if not _cut(model, _channel_face(model, lines, line_phi), name, draw, lines.section.web_in + 0.06):
         return False
     return all(_hole_in(model, p) for p in rounds)
 
@@ -700,8 +758,9 @@ def _hole_in(model, point_in) -> bool:
 
 def _clip(model, line_phi: float, heel_r: float, inward: float, away: float, top: float, profile: str, name: str):
     """L6x6 on a vertical line at the heel, turned until one leg runs along the stringer
-    away from the channel and the other along the web toward the walk centerline."""
-    ys = (top - CHANNEL_IN, top - CHANNEL_IN + CLIP_TALL_IN)
+    away from the channel and the other along the web toward the walk centerline. It is
+    centred on the stringer end hole line, so on a C4 it is flush with the channel bottom."""
+    ys = (top - HOLE_DOWN_IN - CLIP_TALL_IN / 2.0, top - HOLE_DOWN_IN + CLIP_TALL_IN / 2.0)
     return _upright_angle(model, line_phi, heel_r, inward, away, ys, CLIP_LEG_IN, profile, name)
 
 
@@ -819,7 +878,7 @@ def add_platform_knee_braces(
     profile: str, progress=None, spec: PlatformSpec | None = None,
 ) -> BraceResult:
     """Hanger plate under the outer channel and a 45 deg knee brace to the shell, at both platform ends and at
-    every radial between (``spec`` the platform's shape).
+    every held radial between (``spec`` the platform's shape).
 
     ``profile`` is the L3x3x0.375 file (``brace_sw.angle_profile``). The part does not need a shell.
     """
@@ -828,7 +887,7 @@ def add_platform_knee_braces(
     missed = []
     for label, frame, knee, back in platform_knees(lines, shell_r):
         tag = f"{name}{label}"
-        _hanger(model, frame, back, lines.top, knee.side, f"{tag}Hanger")
+        _hanger(model, frame, back, lines.top - lines.section.depth_in, knee.side, f"{tag}Hanger")
         _knee_angle(model, frame, knee, profile, tag)
         _knee_clip_and_pad(model, frame, knee, tag)
         if not _knee_holes(model, frame, knee, tag):
@@ -847,7 +906,7 @@ def add_platform_knee_braces(
 
 def platform_knees(lines: _Lines, shell_r: float) -> list[tuple[str, _Frame, _Knee, float]]:
     """The knee brace under a platform's outer channel at each support (``_Lines.supports``: both ends and every
-    radial between): label, radial frame, knee, and the outer channel back's radius on that line. Raises when
+    held radial between): label, radial frame, knee, and the outer channel back's radius on that line. Raises when
     the shell leaves no room."""
     r_mid_plate = lines.r_out - HANGER_IN_FROM_OUTSIDE_IN - HANGER_WIDE_IN / 2.0
     set_in = HANGER_FROM_END_IN + HANGER_THK_IN  # the hanger stands just past the radial's web, as at A
@@ -857,7 +916,7 @@ def platform_knees(lines: _Lines, shell_r: float) -> list[tuple[str, _Frame, _Kn
         frame = _Frame(phi=knee_phi, y_top=lines.top, r_a=lines.r_a, r_b=lines.r_b)
         back = _outer_back(lines, knee_phi)
         r1 = back - HANGER_IN_FROM_OUTSIDE_IN - HANGER_WIDE_IN / 2.0
-        y1 = lines.top - CHANNEL_IN - HANGER_BOLT_DOWN_IN
+        y1 = lines.top - lines.section.depth_in - HANGER_BOLT_DOWN_IN
         r2 = shell_r + CLIP_BOLT_OUT_IN
         if r2 >= r1 - 1.0:
             raise SolidWorksError("The platform knee brace has no room between the platform and the shell.")
@@ -876,22 +935,23 @@ def _outer_back(lines: _Lines, phi: float) -> float:
 
 
 def shell_pads(lines: _Lines, shell_r: float) -> list[tuple[str, float, float]]:
-    """The shell pad by each support on a platform's inner channel (both ends and every radial between): label,
-    plan angle (taken near the platform's own angles) and middle height. Each pad is 4 in wide by
-    SHELL_PAD_TALL_IN, full-radius ends."""
+    """The shell pad by each support on a platform's inner channel (both ends and every held radial between): label,
+    plan angle (taken near the platform's own angles) and middle height. Each pad is 4 in wide by the channel's
+    ``Section.pad_tall_in``, full-radius ends."""
     pads = []
     for end, (label, _angle, _side) in zip(_channel_ends(lines), lines.supports(), strict=True):
         qx, qz = _pad_point(end, shell_r)
         phi_q = lines.phi_a + math.remainder(math.atan2(-qx, qz) - lines.phi_a, 2.0 * math.pi)
-        pads.append((label, phi_q, end.top - CHANNEL_IN / 2.0))
+        pads.append((label, phi_q, end.top - end.section.depth_in / 2.0))
     return pads
 
 
-def _hanger(model, frame: _Frame, back: float, top: float, side: float, name: str) -> None:
-    """3/8 plate under the outer channel, on the platform-end side of the knee's contact plane."""
+def _hanger(model, frame: _Frame, back: float, bottom: float, side: float, name: str) -> None:
+    """3/8 plate under the outer channel (its bottom at ``bottom``), on the platform-end side of the knee's contact
+    plane."""
     r0 = back - HANGER_IN_FROM_OUTSIDE_IN - HANGER_WIDE_IN
     r1 = back - HANGER_IN_FROM_OUTSIDE_IN
-    y1 = top - CHANNEL_IN
+    y1 = bottom
     y0 = y1 - HANGER_TALL_IN
     plane = s._radial_plane(model, frame.phi, f"{name}Pln")
 
@@ -919,6 +979,7 @@ class _ChannelEnd:
     along: tuple[float, float]  # along C toward the other end
     inward: tuple[float, float]  # square to C, toward the tank axis
     top: float
+    section: Section = C4
 
     def world(self, c: float, h: float, y: float) -> tuple[float, float, float]:
         """c along the channel from this end, h out from the web toward the shell."""
@@ -950,7 +1011,7 @@ def _channel_ends(lines: _Lines) -> list[_ChannelEnd]:
         inward = (-along[1], along[0])
         if inward[0] * -origin[0] + inward[1] * -origin[1] < 0:
             inward = (-inward[0], -inward[1])
-        ends.append(_ChannelEnd(origin, along, inward, lines.top))
+        ends.append(_ChannelEnd(origin, along, inward, lines.top, lines.section))
     return ends
 
 
@@ -959,7 +1020,7 @@ def add_platform_shell_clips(
     spec: PlatformSpec | None = None,
 ) -> BraceResult:
     """Tab, shell clip, and pad at both ends of the inner channel of the platform after tread ``tread_index``, and
-    beside every radial between (``spec`` the platform's shape).
+    beside every held radial between (``spec`` the platform's shape).
 
     ``shell_r`` is the shell OD radius; the part does not need a shell.
     """
@@ -980,7 +1041,7 @@ def add_platform_shell_clips(
     note = (
         f"Platform after tread {tread_index}: 3/8 x 4 in tabs welded to the inner channel at both ends"
         f"{' and beside each held radial' if len(lines.supports()) > 2 else ''}, "
-        f"bolted to 3/8 shell clips on 1/4 x 4 x 6 pads, two 13/16 holes 2 in apart."
+        f"bolted to 3/8 shell clips on 1/4 x 4 x {lines.section.pad_tall_in:g} pads, two 13/16 holes 2 in apart."
         + (f" Holes missed at end(s) {', '.join(missed)}." if missed else "")
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
@@ -991,12 +1052,13 @@ def _shell_tab(model, end: _ChannelEnd, name: str, rolled_r: float | None = None
     On a rolled inner channel (``rolled_r`` its back's radius) it is sketched on the plane touching the back there:
     its curved face takes no sketch."""
     c0, c1 = TAB_FROM_END_IN, TAB_FROM_END_IN + TAB_THK_IN
-    y0, y1 = end.top - CHANNEL_IN, end.top
+    depth = end.section.depth_in
+    y0, y1 = end.top - depth, end.top
     if rolled_r is not None:
         web = _tangent_plane(model, math.atan2(-end.origin[0], end.origin[1]), rolled_r, f"{name}Web")
     else:
         frame = [b for b in s._bodies(model) if str(b.Name).startswith("ElitePlatform")]
-        web = _face_at(frame, end.world((c0 + c1) / 2.0, 0.0, end.top - CHANNEL_IN / 2.0),
+        web = _face_at(frame, end.world((c0 + c1) / 2.0, 0.0, end.top - depth / 2.0),
                        (end.inward[0], 0.0, end.inward[1]))
 
     def draw(manager, to_sketch):
@@ -1007,8 +1069,8 @@ def _shell_tab(model, end: _ChannelEnd, name: str, rolled_r: float | None = None
 
     sketch = _sketch_on_face(model, web, name, draw)
     _extrude_to(
-        model, sketch, TAB_OUT_IN, end.world((c0 + c1) / 2.0, TAB_OUT_IN / 2.0, end.top - CHANNEL_IN / 2.0),
-        CHANNEL_IN + 0.1, name,
+        model, sketch, TAB_OUT_IN, end.world((c0 + c1) / 2.0, TAB_OUT_IN / 2.0, end.top - depth / 2.0),
+        depth + 0.1, name,
     )
 
 
@@ -1034,9 +1096,11 @@ def _shell_clip_and_pad(model, end: _ChannelEnd, shell_r: float, tag: str) -> No
     face_x, face_z = qx + SHELL_PAD_THK_IN * normal[0], qz + SHELL_PAD_THK_IN * normal[1]
     reach = ((face_x - px) * normal[0] + (face_z - pz) * normal[1]) / (end.inward[0] * normal[0] + end.inward[1] * normal[1])
     h0, h1 = SHELL_CLIP_SHORT_IN, reach
-    y0, y1 = end.top - CHANNEL_IN, end.top
+    depth, pad_tall = end.section.depth_in, end.section.pad_tall_in
+    y0, y1 = end.top - depth, end.top
+    y_mid = end.top - depth / 2.0
     tabs = [b for b in s._bodies(model) if str(b.Name).startswith(f"{tag}Tab")]
-    tab_face = _face_at(tabs, end.world(c_face, TAB_OUT_IN / 2.0, end.top - CHANNEL_IN / 2.0), (end.along[0], 0.0, end.along[1]))
+    tab_face = _face_at(tabs, end.world(c_face, TAB_OUT_IN / 2.0, y_mid), (end.along[0], 0.0, end.along[1]))
 
     def draw_clip(manager, to_sketch):
         pts = [to_sketch(end.world(c_face, h, y)) for h, y in ((h0, y0), (h1, y0), (h1, y1), (h0, y1))]
@@ -1047,21 +1111,20 @@ def _shell_clip_and_pad(model, end: _ChannelEnd, shell_r: float, tag: str) -> No
     clip_sketch = _sketch_on_face(model, tab_face, f"{tag}ShellClip", draw_clip)
     _extrude_to(
         model, clip_sketch, SHELL_CLIP_THK_IN,
-        end.world(c_face + SHELL_CLIP_THK_IN / 2.0, (h0 + h1) / 2.0, end.top - CHANNEL_IN / 2.0),
-        CHANNEL_IN + 0.1, f"{tag}ShellClip",
+        end.world(c_face + SHELL_CLIP_THK_IN / 2.0, (h0 + h1) / 2.0, y_mid),
+        depth + 0.1, f"{tag}ShellClip",
     )
 
     # The pad sits flat on the shell where the clip's mid-plane meets it, centered on the clip.
     plane = _tangent_plane(model, phi_q, shell_r, f"{tag}Pad")
-    y_mid = end.top - CHANNEL_IN / 2.0
 
     def draw_pad(manager, to_sketch):
-        _draw_pad(manager, lambda t, y: to_sketch(_world(phi_q, shell_r, t, y)), 0.0, y_mid, SHELL_PAD_TALL_IN, tag)
+        _draw_pad(manager, lambda t, y: to_sketch(_world(phi_q, shell_r, t, y)), 0.0, y_mid, pad_tall, tag)
 
     pad_sketch = _sketch_on_face(model, plane, f"{tag}Pad", draw_pad)
     _extrude_to(
         model, pad_sketch, SHELL_PAD_THK_IN, _world(phi_q, shell_r + SHELL_PAD_THK_IN / 2.0, 0.0, y_mid),
-        SHELL_PAD_TALL_IN + 0.1, f"{tag}Pad",
+        pad_tall + 0.1, f"{tag}Pad",
     )
 
 
@@ -1082,7 +1145,7 @@ def _tangent_plane(model, phi: float, radius: float, name: str):
 def _shell_holes(model, end: _ChannelEnd, name: str) -> bool:
     """Two 13/16 rounds through the tab and the shell clip, from the face they share."""
     c_face = TAB_FROM_END_IN + TAB_THK_IN
-    y_mid = end.top - CHANNEL_IN / 2.0
+    y_mid = end.top - end.section.depth_in / 2.0
     points = [end.world(c_face, SHELL_BOLT_OUT_IN, y_mid + dy) for dy in (SHELL_BOLT_SPACE_IN / 2.0, -SHELL_BOLT_SPACE_IN / 2.0)]
     tabs = [b for b in s._bodies(model) if str(b.Name).startswith(name.replace("Holes", "Tab"))]
     face = _face_at(tabs, end.world(c_face, TAB_OUT_IN - 0.25, y_mid), (end.along[0], 0.0, end.along[1]))
