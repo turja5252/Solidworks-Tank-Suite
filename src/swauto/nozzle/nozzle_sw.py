@@ -152,13 +152,14 @@ def _repad(model, placed: Placement, mark: str) -> None:
     top = outer
     bottom = -placed.nozzle.elevation_in if pad.style == "tombstone" else -outer
     _revolve_band(model, placed, bottom - 0.25, top + 0.25, f"{_PREFIX}{mark}Band")
+    band = _seat_band(model, placed, f"{_PREFIX}{mark}Band")
     _extrude_keep(model, placed, mark)
-    _combine_keep(model, mark)
+    _combine_keep(model, mark, band)
     _cut_circle(
         model,
         _pad_hole_radius(placed),
         _sag(placed) + 0.5,
-        pad.thickness_in + 0.5,
+        pad.thickness_in + _rise(placed) + 0.5,
         f"{_PREFIX}{mark}PadHole",
         scope=f"{_PREFIX}{mark}Repad",
     )
@@ -166,7 +167,9 @@ def _repad(model, placed: Placement, mark: str) -> None:
 
 
 def _revolve_band(model, placed: Placement, y0: float, y1: float, name: str) -> None:
-    """A band of the shell outside, thickness of the repad, all the way around."""
+    """A band of the shell outside, thickness of the repad, far enough around to cover the pad: turned about the
+    line ``radius`` behind the nozzle, which is the tank axis for a radial nozzle (``_seat_band`` moves an offset
+    nozzle's onto it)."""
     radius = placed.outside_radius_in
     thickness = placed.repad.thickness_in
     _open_right(model)
@@ -197,12 +200,49 @@ def _revolve_band(model, placed: Placement, y0: float, y1: float, name: str) -> 
     _hide_sketch(model, f"{name}Sk")
 
 
+def _seat_band(model, placed: Placement, name: str) -> str:
+    """An offset nozzle's band, turned about the line ``radius`` behind the nozzle, is not on the shell: the tank
+    axis is off to the side (``_shell_axis``). Turn it about that line until it faces the nozzle's shell point
+    from the tank axis, then move the line onto the tank axis. A radial nozzle's band is on it already.
+
+    Returns the band's body name. A move renames the body after itself, and SolidWorks 2013 will not give it back
+    the name it had before (a new name it takes), so each step names it afresh."""
+    ax, az = _shell_axis(placed)
+    if abs(ax) < 1e-9:
+        return name
+    radius = placed.outside_radius_in
+    nothing = com_nothing()
+    steps = (
+        ("Turned", (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -radius * _INCH, 0.0, math.asin(-ax / radius), 0.0)),
+        ("Seated", (ax * _INCH, 0.0, (az + radius) * _INCH, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)),
+    )
+    band = name
+    for step, args in steps:
+        model.ClearSelection2(True)
+        if not model.Extension.SelectByID2(name, "SOLIDBODY", 0.0, 0.0, 0.0, False, 1, nothing, 0):
+            raise SolidWorksError(f"{placed.nozzle.mark}: could not select the repad band to seat it on the shell.")
+        moved = model.FeatureManager.InsertMoveCopyBody2(*args, False, 1)
+        model.ClearSelection2(True)
+        if moved is None:
+            raise SolidWorksError(f"{placed.nozzle.mark}: could not seat the repad band on the shell.")
+        rename_feature(moved, f"{band}{step}")
+        rebuild(model)
+        body = _body_with_feature(model, f"{band}{step}")
+        if body is None:
+            raise SolidWorksError(f"{placed.nozzle.mark}: could not seat the repad band on the shell.")
+        body.Name = f"{band}{step}"
+        name = str(com_value(body.Name) or "")
+        if name != f"{band}{step}":
+            raise SolidWorksError(f"{placed.nozzle.mark}: the seated repad band would not take its name.")
+    return name
+
+
 def _extrude_keep(model, placed: Placement, mark: str) -> None:
     """Solid along the nozzle that has the repad outline. The band is cut to this."""
     pad = placed.repad
     assert pad is not None
     name = f"{_PREFIX}{mark}Keep"
-    depth_out = (pad.thickness_in + 0.5) * _INCH
+    depth_out = (pad.thickness_in + _rise(placed) + 0.5) * _INCH
     depth_in = (_sag(placed) + 0.5) * _INCH
     _open_front(model)
     sketch = model.SketchManager
@@ -240,9 +280,9 @@ def _draw_tombstone(model, sketch, placed: Placement) -> None:
             raise SolidWorksError(f"{placed.nozzle.mark}: the tombstone outline did not draw.")
 
 
-def _combine_keep(model, mark: str) -> None:
+def _combine_keep(model, mark: str, band_name: str) -> None:
     rebuild(model)
-    band = _body_named(model, f"{_PREFIX}{mark}Band")
+    band = _body_named(model, band_name)
     keep = _body_named(model, f"{_PREFIX}{mark}Keep")
     if band is None or keep is None:
         raise SolidWorksError(f"{mark}: the repad pieces were not created.")
@@ -597,8 +637,8 @@ def _telltale(model, placed: Placement, mark: str) -> None:
     feature = _latest(model)
     rename_feature(feature, f"{name}Sk")
     _extrude_cut_both(
-        model, feature, (placed.repad.thickness_in + 0.5) * _INCH, (_sag(placed) + 0.5) * _INCH, name,
-        scope=f"{_PREFIX}{mark}Repad",
+        model, feature, (placed.repad.thickness_in + _rise(placed) + 0.5) * _INCH, (_sag(placed) + 0.5) * _INCH,
+        name, scope=f"{_PREFIX}{mark}Repad",
     )
     _hide_sketch(model, f"{name}Sk")
 
@@ -740,10 +780,16 @@ def _angle_off_front(model, angle: float, name: str):
 
 
 def _band_angle(placed: Placement) -> float:
-    """How far around the tank the repad band has to run to cover the pad."""
-    outer = placed.repad.outer_diameter_in / 2.0 + 0.5
+    """How far around the tank axis, either way from the nozzle's shell point, the repad band has to run to cover
+    the pad: to the shell under each side of it (an offset nozzle's two sides are not alike)."""
+    reach = placed.repad.outer_diameter_in / 2.0 + 0.5
     radius = placed.outside_radius_in
-    return math.asin(min(0.95, outer / radius))
+    ax, _az = _shell_axis(placed)
+
+    def turn(x: float) -> float:
+        return math.asin(max(-0.95, min(0.95, (x - ax) / radius))) - math.asin(max(-0.95, min(0.95, -ax / radius)))
+
+    return max(abs(turn(-reach)), abs(turn(reach)))
 
 
 def _claim_local(model, name: str, tank_radius_in: float) -> None:
@@ -896,12 +942,38 @@ def _pad_hole_radius(placed: Placement) -> float:
     return inner if inner > pipe_r else pipe_r
 
 
-def _sag(placed: Placement) -> float:
+def _shell_axis(placed: Placement) -> tuple[float, float]:
+    """The tank axis where a nozzle is built (its axis +Z, its shell point at the origin, +X against the offset's
+    clockwise): (x, z). Behind the shell point on a radial nozzle, off to the offset's side on an offset one."""
     radius = placed.outside_radius_in
+    offset = placed.nozzle.offset_in
+    return offset, -math.sqrt(radius * radius - offset * offset)
+
+
+def _shell_z(placed: Placement, x: float) -> float:
+    """How far out along the nozzle axis the shell outside is ``x`` across from the nozzle (0 at the nozzle)."""
+    ax, az = _shell_axis(placed)
+    radius = placed.outside_radius_in
+    return az + math.sqrt(max(0.0, radius * radius - (x - ax) * (x - ax)))
+
+
+def _sag(placed: Placement) -> float:
+    """How far the shell falls back behind the nozzle's shell point under the repad's sides."""
     outer = placed.repad.outer_diameter_in / 2.0 if placed.repad is not None else 0.0
-    if outer <= 0.0 or outer >= radius:
+    if outer <= 0.0 or outer >= placed.outside_radius_in:
         return 0.0
-    return radius - math.sqrt(radius * radius - outer * outer)
+    return max(0.0, -min(_shell_z(placed, -outer), _shell_z(placed, outer)))
+
+
+def _rise(placed: Placement) -> float:
+    """How far the shell comes out past the nozzle's shell point under the repad: nothing on a radial nozzle;
+    an offset one's shell is nearest the nozzle's flange on the offset's side."""
+    outer = placed.repad.outer_diameter_in / 2.0 if placed.repad is not None else 0.0
+    if outer <= 0.0 or outer >= placed.outside_radius_in:
+        return 0.0
+    ax, _az = _shell_axis(placed)
+    nearest = max(-outer, min(outer, ax))  # the shell is furthest out at x = ax
+    return max(0.0, _shell_z(placed, nearest))
 
 
 def _axis_of(placed: Placement) -> tuple[float, float, float]:

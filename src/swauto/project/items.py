@@ -273,6 +273,8 @@ def _pieces(placed):
             "drop": nozzle.elevation_in if pad.style == "tombstone" else 0.0,
             **asdict(pad),
         }
+        if nozzle.offset_in:
+            params["offset"] = nozzle.offset_in  # its pad lies on the shell off to that side
         yield (f"Repad {pad.outer_diameter_in:g}in {pad.thickness_in:g}in", REPAD,
                f"{pad.style} repad {pad.outer_diameter_in:g} OD x {pad.thickness_in:g} for {named}",
                params, 0.0, (placed, nozzle.mark))
