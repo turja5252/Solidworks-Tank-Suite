@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from swauto.errors import SolidWorksError
 from swauto.stair.brace_sw import DROP_IN, PAD_TALL_IN, PAD_THK_IN, PAD_WIDE_IN, _Frame, _knee_layout, knee_pad
 from swauto.stair.development import develop_both
+from swauto.stair import knee2
 from swauto.stair.inner_clip_sw import MIN_GAP_IN, clip_pad, clip_phi
 from swauto.stair.inner_clip_sw import PAD_TALL_IN as CLIP_PAD_TALL_IN
 from swauto.stair.platform_sw import (
@@ -156,10 +157,10 @@ def platform_pad_marks(lines, shell_r: float, name: str) -> tuple[list[Mark], li
         notes.append(f"{name}: {exc}")
         return marks, notes
     for label, frame, knee, _back in knees:
-        t, y = knee_pad(knee)
+        t, y = knee2.pad_middle(knee) if lines.knee == 2 else knee_pad(knee)
         angle = frame.phi + math.atan2(t, shell_r + PAD_THK_IN)
         marks.append(Mark(PLATFORM_KNEE_PAD, f"{name} knee brace pad {label}", center=(angle, y),
-                          size=(PAD_WIDE_IN, PAD_TALL_IN)))
+                          size=(PAD_WIDE_IN, knee2.PAD_TALL_IN if lines.knee == 2 else PAD_TALL_IN)))
     return marks, notes
 
 

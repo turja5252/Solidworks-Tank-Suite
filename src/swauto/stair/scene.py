@@ -29,6 +29,7 @@ from swauto.stair.attachments import (
 from swauto.stair.development import develop_both
 from swauto.stair.grab_sw import BRACKET_IN, BRACKET_OVERALL_IN, GRAB_TOP_IN, PIPE_OD_IN
 from swauto.stair.landings import StairArrangement, clip_mark, knee_mark, platform_frame
+from swauto.stair import knee2
 from swauto.stair.platform_sw import CHANNEL_IN, GRATING_IN, _outer_back, platform_knees, platform_lines, shell_pads
 from swauto.stair.post_sw import RAIL_TOP_IN, TOP_GAP_IN, _post_side, post_layout
 from swauto.stair.rail_sw import BAR_IN, BAR_THK_IN, MID_TOP_IN, PLATFORM_MID_TOP_IN
@@ -338,8 +339,9 @@ def _platform(lines, shell_r: float, label: str) -> list[Face]:
     for name, frame, knee, _back in knees:
         (r1, k1), (r2, k2) = knee.top, knee.bottom
         faces += _strut((r1, frame.phi, k1), (r2, frame.phi, k2), KNEE_COLOR, f"{label}: knee brace {name}")
-        faces += _block(frame.phi - 2.0 / shell_r, frame.phi + 2.0 / shell_r, shell_r, shell_r + 0.6, k2 - 3.0,
-                        k2 + 3.0, KNEE_COLOR, f"{label}: knee brace pad {name}")
+        middle, half = (knee2.pad_middle(knee)[1], knee2.PAD_TALL_IN / 2.0) if lines.knee == 2 else (k2, 3.0)
+        faces += _block(frame.phi - 2.0 / shell_r, frame.phi + 2.0 / shell_r, shell_r, shell_r + 0.6, middle - half,
+                        middle + half, KNEE_COLOR, f"{label}: knee brace pad {name}")
     half = lines.section.pad_tall_in / 2.0
     for name, angle, y in shell_pads(lines, shell_r):
         faces += _strut((lines.r_in, angle, y), (shell_r + 0.6, angle, y), CLIP_COLOR, f"{label}: shell clip {name}")

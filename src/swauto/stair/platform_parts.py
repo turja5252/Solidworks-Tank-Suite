@@ -23,6 +23,7 @@ import math
 from dataclasses import replace
 
 from swauto.errors import SolidWorksError
+from swauto.stair import knee2
 from swauto.stair import stair_sw as s
 from swauto.stair.brace_sw import CLIP_HEIGHT_IN as KNEE_CLIP_TALL_IN
 from swauto.stair.brace_sw import CLIP_OUT_IN as KNEE_CLIP_OUT_IN
@@ -86,6 +87,9 @@ def pad_centres(lines, shell_r: float) -> list[tuple[float, float, float]]:
         qx, qz = _pad_point(end, shell_r)
         centres.append((math.atan2(-qx, qz), end.top - end.section.depth_in / 2.0, end.section.pad_tall_in))
     for _label, frame, knee, _back in platform_knees(lines, shell_r):
+        if lines.knee == 2:
+            centres.append((*knee2.pad_spot(frame, knee), knee2.PAD_TALL_IN))
+            continue
         t_mid, y = knee_pad(knee)
         centres.append((_plane_angle(frame.world(shell_r, t_mid, y)), y, SHELL_PAD_TALL_IN))
     return centres
@@ -305,20 +309,35 @@ def support_jobs(job, k: int, seat, shell_r: float, knee_file: str, common: dict
         end, (_label, frame, knee, back) = ends[head], knees[head]
         name = f"ElitePlatform{k}{label}"
         params = dict(common, support=label, shell_od=shell_r)
+        if seat.knee == 2:
+            knee_builds = (
+                lambda model, frame=frame, knee=knee, back=back, name=name:
+                knee2.build_hanger(model, frame, knee, back, seat.top - seat.section.depth_in, f"{name}Hanger"),
+                lambda model, frame=frame, knee=knee, name=name: knee2.build_brace(model, frame, knee, knee_file,
+                                                                                  f"{name}Knee"),
+                lambda model, frame=frame, knee=knee, name=name: knee2.build_clip(model, frame, knee,
+                                                                                 f"{name}KneeClip"),
+            )
+        else:
+            knee_builds = (
+                lambda model, frame=frame, knee=knee, back=back, name=name:
+                build_hanger(model, frame, knee, back, seat.top - seat.section.depth_in, f"{name}Hanger"),
+                lambda model, frame=frame, knee=knee, name=name: build_knee(model, frame, knee, knee_file,
+                                                                           f"{name}Knee"),
+                lambda model, frame=frame, knee=knee, name=name: build_knee_clip(model, frame, knee,
+                                                                                f"{name}KneeClip"),
+            )
         out += [
             job("Stair platform tab", f"Platform {k} tab {at}", dict(params, piece="tab"),
                 lambda model, end=end, name=name: build_tab(model, end, f"{name}Tab"), places),
             job("Stair platform shell clip", f"Platform {k} shell clip {at}", dict(params, piece="shell clip"),
                 lambda model, end=end, name=name: build_shell_clip(model, end, shell_r, f"{name}ShellClip"), places),
-            job("Stair platform hanger", f"Platform {k} hanger {at}", dict(params, piece="hanger"),
-                lambda model, frame=frame, knee=knee, back=back, name=name:
-                build_hanger(model, frame, knee, back, seat.top - seat.section.depth_in, f"{name}Hanger"), places),
-            job("Stair platform knee", f"Platform {k} knee brace {at}", dict(params, piece="knee"),
-                lambda model, frame=frame, knee=knee, name=name: build_knee(model, frame, knee, knee_file,
-                                                                           f"{name}Knee"), places),
+            job("Stair platform hanger", f"Platform {k} hanger {at}", dict(params, piece="hanger"), knee_builds[0],
+                places),
+            job("Stair platform knee", f"Platform {k} knee brace {at}", dict(params, piece="knee"), knee_builds[1],
+                places),
             job("Stair platform knee clip", f"Platform {k} knee clip {at}", dict(params, piece="knee clip"),
-                lambda model, frame=frame, knee=knee, name=name: build_knee_clip(model, frame, knee,
-                                                                                f"{name}KneeClip"), places),
+                knee_builds[2], places),
         ]
     return out
 

@@ -547,15 +547,15 @@ def _knee_axes(frame: _Frame, sign: float = LEG_SIDE):
     return down, up, side
 
 
-def _knee_angle(model, frame: _Frame, knee: _Knee, profile: str, name: str) -> None:
-    """Member on the heel line: the top edge of the brace, on the contact plane.
+def _knee_angle(model, frame: _Frame, knee: _Knee, profile: str, name: str, gauge: float = LEG_IN / 2.0) -> None:
+    """Member on the heel line: the top edge of the brace, on the contact plane, ``gauge`` above its bolts.
 
     The flat leg lies on the cross brace's down leg and the clip; the other leg
     runs along the top edge, away from the cross brace. The library L is turned
     until that is what the model shows.
     """
     e = KNEE_END_IN / _ROOT2
-    w = (LEG_IN / 2.0) / _ROOT2
+    w = gauge / _ROOT2
     (r1, y1), (r2, y2) = knee.top, knee.bottom
     h1 = (r1 + e - w, y1 + e + w)
     h2 = (r2 - e - w, y2 - e + w)

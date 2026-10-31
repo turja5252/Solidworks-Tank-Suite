@@ -160,6 +160,7 @@ class _Lines:
     radials: tuple[float, ...] = ()
     held: tuple[float, ...] | None = None  # the radials with a knee brace and shell clip (None: all of them)
     section: Section = C4
+    knee: int = 1  # the knee braces' type (stair.knee2 has type 2)
 
     @property
     def r_in(self) -> float:
@@ -206,7 +207,7 @@ def platform_lines(
     return _Lines(
         phi_a, phi_a + spec.length_in / r_mid, r_a, r_b, tread_top - GRATING_IN, stringer, spec.is_rolled,
         tuple(phi_a + along / r_mid for along in spec.radial_positions()),
-        tuple(phi_a + along / r_mid for along in spec.support_positions()), SECTIONS[spec.channel],
+        tuple(phi_a + along / r_mid for along in spec.support_positions()), SECTIONS[spec.channel], spec.knee,
     )
 
 
@@ -884,6 +885,8 @@ def add_platform_knee_braces(
     """
     lines = platform_lines(phi=phi, tread_top=tread_top, r_a=r_a, r_b=r_b, spec=spec)
     name = f"ElitePlatform{tread_index:02d}Knee"
+    if lines.knee == 2:
+        return _type2_knees(model, tread_index, lines, shell_r, profile, name, progress)
     missed = []
     for label, frame, knee, back in platform_knees(lines, shell_r):
         tag = f"{name}{label}"
@@ -900,6 +903,32 @@ def add_platform_knee_braces(
         f"outer channel at each end{' and each held radial' if len(lines.supports()) > 2 else ''} with an L3x3x3/8 "
         "knee brace at 45 deg down to a clip and pad on the shell."
         + (f" Holes missed at end(s) {', '.join(missed)}." if missed else "")
+    )
+    return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
+
+
+def _type2_knees(model, tread_index: int, lines: _Lines, shell_r: float, profile: str, name: str,
+                 progress) -> BraceResult:
+    """Type 2 knee braces (stair.knee2) at every support: hanger, brace, shell clip and pad, each cutting its own
+    bolt holes and slots."""
+    from swauto.stair import knee2
+    from swauto.stair.platform_parts import build_pad
+
+    for label, frame, knee, back in platform_knees(lines, shell_r):
+        tag = f"{name}{label}"
+        knee2.build_hanger(model, frame, knee, back, lines.top - lines.section.depth_in, f"{tag}Hanger")
+        knee2.build_brace(model, frame, knee, profile, tag)
+        knee2.build_clip(model, frame, knee, f"{tag}Clip")
+        phi_q, y_q = knee2.pad_spot(frame, knee)
+        build_pad(model, phi_q, y_q, shell_r, f"{tag}Pad", knee2.PAD_TALL_IN)
+        _progress(progress, f"{tag} placed")
+    with contextlib.suppress(Exception):
+        s._hide_construction(model)
+    note = (
+        f"Platform after tread {tread_index}: type 2 knee braces at each end"
+        f"{' and each held radial' if len(lines.supports()) > 2 else ''}: a 3/8 x 6 in hanger under the outer channel "
+        "and a 3/8 shell clip on a 1/4 x 4 x 8 pad, the L3x3x3/8 brace at 45 deg bolted to each with two 3/4 bolts, "
+        "one in a round hole and one in a slot curved on a 3 in radius about it."
     )
     return BraceResult(title=str(com_value(model.GetTitle) or "Part"), note=note)
 

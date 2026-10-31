@@ -241,7 +241,7 @@ def flight_params(where) -> dict:
 def shape_params(spec: PlatformSpec) -> dict:
     """What shapes a platform's pieces."""
     return {"length_in": spec.length_in, "width_in": spec.width_in, "rolled": spec.is_rolled,
-            "radials": list(spec.radial_positions()), "channel": spec.channel}
+            "radials": list(spec.radial_positions()), "channel": spec.channel, "knee": spec.knee}
 
 
 def bolt_points(place, radius: float) -> list[tuple[float, float, float]]:

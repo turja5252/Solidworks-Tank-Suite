@@ -951,7 +951,8 @@ def _platforms(
         after.append(str(last.index))
         if "Missed" in clips.note:
             missed.append(clips.note.split("Missed: ", 1)[1].rstrip("."))
-    if any(spec.is_rolled or spec.radial_positions() or spec.extra_in or spec.channel != "C4" for spec in shapes):
+    if any(spec.is_rolled or spec.radial_positions() or spec.extra_in or spec.channel != "C4" or spec.knee != 1
+           for spec in shapes):
         note = " ".join(frames) + (
             " L6x6x3/8 clips at every stringer end that meets them, shell clips by both ends of each inner channel "
             "and every held radial, and L3x3x3/8 knee braces to the shell under the outer channel at the same."

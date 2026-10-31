@@ -167,6 +167,9 @@ def _progress_percent(done: int, total: int) -> int:
     return (100 * done) // total
 
 
+KNEE_TYPES = ("Type 1: one bolt each end", "Type 2: two bolts, slotted")
+
+
 def platform_channels(text: str, what: str) -> list[str]:
     """A platform channel list as typed, one per platform, like "C4, C6" (or "4 6")."""
     values = [token if token.startswith("C") else f"C{token}" for token in text.upper().replace(",", " ").split()]
@@ -528,6 +531,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     top_sides_var = tk.StringVar(value=SIDES_AUTO)
     plat_channel_var = tk.StringVar(value=PLATFORM_CHANNELS[0])
     top_channel_var = tk.StringVar(value=PLATFORM_CHANNELS[0])
+    knee_type_var = tk.StringVar(value=KNEE_TYPES[0])
     shape_options = ttk.Frame(top)
     shape_options.grid(row=12, column=0, columnspan=8, sticky="w", pady=(4, 0))
     for row, (title, length_var, width_var, sides_var, channel_var) in enumerate((
@@ -546,6 +550,9 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     ttk.Label(shape_options, text="radials at most").grid(row=0, column=8, sticky="w", padx=(12, 0))
     ttk.Entry(shape_options, textvariable=plat_spacing_var, width=5).grid(row=0, column=9, sticky="w", padx=(6, 0))
     ttk.Label(shape_options, text="in apart").grid(row=0, column=10, sticky="w", padx=(4, 0))
+    ttk.Label(shape_options, text="knee braces").grid(row=1, column=8, sticky="w", padx=(12, 0))
+    ttk.Combobox(shape_options, textvariable=knee_type_var, values=KNEE_TYPES, width=22, state="readonly").grid(
+        row=1, column=9, columnspan=2, sticky="w", padx=(6, 0))
     posts_var = tk.StringVar(value="")
     post_in_out_var = tk.StringVar(value=_fmt_num(PLATFORM_POST_IN))
     post_in_inner_var = tk.StringVar(value=_fmt_num(PLATFORM_POST_IN))
@@ -673,7 +680,9 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "the supports no more than 96 in apart, the ends always having theirs (Chris Samm). Channel: C4 or C6, "
             "one per platform like the lengths; a C6 frame's top is where a C4's is, so it reaches 2 in lower, its "
             "stringer clips, holes and posts stay as on a C4, its tabs and shell clips are 6 in deep on 8 in pads, "
-            "and its knee braces hang from its bottom. A straight "
+            "and its knee braces hang from its bottom. Knee braces: type 1 bolts each end once; type 2 (Elite "
+            "2026-050) bolts each end twice, one bolt in a slot curved on a 3 in radius, to a 3/8 x 6 in hanger "
+            "and a 3/8 shell clip on a 4 x 8 pad, every knee of every platform. A straight "
             "platform long enough to bow its inner side into the shell is refused. A rolled frame is built as "
             "the lisp draws it: the inner and outer channels rolled the full length, flanges in, the radial "
             "channels between their webs, coped to the side channels' section with 1/16 in clear all round "
@@ -759,6 +768,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "platform_channel": plat_channel_var.get(),
             "top_platform_length": top_len_var.get(), "top_platform_width": top_width_var.get(),
             "top_platform_sides": top_sides_var.get(), "top_platform_channel": top_channel_var.get(),
+            "knee_type": knee_type_var.get(),
             "post_in_outer": post_in_out_var.get(), "post_in_inner": post_in_inner_var.get(),
             "top_rail": top_rail_var.get(), "mid_rail": mid_rail_var.get(), "mid_top": mid_top_var.get(),
             "grab_rail": grab_var.get(), "grab_top": grab_top_var.get(), "grab_low": grab_low_var.get(),
@@ -788,7 +798,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
             "platform_length": plat_len_var, "platform_width": plat_width_var, "platform_sides": plat_sides_var,
             "platform_spacing": plat_spacing_var, "platform_channel": plat_channel_var,
             "top_platform_length": top_len_var, "top_platform_width": top_width_var,
-            "top_platform_sides": top_sides_var, "top_platform_channel": top_channel_var,
+            "top_platform_sides": top_sides_var, "top_platform_channel": top_channel_var, "knee_type": knee_type_var,
             "posts": posts_var, "post_in_outer": post_in_out_var, "post_in_inner": post_in_inner_var,
             "top_rail": top_rail_var, "mid_rail": mid_rail_var, "mid_top": mid_top_var, "grab_rail": grab_var,
             "grab_top": grab_top_var, "grab_low": grab_low_var, "grab_high": grab_high_var, "split": split_var,
@@ -910,14 +920,16 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
         widths = numbers(plat_width_var, "Mid platform widths")
         channels = platform_channels(plat_channel_var.get(), "Mid platform channels")
         spacing = numbers(plat_spacing_var, "The radial spacing")[0]
+        knee = KNEE_TYPES.index(knee_type_var.get()) + 1 if knee_type_var.get() in KNEE_TYPES else 1
         specs = [PlatformSpec(lengths[min(k, len(lengths) - 1)], widths[min(k, len(widths) - 1)],
-                              _SIDES[plat_sides_var.get()], spacing, channel=channels[min(k, len(channels) - 1)])
+                              _SIDES[plat_sides_var.get()], spacing, channel=channels[min(k, len(channels) - 1)],
+                              knee=knee)
                  for k in range(count)]
         if top_platform:
             channel = platform_channels(top_channel_var.get(), "The top platform's channel")[0]
             specs.append(PlatformSpec(numbers(top_len_var, "The top platform's length")[0],
                                       numbers(top_width_var, "The top platform's width")[0],
-                                      _SIDES[top_sides_var.get()], spacing, channel=channel))
+                                      _SIDES[top_sides_var.get()], spacing, channel=channel, knee=knee))
         for spec in specs:
             spec.validate()
         return tuple(specs)
@@ -1386,7 +1398,7 @@ def build_stringer_tab(parent: ttk.Frame, status_var: tk.StringVar, shared: dict
     for var in (
         diameter_var, gap_var, slope_var, plate_var, wall_var, top_platform_var, tread_var, hand_var, orient_var,
         orient_end_var, plat_len_var, plat_width_var, plat_sides_var, plat_spacing_var, top_len_var, top_width_var,
-        top_sides_var, plat_channel_var, top_channel_var,
+        top_sides_var, plat_channel_var, top_channel_var, knee_type_var,
         # the splitters, and what their cuts keep off
         split_var, split_mode_var, split_span_var, split_count_var, split_plate_var, split_row_var, posts_var,
         braces_var, knee_var, inner_var, rules_var, rail_side_var,
