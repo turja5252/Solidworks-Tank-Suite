@@ -598,9 +598,16 @@ def _knee_angle(model, frame: _Frame, knee: _Knee, profile: str, name: str, gaug
     off = _turn_off(end)
     if off is None:
         raise SolidWorksError(f"{name}: could not read how the knee brace is turned.")
-    # SolidWorks' rotation angle may run either way in this frame, so try both.
-    if not _knee_fits(end, 0.01) and not any(_knee_fits(end_after(turn), 0.01) for turn in (off, -off)):
-        raise SolidWorksError(f"{name}: could not turn the knee brace with its flat leg on the clip.")
+    # SolidWorks' rotation angle may run either way in this frame, so try both. A brace that only fits is turned
+    # too: a twist small enough to pass the fit at its 3 in legs still leaves the clip's 7 in outline off the flat
+    # leg it is sketched on (89 deg round a 50 ft tank, 2026-10-31). If no turn squares it, a fit will do.
+    def square(found) -> bool:
+        twist = _turn_off(found)
+        return _knee_fits(found, 0.01) and twist is not None and abs(twist) < 1e-4
+
+    if not square(end) and not any(square(end_after(turn)) for turn in (off, -off)):
+        if not any(_knee_fits(end_after(turn), 0.01) for turn in (0.0, off, -off)):
+            raise SolidWorksError(f"{name}: could not turn the knee brace with its flat leg on the clip.")
     with contextlib.suppress(Exception):
         rename_feature(feature, name)
     _clear_selection(model)
