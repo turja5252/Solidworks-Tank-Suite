@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from tkinter import messagebox, ttk
 
 from swauto.errors import SolidWorksError
+from swauto.nozzle.clash import note, shell_clashes
 from swauto.nozzle.nozzle_sw import add_nozzles
 from swauto.nozzle.pipe import SCHEDULES, nps_sizes
 from swauto.nozzle.place import Placement, place, repad_seams
@@ -114,9 +115,11 @@ def _with_defaults(values: dict[str, object]) -> dict[str, object]:
 
 
 def check_rows(rows: list[dict[str, object]], spec) -> list[RowCheck]:
-    """Read every grid row. Blank rows come back blank; a mark on two rows is wrong on both."""
+    """Read every grid row. Blank rows come back blank; a mark on two rows is wrong on both; a nozzle whose pad (or
+    neck) runs into another's says so (nozzle.clash)."""
     shell = spec if isinstance(spec, TankSpec) and spec.active_courses() else None
     checks: list[RowCheck] = []
+    placed_at: dict[int, Placement] = {}
     for values in rows:
         if all(not str(values.get(key, "")).strip() for key in _TYPED):
             checks.append(RowCheck(None, "", True))
@@ -131,6 +134,7 @@ def check_rows(rows: list[dict[str, object]], spec) -> list[RowCheck]:
         except ValueError as exc:
             checks.append(RowCheck(None, str(exc), False))
             continue
+        placed_at[len(checks)] = placed
         checks.append(RowCheck(nozzle, _row_summary(placed, repad_seams(placed, shell)), True))
     rows_by_mark: dict[str, list[int]] = {}
     for index, check in enumerate(checks):
@@ -141,6 +145,12 @@ def check_rows(rows: list[dict[str, object]], spec) -> list[RowCheck]:
             others = ", ".join(str(i + 1) for i in indexes)
             for index in indexes:
                 checks[index] = RowCheck(None, f"{mark} is on rows {others}. Marks must differ.", False)
+    good = [index for index in placed_at if checks[index].ok and checks[index].nozzle is not None]
+    for i, others in shell_clashes([placed_at[index] for index in good]).items():
+        if others:
+            check = checks[good[i]]
+            marks = [checks[good[j]].nozzle.mark for j in others]
+            checks[good[i]] = RowCheck(check.nozzle, check.message + note(marks), True)
     return checks
 
 

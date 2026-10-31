@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from tkinter import messagebox, ttk
 
 from swauto.errors import SolidWorksError
+from swauto.nozzle.clash import note, roof_clashes
 from swauto.nozzle.gui import (
     _BAD,
     _CHECK_MS,
@@ -101,7 +102,8 @@ class RoofRowCheck(RowCheck):
 
 
 def check_rows(rows: list[dict[str, object]], roof) -> list[RoofRowCheck]:
-    """Read every grid row. Blank rows come back blank; a mark on two rows is wrong on both."""
+    """Read every grid row. Blank rows come back blank; a mark on two rows is wrong on both; a nozzle or manway whose
+    pad (or neck) runs into another's says so (nozzle.clash)."""
     cone = roof if isinstance(roof, RoofSpec) else None
     checks: list[RoofRowCheck] = []
     for values in rows:
@@ -127,6 +129,12 @@ def check_rows(rows: list[dict[str, object]], roof) -> list[RoofRowCheck]:
             others = ", ".join(str(i + 1) for i in indexes)
             for index in indexes:
                 checks[index] = RoofRowCheck(None, f"{mark} is on rows {others}. Marks must differ.", False)
+    good = [index for index, check in enumerate(checks) if check.ok and check.placed is not None]
+    for i, others in roof_clashes([checks[index].placed for index in good]).items():
+        if others:
+            check = checks[good[i]]
+            marks = [checks[good[j]].nozzle.mark for j in others]
+            checks[good[i]] = RoofRowCheck(check.nozzle, check.message + note(marks), True, check.placed)
     return checks
 
 

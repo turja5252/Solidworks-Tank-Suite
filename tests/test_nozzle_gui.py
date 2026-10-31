@@ -86,9 +86,10 @@ def test_a_row_says_when_its_pad_crosses_a_course_seam():
     low, across, tomb = check_rows(
         [
             _row(mark="N1", size="12", elevation="40", osp="10", isp="2", repad="Default"),  # 27 in pad: 26.5 to 53.5
-            _row(mark="N2", size="12", elevation="90", osp="10", isp="2", repad="Default"),  # 76.5 to 103.5
-            _row(mark="N3", size="6", elevation="100", osp="8", isp="2", repad="Default",
-                 style="Tombstone"),  # from the floor up
+            _row(mark="N2", size="12", elevation="90", rotation="90", osp="10", isp="2",
+                 repad="Default"),  # 76.5 to 103.5
+            _row(mark="N3", size="6", elevation="100", rotation="180", osp="8", isp="2", repad="Default",
+                 style="Tombstone"),  # from the floor up; round the shell from the others, which it would run into
         ],
         spec,
     )
